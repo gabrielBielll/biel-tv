@@ -99,8 +99,15 @@ async function processJob(job) {
       p.stderr.on('data', (d) => come(String(d)))
       p.on('error', reject)
       p.on('close', (code) => {
-        if (code === 0) resolvePromise(undefined)
-        else reject(new Error(saidaTail.trim().split('\n').filter((l) => !l.startsWith('progresso:')).at(-1) || 'pipeline falhou'))
+        if (code === 0) return resolvePromise(undefined)
+        // pesca a linha de erro REAL: prefere a última com "✖"/"Error",
+        // ignorando rodapé de crash do Node ("Node.js vX"), frames de stack
+        // ("at …") e linhas de progresso — senão a última linha útil qualquer
+        const linhas = saidaTail.trim().split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l && !l.startsWith('progresso:') && !l.startsWith('at ') && !/^Node\.js v/.test(l) && !l.startsWith('^'))
+        const comErro = linhas.filter((l) => l.includes('✖') || /error/i.test(l))
+        reject(new Error(comErro.at(-1) ?? linhas.at(-1) ?? 'pipeline falhou'))
       })
     })
   } finally {

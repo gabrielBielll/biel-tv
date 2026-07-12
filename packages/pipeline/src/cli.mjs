@@ -46,6 +46,12 @@ function die(msg) {
   process.exit(1)
 }
 
+// Qualquer passo async que estoure sem catch vira uma mensagem limpa "✖ …"
+// em vez de um crash dump do Node (cuja última linha, "Node.js vX", acabava
+// gravada como "erro" do job — inútil pra diagnosticar).
+process.on('uncaughtException', (e) => die(String(e?.message ?? e)))
+process.on('unhandledRejection', (e) => die(String(e?.message ?? e)))
+
 if (cmd !== 'ingest') die('uso: pnpm ingest <arquivo> --id <id> --tipo <tipo> [...opções]')
 if (!input || !existsSync(input)) die(`arquivo de entrada não encontrado: ${input}`)
 if (!opt.id || !/^[a-z0-9_]+$/.test(opt.id)) die('--id obrigatório (minúsculas, dígitos e _)')

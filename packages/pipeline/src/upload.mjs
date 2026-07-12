@@ -38,17 +38,35 @@ export async function uploadRemote(dir, mediaId, onProgress, concurrency = 8) {
 
   const files = listSegments(dir)
   let done = 0
-  for (let i = 0; i < files.length; i += concurrency) {
-    await Promise.all(
-      files.slice(i, i + concurrency).map(async (f) => {
-        const key = `media/${mediaId}/${f}`
+
+  // Retry por objeto: rede de runner (GitHub Actions) soluça e o R2 pode
+  // devolver 429/5xx sob rajada — sem isso, UM PUT perdido derruba o job
+  // inteiro depois de minutos de transcodificação.
+  async function putComRetry(f) {
+    const key = `media/${mediaId}/${f}`
+    for (let tent = 1; ; tent++) {
+      try {
         const res = await aws.fetch(`${endpoint}/${key}`, {
           method: 'PUT',
           body: readFileSync(join(dir, f)),
           headers: { 'content-type': 'video/mp2t' },
         })
-        if (!res.ok) throw new Error(`PUT ${key} → HTTP ${res.status}`)
-        onProgress?.(++done, files.length, key)
+        if (res.ok) return
+        if (res.status !== 429 && res.status < 500) throw new Error(`PUT ${key} → HTTP ${res.status}`)
+        if (tent >= 4) throw new Error(`PUT ${key} → HTTP ${res.status} após ${tent} tentativas`)
+      } catch (e) {
+        // fetch lança TypeError em falha de rede — transitório, tenta de novo
+        if (!(e instanceof TypeError) || tent >= 4) throw e
+      }
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** (tent - 1)))
+    }
+  }
+
+  for (let i = 0; i < files.length; i += concurrency) {
+    await Promise.all(
+      files.slice(i, i + concurrency).map(async (f) => {
+        await putComRetry(f)
+        onProgress?.(++done, files.length, `media/${mediaId}/${f}`)
       }),
     )
   }
