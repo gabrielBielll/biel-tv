@@ -1,0 +1,16 @@
+# my-tv = versão anterior (Python/Render), tem repo git próprio — mantida só como referência
+my-tv/
+
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+.wrangler/
+.dev.vars
+
+# mídia de teste gerada localmente (fase 1)
+.media-test/
+
+# área de trabalho do pipeline de ingestão (fase 2)
+.ingest-work/

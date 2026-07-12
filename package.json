@@ -1,0 +1,24 @@
+{
+  "name": "biel-tv",
+  "private": true,
+  "description": "Biel TV — canal de TV linear 24/7, 100% serverless (Cloudflare Workers + D1 + R2)",
+  "scripts": {
+    "dev": "pnpm --filter @bieltv/stream dev",
+    "deploy": "pnpm --filter @bieltv/stream deploy",
+    "db:migrate:local": "pnpm --filter @bieltv/stream db:migrate:local",
+    "media:test": "bash scripts/make-test-media.sh",
+    "media:put:local": "bash scripts/r2-put-local.sh",
+    "seed:local": "node scripts/seed-epg.mjs",
+    "verify:stream": "node scripts/verify-stream.mjs",
+    "ingest": "node packages/pipeline/src/cli.mjs ingest",
+    "verify:pipeline": "node scripts/verify-pipeline.mjs",
+    "web:dev": "pnpm --filter @bieltv/web dev",
+    "web:build": "pnpm --filter @bieltv/web build",
+    "verify:web": "node scripts/verify-web.mjs",
+    "factory": "node scripts/factory-local.mjs",
+    "verify:admin": "node scripts/verify-admin.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1"
+  }
+}

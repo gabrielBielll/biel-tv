@@ -1,0 +1,26 @@
+# Biel TV — Worker de streaming (o "Operador": rápido, burro e eficiente)
+name = "biel-tv-stream"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+
+[vars]
+# Permite ?at=<unix> nas rotas para "viajar no tempo" (debug/testes).
+# DESLIGAR ("0") antes de expor o Worker publicamente.
+ALLOW_TIME_TRAVEL = "1"
+# Token do painel /admin — EM PRODUÇÃO trocar por secret (`wrangler secret put ADMIN_TOKEN`)
+ADMIN_TOKEN = "bieltv-dev-2026"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "biel-tv-db"
+# Placeholder — no deploy real, rodar `wrangler d1 create biel-tv-db` e colar o id aqui.
+# Para dev local (--local) qualquer id serve.
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "biel-tv-media"
+
+[triggers]
+# Diretor de programação (fase 4): 06:00 UTC = 03:00 America/Sao_Paulo
+crons = ["0 6 * * *"]
