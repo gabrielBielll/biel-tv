@@ -61,19 +61,27 @@ function trocar(id: string) {
 
 watch(canal, () => {
   programs.value = []
+  vt.value = null
   load()
+  loadVotaton()
 })
 
 onMounted(async () => {
   await loadChannels()
   load()
+  loadVotaton()
   poll = setInterval(load, 60_000)
   tick = setInterval(() => (now.value = Date.now() / 1000 + clockOffset), 1000)
+  vtPoll = setInterval(() => {
+    vtTick++
+    if (vt.value?.rodada || vtTick % 12 === 0) loadVotaton()
+  }, 5000)
 })
 
 onBeforeUnmount(() => {
   clearInterval(poll)
   clearInterval(tick)
+  clearInterval(vtPoll)
 })
 
 const onAir = computed(() => nowAndNext(programs.value, now.value))
@@ -98,6 +106,49 @@ const TIPO_LABEL: Record<string, string> = {
   filme: 'FILME',
   placeholder: '—',
 }
+
+// ── Votaton (fase 10c): a votação do canal ─────────────────────────────────
+// Polling adaptativo: 5s com apuração rolando, ~60s em repouso.
+const vt = ref<any>(null)
+const vtBusy = ref(false)
+let vtPoll: ReturnType<typeof setInterval> | undefined
+let vtTick = 0
+
+async function loadVotaton() {
+  if (!canal.value) return
+  try {
+    vt.value = await (await fetch(`${API}/votaton/${canal.value}`)).json()
+  } catch {
+    /* votação fora do ar não derruba a TV */
+  }
+}
+
+async function votar(sid: string) {
+  if (vtBusy.value) return
+  vtBusy.value = true
+  try {
+    await fetch(`${API}/votaton/${canal.value}/votar`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ series_id: sid }),
+    })
+    await loadVotaton()
+  } finally {
+    vtBusy.value = false
+  }
+}
+
+async function celebrar() {
+  await fetch(`${API}/votaton/${canal.value}/celebrado`, { method: 'POST' }).catch(() => null)
+  loadVotaton()
+}
+
+const vtCountdown = computed(() => {
+  const fim = vt.value?.rodada?.termina_em
+  if (!fim) return ''
+  const s = Math.max(0, Math.floor(fim - now.value))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+})
 </script>
 
 <template>
@@ -152,6 +203,53 @@ const TIPO_LABEL: Record<string, string> = {
       </section>
 
       <aside class="epg">
+        <div
+          v-if="vt && (vt.rodada || (vt.resultado && vt.resultado.maratona) || (vt.pode_votar && vt.opcoes?.length >= 2))"
+          class="votaton"
+        >
+          <h2>📊 Votação do canal</h2>
+
+          <template v-if="vt.rodada">
+            <p class="vt-sub">
+              <span class="vt-live">● AO VIVO</span> apuração encerra em {{ vtCountdown }}
+            </p>
+            <div
+              v-for="v in vt.rodada.votos"
+              :key="v.series_id"
+              class="vt-row"
+              :class="{ minha: v.series_id === vt.rodada.sua }"
+            >
+              <span class="vt-nome">{{ v.titulo }}<b v-if="v.series_id === vt.rodada.sua"> · seu voto</b></span>
+              <div class="vt-bar"><div class="vt-fill" :style="{ width: v.pct + '%' }" /></div>
+              <span class="vt-pct">{{ v.pct }}% · {{ v.votos }}</span>
+            </div>
+          </template>
+
+          <template v-else-if="vt.resultado && vt.resultado.maratona">
+            <div class="vt-result" :class="{ win: vt.resultado.venceu_usuario }">
+              <b>{{ vt.resultado.titulo }}</b> venceu a votação{{ vt.resultado.venceu_usuario ? ' — com o seu voto! 🏆' : '!' }}
+              <div class="vt-mara">
+                📺 Maratona {{ vt.resultado.maratona.inicio.slice(11) }}–{{ vt.resultado.maratona.fim.slice(11) }}
+                · <span class="vt-selo">PEDIDO DOS TELESPECTADORES</span>
+              </div>
+            </div>
+            <p v-if="vt.proxima_em" class="vt-sub">próxima votação às {{ hm(vt.proxima_em) }}</p>
+          </template>
+
+          <template v-else-if="vt.pode_votar">
+            <p class="vt-sub">Qual maratona você quer ver hoje? Vote:</p>
+            <div class="vt-opcoes">
+              <button
+                v-for="o in vt.opcoes"
+                :key="o.series_id"
+                class="vt-opcao"
+                :disabled="vtBusy"
+                @click="votar(o.series_id)"
+              >{{ o.titulo }}</button>
+            </div>
+          </template>
+        </div>
+
         <h2>Programação</h2>
         <ol class="guide">
           <li
@@ -167,6 +265,18 @@ const TIPO_LABEL: Record<string, string> = {
         </ol>
       </aside>
     </main>
+
+    <div v-if="vt?.resultado?.celebrar" class="vt-fest" @click.self="celebrar">
+      <div class="vt-fest-card">
+        <div class="vt-fest-emoji">🎉 🏆 🎉</div>
+        <h3>DEU {{ vt.resultado.titulo.toUpperCase() }}!</h3>
+        <p>O seu voto venceu a votação dos telespectadores!</p>
+        <p v-if="vt.resultado.maratona" class="vt-fest-hora">
+          Maratona hoje, às {{ vt.resultado.maratona.inicio.slice(11) }} — não perca!
+        </p>
+        <button class="vt-fest-btn" @click="celebrar">🎊 tô dentro!</button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -389,4 +499,57 @@ const TIPO_LABEL: Record<string, string> = {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ── Votaton ─────────────────────────────────────────────────────────── */
+.votaton {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+.votaton h2 { margin-top: 0; }
+.vt-sub { color: var(--text-dim); font-size: 13px; margin: 4px 0 10px; }
+.vt-live { color: #ff2d55; font-weight: 800; font-size: 11px; letter-spacing: 0.08em;
+  animation: vt-pisca 1.2s ease-in-out infinite; }
+@keyframes vt-pisca { 50% { opacity: 0.35; } }
+
+.vt-row { display: grid; grid-template-columns: 1fr; gap: 3px; padding: 6px 0; }
+.vt-nome { font-size: 13px; font-weight: 600; }
+.vt-nome b { color: var(--accent); font-size: 11px; }
+.vt-row.minha .vt-nome { color: var(--accent); }
+.vt-bar { height: 8px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
+.vt-fill { height: 100%; background: var(--text-dim); border-radius: 999px;
+  transition: width 1.2s ease; }
+.vt-row.minha .vt-fill { background: var(--accent); }
+.vt-pct { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+.vt-opcoes { display: flex; flex-direction: column; gap: 8px; }
+.vt-opcao { background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 10px; padding: 10px 12px; font-size: 14px; font-weight: 700;
+  text-align: left; cursor: pointer; transition: border-color 0.15s; }
+.vt-opcao:hover { border-color: var(--accent); }
+.vt-opcao:disabled { opacity: 0.5; }
+
+.vt-result { font-size: 14px; line-height: 1.5; }
+.vt-result.win b { color: var(--accent); }
+.vt-mara { margin-top: 6px; font-size: 13px; color: var(--text-dim); }
+.vt-selo { font-size: 10px; font-weight: 800; letter-spacing: 0.08em; color: #ffb020;
+  border: 1px solid rgba(255, 176, 32, 0.5); border-radius: 999px; padding: 2px 8px; }
+
+.vt-fest { position: fixed; inset: 0; background: rgba(6, 6, 12, 0.82); z-index: 50;
+  display: grid; place-items: center; animation: vt-surge 0.25s ease; }
+@keyframes vt-surge { from { opacity: 0; } }
+.vt-fest-card { background: var(--panel); border: 2px solid var(--accent);
+  border-radius: 18px; padding: 34px 42px; text-align: center; max-width: 440px;
+  animation: vt-pula 0.5s cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes vt-pula { from { transform: scale(0.6); opacity: 0; } }
+.vt-fest-emoji { font-size: 40px; animation: vt-balanca 1s ease-in-out infinite; }
+@keyframes vt-balanca { 50% { transform: rotate(4deg) scale(1.08); } }
+.vt-fest-card h3 { font-size: 26px; margin: 12px 0 6px; color: var(--accent); }
+.vt-fest-card p { color: var(--text); margin: 4px 0; }
+.vt-fest-hora { font-weight: 700; }
+.vt-fest-btn { margin-top: 18px; background: var(--accent); color: #fff; border: 0;
+  border-radius: 999px; padding: 12px 28px; font-size: 16px; font-weight: 800;
+  cursor: pointer; }
 </style>

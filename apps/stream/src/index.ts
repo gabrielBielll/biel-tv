@@ -3,6 +3,7 @@ import type { Context } from 'hono'
 import { SEGMENT_DURATION, SQL_EPG_OVERLAP, type EpgRowWithMedia } from '@bieltv/db'
 import { buildLivePlaylist } from './playlist'
 import { admin } from './admin'
+import { votaton } from './votaton'
 import { reconcileAndRepair, runScheduler } from './scheduler'
 import { dispatchSeTemFila } from './fabrica'
 import { planejaEditorial } from './editorial'
@@ -19,6 +20,8 @@ type Bindings = {
 const app = new Hono<{ Bindings: Bindings }>()
 
 app.route('/admin', admin)
+// Votaton (fase 10c): público de propósito — é a experiência do telespectador
+app.route('/votaton', votaton)
 
 // Lista pública de canais (pro front montar o seletor)
 app.get('/channels', async (c) => {

@@ -24,6 +24,7 @@ export default defineConfig({
       '/media': worker,
       // barra no fim: pega a API (/admin/jobs…) sem engolir a página /admin.html
       '/admin/': worker,
+      '/votaton': worker,
       '/health': worker,
     },
   },

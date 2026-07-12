@@ -18,6 +18,7 @@
 | **11a — Upload em lote/pasta** | Múltiplos arquivos ou pasta inteira no admin; série+episódio deduzidos ("pwr rangers/001.mp4" → `ep_pwr_rangers_e01`); envio sequencial pra fila | 2026-07-12 | e2e Playwright (pasta real → 3 jobs na fila) |
 | **10b.1 — Exclusão de série inteira** | Ação `excluir_serie` no chat do Diretor (uma ordem tira todos os episódios de uma série agrupada); endpoint pra agrupar mídia numa série retroativamente + editor no catálogo; `cancelar_exclusao` resolve diretriz de série OU exclusões individuais dos episódios (o LLM às vezes enumera em vez de usar a ação de série — o cancelamento cobre os dois formatos) | 2026-07-12 | 16/16 (`pnpm verify:diretor`) + smoke test real em produção (5 comerciais do Power Rangers, agrupados como série `pwr_rangers`, excluídos e restaurados) |
 | **10a — Diretor editorial noturno** | O cron diário (e o botão "🌙 decidir a noite" no Modo God) chama o Gemini com a identidade do canal, as séries disponíveis e o histórico recente; ele decide se hoje tem maratona e de quê — validação 100% determinística (série real, janela 18h–madrugada de 1–4h, sem sobrepor, sem repetir a recente), materializada como evento de SÉRIE (episódios diferentes em sequência, migration 0010). Fecha o ciclo do sonho: a promo tipo "evento" da série (fase 12) roda nos intervalos SÓ na janela de promoção e some quando a maratona começa ou é cancelada. Fluxo guiado de exclusão + botão "reajustar a grade" fora do Modo God entregues junto | 2026-07-12 | 10/10 (`pnpm verify:editorial`, LLM real) + regressão canais 18/18, promessas 10/10, diretor 16/16 |
+| **10c — Votaton (o modo telespectador)** | Na página da TV: "Votação do canal" — o espectador vota na maratona que quer, a apuração AO VIVO simula outros telespectadores (teatro determinístico, sem LLM), o desfecho nasce decidido com recompensa variável + pity timer (derrotas seguidas garantem a próxima vitória), e o resultado vira maratona REAL na grade (vencendo o usuário OU "a torcida" — a ilusão nunca quebra). Vitória = celebração em tela cheia + selo "PEDIDO DOS TELESPECTADORES"; cooldown de 4h entre rodadas. Público de propósito (sem token) | 2026-07-12 | 14/14 (`pnpm verify:votaton`) + web 13/13 + canais 18/18 + smoke em produção |
 | **Progresso da transcodificação na fila (%)** | Pedido do Gabriel no mesmo dia, entregue no mesmo dia: o ffmpeg emite `-progress`, o pipeline converte em % do job (normalização 0–90, segmentação 92, cues 94, upload 94–99), a fábrica repassa pro Worker a cada 5s e o painel mostra "processando N%" com mini-barra. Claim zera, done fecha em 100 | 2026-07-12 | transcode local real (5%→89% fluindo) + 12/12 (`verify:admin`) |
 | **11b — Uploads persistentes/retomáveis + deleção definitiva** | Sessão no D1 ANTES do 1º byte (lote inteiro reservado antes de transmitir); multipart pro R2 em partes fixas com timeout/retry/backoff e cancelamento por item; painel lista uploads interrompidos pós-reload e retoma só as partes ausentes ao reanexar (fingerprint: caminho relativo+nome+tamanho+mtime); `complete` idempotente (repetir nunca duplica job). Zona de perigo: deleção física exige disabled + confirmação digitada `EXCLUIR <id>` + fora da janela do player; apaga só o prefixo exato no R2 e replaneja os canais | 2026-07-12 | 25/25 (`pnpm verify:uploads`, com retomada real no Chromium) + 12/12 (`verify:admin` já no fluxo novo) + smoke em produção (uploads de 1 e 3 partes processados + deleção com todas as recusas) |
 
@@ -62,24 +63,18 @@ Pendência levada pra fase 10: regras da `channel_master_grid` (blocos fixos por
 dia/horário) entram junto com o planejamento editorial — hoje o agendador usa
 rotação + pods; as regras fixas fazem mais sentido quando o Diretor IA as gerar.
 
-### Fase 10 — Diretor IA (Gemini) — 10a + 10b + 10b.1 ✅ FEITAS; falta só o 10c
-**Objetivo:** cada canal parecer ter o diretor de programação do canal original.
-**Spec completa:** [features/diretor-ia.md](features/diretor-ia.md).
-**Feito:** chat do Modo God (exclusões, maratonas, cancelamentos) + exclusão de
-série + **planejamento editorial noturno** (cron às 03:00 SP e botão "🌙 decidir
-a noite"): o Gemini decide maratonas seguindo a identidade do canal, com
-validação determinística e maratona de SÉRIE de verdade (episódios alternados).
-O cenário-norte dos Padrinhos Mágicos está funcional de ponta a ponta — falta
-só o Gabriel subir os episódios e a promo da maratona.
-
-**Falta:**
-- **10c — Votaton**: pedidos de programação SEM garantia no front da TV (não no
-  admin), com votação simulada, pity timer e celebração da conquista —
-  recompensa variável de propósito. Zero código ainda; só o chat direto
-  (Modo God) existe.
-- Refinamento futuro do 10a: blocos fixos semanais (`channel_master_grid`) e
-  promos `bloco_horario` destravando quando o bloco existir; "programação
-  guiada por promo" (etapa 3 da fase 12).
+### ~~Fase 10~~ ✅ COMPLETA em 2026-07-12 — Diretor IA + Votaton
+**Spec:** [features/diretor-ia.md](features/diretor-ia.md). Entregues: 10a
+(editorial noturno), 10b (chat Modo God), 10b.1 (exclusão de série) e 10c
+(Votaton). O canal decide a própria noite, cumpre o que promete, e o
+telespectador pede programação sem garantia — com conquista celebrada.
+**Pré-requisito operacional do Votaton:** o canal precisa de ≥2 séries
+agrupadas (≥2 episódios cada) pra "corrida" ter adversários — hoje o Jetix
+tem só a `pucca`; agrupar Power Rangers/Hey Arnold no catálogo abre a urna.
+**Refinamentos futuros (sem urgência):** blocos fixos semanais
+(`channel_master_grid`) destravando promos `bloco_horario`; "programação
+guiada por promo" (etapa 3 da fase 12); Modo God ajustar probabilidade do
+votaton (previsto na spec).
 
 ### Fase 11 — Admin v2 (ingestão inteligente) — 11a (lote/pasta) e 11b (retomáveis + deleção) ✅ FEITAS; falta o resto
 **Objetivo:** upar qualquer coisa e o sistema entender sozinho.
