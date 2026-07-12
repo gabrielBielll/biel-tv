@@ -812,7 +812,14 @@ onBeforeUnmount(() => clearInterval(poll))
     </section>
 
     <section class="card">
-      <h2>Fila de processamento</h2>
+      <div class="fila-head">
+        <h2>Fila de processamento</h2>
+        <button
+          class="ghost"
+          title="o diretor apaga a grade futura e remonta do zero (o bloco no ar é preservado) — use depois de excluir/desativar vídeos"
+          @click="replanejar"
+        >🔄 diretor: reajustar a grade</button>
+      </div>
       <p v-if="jobs.length === 0" class="dim">nenhum job ainda</p>
       <div v-for="j in jobs" :key="j.id" class="job-row">
         <span class="mono">{{ j.id }}</span>
@@ -888,27 +895,39 @@ onBeforeUnmount(() => clearInterval(poll))
           <span class="chip" :class="m.status === 'ready' ? 'st-done' : 'st-error'">{{ m.status }}</span>
           <button class="ghost" @click="toggle(m)">{{ m.status === 'ready' ? 'desativar' : 'ativar' }}</button>
           <button
-            v-if="m.status === 'disabled'"
             class="ghost perigo"
             title="apaga os arquivos e todos os registros — não tem volta"
             @click="abreDel(m)"
           >🗑 excluir de vez</button>
         </div>
         <div v-if="del && del.id === m.id" class="del-zone">
-          <p class="err small">
-            Isto apaga os segmentos do R2 e todos os registros desta mídia. <b>Não tem volta.</b>
-          </p>
-          <label class="check small dim">
-            <input type="checkbox" v-model="del.entendo" /> entendo que a ação é irreversível
-          </label>
-          <div class="row">
-            <input v-model="del.texto" :placeholder="`digite EXCLUIR ${m.id}`" spellcheck="false" />
-            <button class="primary perigo-btn" :disabled="!del.entendo || del.busy" @click="confirmaDel">
-              {{ del.busy ? 'apagando…' : 'apagar de vez' }}
-            </button>
-            <button class="ghost" @click="del = null">voltar</button>
-          </div>
-          <p v-if="del.erro" class="err small">{{ del.erro }}</p>
+          <template v-if="m.status === 'ready'">
+            <p class="small">
+              <b>1º passo:</b> tirar do ar — o diretor remove os blocos futuros e reajusta a
+              grade dos canais na hora (nada quebra pra quem está assistindo).
+            </p>
+            <div class="row">
+              <button class="primary" @click="toggle(m)">tirar do ar e ajustar a grade</button>
+              <button class="ghost" @click="del = null">voltar</button>
+            </div>
+          </template>
+          <template v-else>
+            <p class="err small">
+              Isto apaga os segmentos do R2 e todos os registros desta mídia. <b>Não tem volta.</b>
+              Se ela esteve no ar há instantes, aguarde ~5 min (janela do player).
+            </p>
+            <label class="check small dim">
+              <input type="checkbox" v-model="del.entendo" /> entendo que a ação é irreversível
+            </label>
+            <div class="row">
+              <input v-model="del.texto" :placeholder="`digite EXCLUIR ${m.id}`" spellcheck="false" />
+              <button class="primary perigo-btn" :disabled="!del.entendo || del.busy" @click="confirmaDel">
+                {{ del.busy ? 'apagando…' : 'apagar de vez' }}
+              </button>
+              <button class="ghost" @click="del = null">voltar</button>
+            </div>
+            <p v-if="del.erro" class="err small">{{ del.erro }}</p>
+          </template>
         </div>
       </template>
     </section>
@@ -1056,6 +1075,10 @@ button.ghost:hover { color: var(--text); }
 .lote-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .lote-row select { width: auto; padding: 5px 6px; font-size: 12px; }
 .lote-titulo { flex: 1; padding: 5px 8px; font-size: 13px; }
+
+.fila-head { display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 12px; }
+.fila-head h2 { margin-bottom: 0; }
 
 .promessa { border-bottom: 1px solid var(--line); padding: 8px 0; display: flex;
   flex-direction: column; gap: 6px; }
