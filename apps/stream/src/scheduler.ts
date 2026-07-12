@@ -199,29 +199,41 @@ export async function scheduleChannel(
   // acabarem antes do alvo, o intervalo fica mais curto (melhor que repetir).
   // Também evita emendar o último comercial do intervalo anterior no primeiro
   // deste, quando há alternativa.
+  // Ritmo de TV: intervalo só depois de um MÍNIMO de conteúdo desde o último
+  // (episódios cheios de tela preta geram cue points a cada ~2min — sem este
+  // respiro, a grade vira mais comercial que programa). E o comercial
+  // escolhido precisa CABER no alvo: um de 200s não entra num intervalo de
+  // 120s se houver alternativa — sem nenhuma que caiba, o pod fica só com o
+  // mais curto disponível (nunca estoura empilhando).
+  const MIN_ENTRE_PODS = 300
+  let ultimoPodFim = -Infinity
   let peIdx = 0
   const breakPod = () => {
+    if (t - ultimoPodFim < MIN_ENTRE_PODS) return
     const alvo = chan.break_target_seg ?? 120
+    // tolerância de 25%: estourar um pouco o alvo é ritmo normal de TV
+    // (2×70s num alvo de 120 ✓); o que não pode é UM comercial de 200s
+    // entrar sozinho num intervalo de 120 tendo alternativa que caiba
+    const folga = Math.ceil(alvo * 0.25)
     const usados = new Set<string>()
     let sum = 0
-    while (adPool.length > 0 && sum < alvo && usados.size < adPool.length) {
-      let pick: MediaRow | null = null
-      for (let k = 0; k < adPool.length; k++) {
-        const cand = adPool[(ai + k) % adPool.length]
-        if (usados.has(cand.id)) continue
-        if (usados.size === 0 && cand.id === lastAd && adPool.length > 1) continue
-        pick = cand
-        ai += k + 1
-        break
-      }
-      if (!pick) break
+    for (;;) {
+      const restante = alvo - sum
+      const cands = adPool.filter((a) =>
+        !usados.has(a.id) && !(usados.size === 0 && a.id === lastAd && adPool.length > 1))
+      if (cands.length === 0 || restante <= 0) break
+      const cabem = cands.filter((a) => a.duracao_seg <= restante + folga)
+      let pick: MediaRow
+      if (cabem.length > 0) pick = cabem[ai++ % cabem.length]
+      else if (sum === 0) pick = cands.reduce((a, b) => (a.duracao_seg <= b.duracao_seg ? a : b))
+      else break
       push(pick.id, t, t + pick.duracao_seg, 0)
       t += pick.duracao_seg
       sum += pick.duracao_seg
       usados.add(pick.id)
       lastAd = pick.id
     }
-    // janela de promoção: enquanto a maratona não começou, cada intervalo
+    // janela de promoção: enquanto a maratona não começou, o intervalo
     // fecha com UMA promo do evento (rodízio entre as elegíveis) — é assim
     // que você fica sabendo durante a semana que sábado tem maratona
     const eleg = promosEvento.filter((p) => t < p.ate)
@@ -230,9 +242,11 @@ export async function scheduleChannel(
       if (pr && !usados.has(pr.id)) {
         push(pr.id, t, t + pr.duracao_seg, 0)
         t += pr.duracao_seg
+        sum += pr.duracao_seg
         lastAd = pr.id
       }
     }
+    if (sum > 0) ultimoPodFim = t
   }
 
   // agenda um conteúdo com seus breaks nos cue points (pods do MEIO do
