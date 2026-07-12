@@ -1,6 +1,10 @@
 # Arquitetura da Biel TV
 
 > Onde estamos (2026-07-12). O que cada peça faz e por quê.
+> Pegadinhas conhecidas: [GOTCHAS.md](GOTCHAS.md). Roadmap: [ROADMAP.md](ROADMAP.md).
+
+**No ar:** https://biel-tv.pages.dev (site) · https://biel-tv-stream.biel-cesa95.workers.dev
+(API) · https://github.com/gabrielBielll/biel-tv (repo, privado).
 
 ## A ideia central
 
@@ -20,32 +24,48 @@ mídia cobre cada slot de 10s do tempo real, segundo a grade (`epg_virtual`).
         Diretor (scheduler) escreve a grade em epg_virtual
 ```
 
-Dois cérebros, um contrato:
+Três cérebros, um contrato:
 - **Operador** (`apps/stream`, Worker): burro, rápido, só lê `epg_virtual`. Nunca decide nada.
-- **Diretor** (scheduler; hoje `scripts/seed-epg.mjs`, futuro cron + IA): lento, esperto,
-  só escreve `epg_virtual`. Toda inteligência de programação mora aqui.
+- **Diretor determinístico** (`apps/stream/src/scheduler.ts`, cron diário + sob demanda):
+  esperto mas sem IA — rotação, pods de intervalo, respeita diretrizes/eventos, só
+  escreve `epg_virtual`. Mantém a grade sozinho mesmo sem nenhum LLM.
+- **Diretor IA** (`apps/stream/src/diretor.ts`, chat do Modo God): conversa em
+  português, decide via Gemini→DeepSeek, mas **nunca** escreve SQL — emite ações
+  tipadas que o código valida e executa (`directives`/`channel_events`), e quem de
+  fato altera a grade continua sendo o Diretor determinístico. Falta o cron
+  editorial automático (fase 10a) e o Votaton (10c) — ver [ROADMAP.md](ROADMAP.md).
 
 ## Peças
 
 | Peça | O quê | Onde |
 |---|---|---|
-| `apps/stream` | Worker Hono: `/live/:canal` (m3u8), `/epg/:canal`, `/media/*` (R2), `/health`, `/admin/*` (API do painel), cron stub do Diretor | Cloudflare Workers (hoje: wrangler dev local) |
-| `apps/web` | Vue 3 + hls.js: player, AGORA/INTERVALO/A SEGUIR, grade; `/admin.html`: upload + fila + catálogo | Cloudflare Pages (hoje: vite dev) |
-| `packages/db` | Migrations SQL + tipos/SQL compartilhados | D1 (SQLite) |
+| `apps/stream` | Worker Hono: `/live/:canal`, `/epg/:canal`, `/channels`, `/media/*`, `/health`, `/admin/*` (API do painel + Diretor IA), cron diário (reconciliação + agendador) | Cloudflare Workers (produção) |
+| `apps/stream/src/scheduler.ts` | Diretor determinístico: grade de 48h por canal, rotação por `last_played_at`, pods de intervalo, respeita diretrizes/eventos ativos, reconciliação R2↔D1 | idem |
+| `apps/stream/src/diretor.ts` | Diretor IA: chat do Modo God (Gemini→DeepSeek→fallback), ações `excluir_media`/`excluir_serie`/`maratona`/`cancelar_exclusao`/`replan` | idem |
+| `apps/web` | Vue 3 + hls.js: player multi-canal, AGORA/INTERVALO/A SEGUIR, grade; `/admin.html`: upload (individual/lote/pasta), fila, catálogo, Modo God | Cloudflare Pages (produção) |
+| `packages/db` | Migrations SQL + tipos/SQL compartilhados | D1 (SQLite, produção + simulado local) |
 | `packages/pipeline` | CLI: probe → normaliza → segmenta → blackdetect → upload → registra (`--target local\|remote`) | roda onde tiver ffmpeg |
-| `scripts/factory-local.mjs` | Fábrica: drena a fila `ingest_jobs` via API `/admin`, roda o pipeline, re-gera a grade | EC2 hoje; GitHub Actions no futuro |
-| `scripts/seed-epg.mjs` | Montador de grade determinístico (embrião do Diretor) | idem |
+| `scripts/factory-local.mjs` | Fábrica: drena `ingest_jobs` via `/admin`, roda o pipeline, re-gera a grade. **Processo manual — ver risco operacional em [GOTCHAS.md](GOTCHAS.md)** | EC2 hoje (`FACTORY_TARGET=remote` p/ produção); GitHub Actions na fase 8 |
+| `scripts/seed-epg.mjs` | Atalho fino: só chama `POST /admin/schedule/run` no Worker | idem |
+| `scripts/_lib.mjs` | `fetchRetry()` compartilhado pelos scripts de verificação | dev |
 
 ## Tabelas (D1)
 
 - `media_items` — catálogo: tipo, duração, `segment_count`, `base_url` ('' = mesma origem),
-  `path_prefix`, metadata JSON, status (`ready`/`disabled`/`ingesting`).
+  `path_prefix`, metadata JSON (inclui `series_id` opcional), status (`ready`/`disabled`/`ingesting`).
 - `media_cue_points` — onde PODE haver break (blackdetect ou manual), múltiplos de 10s.
+- `media_channels` — a quais canais cada mídia pertence (N:N).
+- `channels` — canais nostálgicos (Jetix, Cartoon Network, Disney Channel…), com
+  `identidade` (prompt editorial, editável no Modo God) e `break_target_seg`.
 - `epg_virtual` — a grade. Linha = (canal, media_id, start, end, `segment_index_start`).
   Comercial no meio de episódio = 3 linhas (parte 1, comercial, parte 2 com salto de índice).
-- `channel_master_grid` — regras fixas por canal/horário (insumo do Diretor; ainda vazia).
-- `ingest_jobs` — fila do admin (queued → processing → done/error).
-- `config` — chave-valor.
+- `directives` — ordens do Diretor IA com vigência: `excluir_media`/`excluir_serie`
+  (payload `{media_id}` ou `{series_id}`), status `ativa`/`cancelada`.
+- `channel_events` — maratonas agendadas (`media_id`, `start_at`, `end_at`); status
+  `agendado`/`cancelado`. Um evento ativo **sempre vence** uma diretriz de exclusão.
+- `channel_master_grid` — regras fixas por canal/horário (insumo da fase 10a; ainda vazia).
+- `ingest_jobs` — fila do admin (queued → processing → done/error), com `canais` e `series_id`.
+- `config` — chave-valor (inclui a flag `god_mode`).
 
 ## Regras de ouro (invariantes)
 
@@ -62,6 +82,15 @@ Dois cérebros, um contrato:
 4. **Grade é append-only em produção**: re-gerar nunca toca no bloco que está no ar.
 5. **Janela**: 4 slots atrás + atual + 1 futuro (segmentos futuros já existem).
    Delay percebido ~15s (decisão do Gabriel, 2026-07-12).
+6. **LLM decide, código calcula.** O Diretor IA nunca grava na `epg_virtual`
+   diretamente — emite ações tipadas em JSON garantido (`responseSchema`/
+   `response_format`), o código valida contra o catálogo real e só então
+   executa. Fallback determinístico sempre disponível: a TV nunca depende do
+   LLM pra continuar no ar.
+7. **Evento explícito vence regra geral.** Uma maratona agendada (`channel_events`)
+   continua escalando sua mídia mesmo que ela esteja sob uma diretriz de
+   exclusão ativa — uma ordem específica do chat pesa mais que uma exclusão
+   genérica. Decisão de design, não bug (documentado em GOTCHAS.md).
 
 ## Decisões tomadas (e porquês)
 
@@ -73,15 +102,30 @@ Dois cérebros, um contrato:
 | Fábrica de transcodificação = GitHub Actions | ffmpeg não roda em Worker; EC2 é cara e vira só dev; GH free = 2000 min/mês, runner 2-core. Worker pode disparar via `repository_dispatch`. |
 | Infra provisionada via wrangler (sem Terraform) | wrangler cria/deploya D1, R2, Worker, secrets; `wrangler.toml` versionado = infra as code. Falta só o API Token do Gabriel. |
 | MVP com 1 conta R2 | Custom domain de bucket exige a zona DNS na MESMA conta (free não tem zona de subdomínio) → 3 contas = 3 domínios ou mini-Worker por conta. Shard depois. `r2.dev` é rate-limited: nunca usar p/ vídeo. |
-| Upload do admin bufferizado no Worker | MVP local. Em produção: multipart direto no R2 via URL pré-assinada (limite de body do Worker). |
+| Upload do admin bufferizado no Worker | MVP local. Em produção: multipart direto no R2 via URL pré-assinada (limite de body do Worker) — ainda não feito, ver fase 11. |
+| LLM do Diretor: Gemini 3.5 Flash → DeepSeek v4-flash | Free tier do Gemini ⇒ custo zero; DeepSeek como fallback de cota/erro (créditos do Gabriel). `responseSchema`/`response_format` garantem JSON válido nos dois. |
+| Cancelamento robusto a formato, não o prompt perfeito | O LLM às vezes enumera `excluir_media` em vez de emitir um `excluir_serie` só; em vez de tentar 100% de aderência via prompt, o cancelamento entende os dois formatos (ver GOTCHAS.md). |
 
-## Ambiente de dev (EC2 atual)
+## Ambiente
 
+**Produção:** Worker + Pages + D1 + R2 na Cloudflare (conta `biel-cesa95`), tudo
+provisionado via `wrangler` (sem Terraform — o `wrangler.toml` versionado já é a
+infra as code). Fábrica de transcodificação: processo manual nesta EC2
+apontado pra produção (`FACTORY_TARGET=remote`) — **risco operacional #1**,
+ver [GOTCHAS.md](GOTCHAS.md). Deploy: `docs/../README.md` tem os comandos exatos.
+
+**Dev local (EC2 atual):**
 - `pnpm dev` → Worker em `127.0.0.1:8787` · vite em `100.76.123.18:5173` (IP Tailscale;
-  acesso direto do navegador do Gabriel, sem túnel) · `pnpm factory` → fábrica de olho na fila.
-- Admin: `/admin.html`, token dev `bieltv-dev-2026` (produção: `wrangler secret put ADMIN_TOKEN`).
-- Verificações e2e: `pnpm verify:stream` (13 checks), `verify:pipeline` (11), `verify:web` (11,
-  Chromium headless assiste TV), `verify:admin` (11, Chromium usa o painel de verdade).
-- ffmpeg estático (BtbN) em `~/.local/bin`. Debug de tempo: `?at=<unix>` (`ALLOW_TIME_TRAVEL`).
-- Git: identidade local `gabriell b <gabrielbarbosa.ff@gmail.com>`; push exige `gh auth login`
-  dessa conta (gh atual: jmmasterdev).
+  acesso direto do navegador do Gabriel, sem túnel) · `pnpm factory` → fábrica local
+  (aponta pro Worker local — **não** processa a fila de produção; ver GOTCHAS.md).
+- Admin: `/admin.html`, token dev `bieltv-dev-2026` (produção: secret real, gerado
+  no deploy — token fica só no scratchpad da sessão que fez o deploy).
+- Verificações e2e: `pnpm verify:stream` (13), `verify:pipeline` (11), `verify:web` (13,
+  Chromium headless assiste TV), `verify:admin` (11-12, Chromium usa o painel de
+  verdade), `verify:canais` (18, pureza de canal + reconciliação real com R2),
+  `verify:diretor` (16, chamadas REAIS ao LLM — exclusão/série/maratona/cancelamento).
+- ffmpeg estático (BtbN) em `~/.local/bin`. Debug de tempo: `?at=<unix>` (`ALLOW_TIME_TRAVEL`,
+  `"0"` em produção).
+- Git: identidade local `gabriell b <gabrielbarbosa.ff@gmail.com>`; push desta pasta
+  autentica como `gabrielBielll` (`credential.https://github.com.username` local —
+  outros repos seguem o global, `jmmasterdev`).
