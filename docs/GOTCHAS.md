@@ -48,8 +48,22 @@ entra na run pendente (nem na ativa). Pra rodar código novo: cancele as runs
 velhas e dispare de novo (`gh run cancel` + `gh workflow run fabrica`).
 
 **Push de `.github/workflows/` exige escopo `workflow` no token do gh.** O
-login padrão do gh não inclui; `gh auth refresh -h github.com -s workflow`
-(device flow — precisa do Gabriel no navegador).
+login padrão do gh não inclui; use `gh auth login --web --scopes workflow`
+(device flow — precisa do Gabriel no navegador) já com o escopo junto.
+
+**O login do gh é da MÁQUINA, não do projeto — e o Gabriel usa várias contas.**
+Um `gh auth login` dele pra outro projeto pode SUBSTITUIR a conta
+`gabrielBielll` (aconteceu em 2026-07-12: entrou gabrielfranca95/menu95 e a
+gabrielBielll saiu). Sintomas em cascata: `git push` deste repo falha com
+"could not read Password" E o `GH_DISPATCH_TOKEN` do Worker morre junto (o
+token antigo é revogado) — uploads param de acordar a fábrica em silêncio
+(o cron diário e o botão manual da aba Actions seguram as pontas). Conserto:
+`gh auth login --web --scopes workflow` na conta gabrielBielll (as contas
+CONVIVEM — o problema é substituir, não somar) e depois
+`gh auth token --user gabrielBielll | npx wrangler secret put GH_DISPATCH_TOKEN`
+em apps/stream. O vínculo por repositório
+(`credential.https://github.com.username=gabrielBielll`) sobrevive e acha a
+conta certa sozinho quando ela existe no gh.
 
 ## Infra & deploy
 
