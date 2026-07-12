@@ -72,6 +72,9 @@ robusto aos dois formatos que o LLM pode escolher. Ver tabela de fases concluíd
 
 ### Fase 11 — Admin v2 (ingestão inteligente) — 11a (lote/pasta) ✅ FEITA; falta o resto
 **Objetivo:** upar qualquer coisa e o sistema entender sozinho.
+**Urgente — upload persistente/retomável:** o fluxo atual perde o lote ao
+recarregar e pode ficar preso em `enviando` antes de criar o job. Diagnóstico,
+decisões e plano de testes em [features/uploads-resumiveis.md](features/uploads-resumiveis.md).
 **Entregáveis restantes:** classificação por LLM (nome sujo → título/série/episódio +
 confiança, hoje é heurística); fila `needs_review`; TMDB (título oficial, sinopse,
 **poster** → EPG rico); multipart presigned pro R2 (arquivos grandes sem passar
