@@ -100,9 +100,44 @@ async function refresh() {
     jobs.value = await (await api('/jobs')).json()
     media.value = await (await api('/media')).json()
     pendentes.value = await (await api('/uploads')).json()
+    promessas.value = await (await api('/promessas')).json()
   } catch {
     /* sem pânico em polling */
   }
+}
+
+// ── promessas de comerciais (fase 12) ───────────────────────────────────────
+const promessas = ref<any[]>([])
+const serieAlvo = ref<Record<string, string>>({})
+const TIPO_PROM: Record<string, string> = {
+  a_seguir: '“a seguir”', bloco_horario: 'horário fixo', evento: 'evento', generico: 'sem promessa',
+}
+const propostaDe = (p: any) => { try { return JSON.parse(p.proposta) } catch { return null } }
+const condicaoDe = (p: any) => { try { return JSON.parse(p.condicao) } catch { return null } }
+const tituloPromessa = (p: any) => { try { return JSON.parse(p.metadata).title ?? p.media_id } catch { return p.media_id } }
+const promPendentes = computed(() => promessas.value.filter((p) => p.status === 'pendente'))
+const promDecididas = computed(() => promessas.value.filter((p) => p.status === 'confirmada' || p.status === 'ignorar'))
+
+async function decidePromessa(p: any, status: string) {
+  let condicao
+  if (status === 'confirmada') {
+    const prop = propostaDe(p) ?? {}
+    condicao = {
+      tipo: prop.tipo ?? 'a_seguir',
+      series_id: (serieAlvo.value[p.media_id] ?? prop.series_id ?? '').trim() || null,
+      descricao: prop.descricao ?? '',
+    }
+  }
+  const res = await postJson(`/promessas/${p.media_id}/decidir`, { status, condicao })
+  const body = await res.json()
+  if (!res.ok) {
+    msg.value = `✖ ${body.error ?? res.status}`
+    return
+  }
+  msg.value = status === 'confirmada'
+    ? '✔ promessa confirmada — só toca quando a grade cumprir'
+    : status === 'generico' ? '✔ liberado pro rodízio normal' : '✔ fora do ar'
+  refresh()
 }
 
 const fetchPendentes = async () => {
@@ -791,6 +826,44 @@ onBeforeUnmount(() => clearInterval(poll))
         <span v-if="j.error" class="err small">{{ j.error }}</span>
       </div>
 
+      <template v-if="promPendentes.length || promDecididas.length">
+        <h2 class="mt">Promessas de comerciais</h2>
+        <p class="dim">
+          Comercial que promete programação ("a seguir…", horário) fica <b>fora do ar</b> até
+          você decidir. Confirmado, ele só toca quando a grade cumpre a promessa.
+        </p>
+        <div v-for="p in promPendentes" :key="p.media_id" class="promessa">
+          <div class="job-row">
+            <span class="mono">{{ p.media_id }}</span>
+            <span class="dim grow">{{ tituloPromessa(p) }}</span>
+            <span class="chip st-queued">{{ TIPO_PROM[propostaDe(p)?.tipo] ?? 'analisando…' }}</span>
+          </div>
+          <p class="dim small transcript">🎙 “{{ (p.transcript ?? '').slice(0, 220) }}{{ (p.transcript ?? '').length > 220 ? '…' : '' }}”</p>
+          <p v-if="propostaDe(p)?.descricao" class="small">🤖 {{ propostaDe(p).descricao }}</p>
+          <div class="row">
+            <input
+              v-if="propostaDe(p)?.tipo === 'a_seguir'"
+              v-model="serieAlvo[p.media_id]"
+              class="series-input"
+              :placeholder="propostaDe(p)?.series_id || 'série alvo (obrigatória)'"
+            />
+            <button class="primary" @click="decidePromessa(p, 'confirmada')">✔ confirmar</button>
+            <button class="ghost" @click="decidePromessa(p, 'generico')">é genérico</button>
+            <button class="ghost perigo" @click="decidePromessa(p, 'ignorar')">não usar</button>
+          </div>
+        </div>
+        <div v-for="p in promDecididas" :key="p.media_id" class="job-row">
+          <span class="mono">{{ p.media_id }}</span>
+          <span class="dim grow">{{ tituloPromessa(p) }}</span>
+          <span class="chip" :class="p.status === 'confirmada' ? 'st-done' : 'st-error'">
+            {{ p.status === 'confirmada'
+              ? `cumprindo: ${TIPO_PROM[condicaoDe(p)?.tipo]}${condicaoDe(p)?.series_id ? ' ' + condicaoDe(p).series_id : ''}`
+              : 'fora do ar' }}
+          </span>
+          <button class="ghost" @click="decidePromessa(p, 'pendente')">revisar</button>
+        </div>
+      </template>
+
       <h2 class="mt">Catálogo</h2>
       <template v-for="m in media" :key="m.id">
         <div class="job-row wrapy">
@@ -983,6 +1056,11 @@ button.ghost:hover { color: var(--text); }
 .lote-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .lote-row select { width: auto; padding: 5px 6px; font-size: 12px; }
 .lote-titulo { flex: 1; padding: 5px 8px; font-size: 13px; }
+
+.promessa { border-bottom: 1px solid var(--line); padding: 8px 0; display: flex;
+  flex-direction: column; gap: 6px; }
+.promessa .transcript { font-style: italic; margin: 0; }
+.promessa .row { align-items: center; }
 
 .perigo { color: #ff6b6b; border-color: rgba(255, 107, 107, 0.5); }
 .perigo:hover { color: #ff8f8f; }

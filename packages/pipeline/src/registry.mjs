@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 const esc = (s) => String(s).replaceAll("'", "''")
 
-export function buildRegisterSql({ id, tipo, paddedDur, segmentCount, baseUrl, metadata, cues, canais = [] }) {
+export function buildRegisterSql({ id, tipo, paddedDur, segmentCount, baseUrl, metadata, cues, canais = [], transcript = null }) {
   const lines = [
     `INSERT OR REPLACE INTO media_items
   (id, tipo, status, duracao_seg, segment_count, base_url, path_prefix, metadata)
@@ -21,6 +21,11 @@ VALUES
     lines.push(`DELETE FROM media_channels WHERE media_id = '${esc(id)}';`)
     const values = canais.map((c) => `('${esc(id)}','${esc(c)}')`).join(',')
     lines.push(`INSERT OR IGNORE INTO media_channels (media_id, channel_id) VALUES ${values};`)
+  }
+  if (transcript) {
+    // preserva a decisão do operador em re-ingestão: só o texto é atualizado
+    lines.push(`INSERT INTO media_promises (media_id, transcript) VALUES ('${esc(id)}','${esc(transcript.slice(0, 8000))}')
+ON CONFLICT(media_id) DO UPDATE SET transcript = excluded.transcript, updated_at = unixepoch();`)
   }
   return lines.join('\n\n')
 }

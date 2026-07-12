@@ -97,9 +97,46 @@ export async function scheduleChannel(
      ORDER BY start_at`,
   ).bind(canal, agora).all<{ media_id: string; start_at: number; end_at: number }>()
 
+  // Promessas (fase 12): comercial/vinheta que promete programação só toca
+  // quando a grade cumpre. Regras aplicadas ao pool:
+  //  - pendente com promessa detectada → FORA do rodízio (aguarda revisão);
+  //  - ignorar → fora;
+  //  - confirmada a_seguir → pool próprio: só no intervalo imediatamente
+  //    antes de um bloco da série alvo (fecha o pod, no lugar da vinheta);
+  //  - confirmada bloco_horario/evento → retida até a fase 10a garantir blocos;
+  //  - generico / sem registro → rodízio normal de sempre.
+  const { results: promRows } = await env.DB.prepare(
+    `SELECT media_id, status, proposta, condicao FROM media_promises`,
+  ).all<{ media_id: string; status: string; proposta: string | null; condicao: string | null }>()
+  const foraDoRodizio = new Set<string>()
+  const aSeguirDe = new Map<string, string[]>() // series_id alvo → promo ids
+  for (const p of promRows) {
+    try {
+      if (p.status === 'ignorar') { foraDoRodizio.add(p.media_id); continue }
+      if (p.status === 'pendente') {
+        const prop = p.proposta ? JSON.parse(p.proposta) : null
+        // sem proposta ainda (transcrição recém-chegada) ou promessa detectada:
+        // segura até alguém decidir; proposta "generico" nunca chega aqui
+        // (extração já muda o status), mas o filtro cobre por segurança.
+        if (!prop || prop.tipo !== 'generico') foraDoRodizio.add(p.media_id)
+        continue
+      }
+      if (p.status === 'confirmada' && p.condicao) {
+        const cond = JSON.parse(p.condicao)
+        foraDoRodizio.add(p.media_id) // sai do rodízio cego…
+        if (cond.tipo === 'a_seguir' && cond.series_id) {
+          const lista = aSeguirDe.get(cond.series_id) ?? []
+          lista.push(p.media_id)
+          aSeguirDe.set(cond.series_id, lista) // …e entra no pool condicional
+        }
+      }
+    } catch { /* json corrompido: trata como retida (não promete no escuro) */ }
+  }
+
   const contents = media.filter((m) => m.tipo === 'episodio' || m.tipo === 'filme')
-  const ads = media.filter((m) => m.tipo === 'comercial')
-  const vins = media.filter((m) => m.tipo === 'vinheta')
+  const ads = media.filter((m) => m.tipo === 'comercial' && !foraDoRodizio.has(m.id))
+  const vins = media.filter((m) => m.tipo === 'vinheta' && !foraDoRodizio.has(m.id))
+  const porId = new Map(mediaTodas.map((m) => [m.id, m]))
   if (contents.length === 0) return { canal, added: 0, skipped: 'sem conteúdo' }
 
   const { results: cueRows } = await env.DB.prepare(
@@ -177,8 +214,9 @@ export async function scheduleChannel(
     }
   }
 
-  // agenda um conteúdo com seus breaks nos cue points
-  const agendaConteudo = (c: MediaRow, comPodFinal: boolean) => {
+  // agenda um conteúdo com seus breaks nos cue points (pods do MEIO do
+  // programa nunca levam "a seguir" — o próximo bloco é a continuação dele)
+  const agendaConteudo = (c: MediaRow) => {
     playedAt[c.id] = t
     const cues = (cuesOf[c.id] ?? []).filter((x) => x > 0 && x < c.duracao_seg)
     let pos = 0
@@ -190,27 +228,47 @@ export async function scheduleChannel(
     }
     push(c.id, t, t + (c.duracao_seg - pos), pos / SEGMENT_DURATION)
     t += c.duracao_seg - pos
-    if (comPodFinal) breakPod()
   }
+
+  // O intervalo ENTRE programas é montado já sabendo quem vem a seguir:
+  // fecha com a promo "a seguir <série>" confirmada quando existir (colada
+  // no programa prometido, como TV de verdade). Quando fecha com a promo,
+  // ela faz o papel da vinheta de abertura.
+  let asIdx = 0
+  const podEntrePrograma = (proxima: MediaRow): boolean => {
+    breakPod()
+    const promoIds = proxima.series_id ? aSeguirDe.get(proxima.series_id) ?? [] : []
+    const promo = promoIds.length > 0 ? porId.get(promoIds[asIdx++ % promoIds.length]) : undefined
+    if (!promo) return false
+    push(promo.id, t, t + promo.duracao_seg, 0)
+    t += promo.duracao_seg
+    return true
+  }
+
+  // canal recém-nascido não abre com intervalo; grade em extensão (append)
+  // abre com o pod entre-programas — o bloco anterior terminou num conteúdo
+  let primeiroBloco = (cov?.m ?? onAir?.e) == null
 
   while (t < target) {
     // maratona agendada cobrindo este instante? o evento manda na grade
     const ev = eventos.find((e) => t >= e.start_at - 300 && t < e.end_at)
-    if (ev) {
-      const m = mediaTodas.find((x) => x.id === ev.media_id && (x.tipo === 'episodio' || x.tipo === 'filme'))
-      if (m) {
-        agendaConteudo(m, t + m.duracao_seg < ev.end_at)
-        continue
-      }
-    }
+    const evMedia = ev
+      ? mediaTodas.find((x) => x.id === ev.media_id && (x.tipo === 'episodio' || x.tipo === 'filme'))
+      : undefined
+    const prox = evMedia ?? queue[qi % queue.length]
+    if (!evMedia) qi++
 
-    if (vins.length > 0) {
+    let fechouComASeguir = false
+    if (!primeiroBloco) fechouComASeguir = podEntrePrograma(prox)
+    primeiroBloco = false
+
+    // maratona emenda episódios sem vinheta; "a seguir" dispensa a abertura
+    if (!evMedia && !fechouComASeguir && vins.length > 0) {
       const v = vins[vi++ % vins.length]
       push(v.id, t, t + v.duracao_seg, 0)
       t += v.duracao_seg
     }
-    const c = queue[qi++ % queue.length]
-    agendaConteudo(c, true)
+    agendaConteudo(prox)
   }
 
   // grava em lotes (ids são slugs internos validados — interpolação segura)

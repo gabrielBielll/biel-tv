@@ -12,7 +12,7 @@ import { parseArgs } from 'node:util'
 import { existsSync, rmSync, mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { SEG, probe, normalize, segment, detectBlack } from './ffmpeg.mjs'
+import { SEG, FFMPEG, probe, normalize, segment, detectBlack } from './ffmpeg.mjs'
 import { snapCuePoints } from './cuepoints.mjs'
 import { buildRegisterSql, runD1 } from './registry.mjs'
 import { listSegments, uploadLocal, uploadRemote } from './upload.mjs'
@@ -34,6 +34,7 @@ const { values: opt, positionals } = parseArgs({
     'min-edge': { type: 'string', default: '60' },
     crf: { type: 'string', default: '23' },
     'no-cues': { type: 'boolean', default: false },
+    'no-transcript': { type: 'boolean', default: false },
     'keep-workdir': { type: 'boolean', default: false },
   },
 })
@@ -117,6 +118,30 @@ if (!opt['no-cues'] && opt.tipo !== 'comercial' && opt.tipo !== 'vinheta') {
 }
 progresso(94)
 
+// transcrição (fase 12): só comercial/vinheta — o texto falado é a fonte da
+// "promessa" ("a seguir...", "sábado às 20h") que o Worker extrai via LLM.
+// NUNCA bloqueia a ingestão: sem whisper/erro → segue sem transcript.
+let transcript = null
+if (!opt['no-transcript'] && (opt.tipo === 'comercial' || opt.tipo === 'vinheta')) {
+  try {
+    const { execFileSync } = await import('node:child_process')
+    const wav = join(workdir, 'audio16k.wav')
+    execFileSync(FFMPEG(), ['-y', '-hide_banner', '-loglevel', 'error', '-i', normalized,
+      '-vn', '-ac', '1', '-ar', '16000', wav], { stdio: ['ignore', 'ignore', 'inherit'] })
+    const out = execFileSync('python3', [join(ROOT, 'scripts/transcreve.py'), wav],
+      { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] })
+    transcript = out.trim() || null
+    console.log(transcript
+      ? `4.5/5 transcrição: "${transcript.slice(0, 90)}${transcript.length > 90 ? '…' : ''}"`
+      : '4.5/5 transcrição: (sem fala detectada)')
+  } catch (e) {
+    const code = e?.status
+    console.log(code === 3
+      ? '4.5/5 transcrição: pulada (faster-whisper não instalado aqui)'
+      : `4.5/5 transcrição: falhou (${String(e?.message ?? e).split('\n')[0].slice(0, 120)}) — seguindo sem`)
+  }
+}
+
 // 5/5 upload + registro
 const progress = (done, total) => {
   process.stdout.write(`\r5/5 upload ${opt.target}: ${done}/${total} segmentos`)
@@ -137,7 +162,7 @@ const metadata = {
   tags: opt.tags ? opt.tags.split(',').map((t) => t.trim()).filter(Boolean) : [],
 }
 runD1(ROOT, buildRegisterSql({
-  id: opt.id, tipo: opt.tipo, paddedDur, segmentCount: segCount, baseUrl, metadata, cues, canais,
+  id: opt.id, tipo: opt.tipo, paddedDur, segmentCount: segCount, baseUrl, metadata, cues, canais, transcript,
 }), { local: opt.target === 'local', label: `register-${opt.id}` })
 
 if (!opt['keep-workdir']) rmSync(normalized, { force: true })

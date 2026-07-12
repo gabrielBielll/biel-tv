@@ -4,6 +4,7 @@ import { runScheduler, scheduleChannel, reconcileAndRepair } from './scheduler'
 import { chatDiretor, estadoDiretor, type ChatMsg } from './diretor'
 import { uploads } from './uploads'
 import { dispatchFabrica } from './fabrica'
+import { extraiPromessa, salvaTranscript, type Proposta } from './promessas'
 
 // API do painel admin. Tudo aqui exige `Authorization: Bearer <ADMIN_TOKEN>`.
 // Upload oficial: sessões multipart retomáveis em ./uploads.ts (/admin/uploads).
@@ -16,6 +17,8 @@ type Bindings = {
   ALLOW_TIME_TRAVEL: string
   GH_DISPATCH_TOKEN?: string
   GH_REPO?: string
+  GEMINI_API_KEY?: string
+  DEEPSEEK_API_KEY?: string
 }
 
 export const admin = new Hono<{ Bindings: Bindings }>()
@@ -140,8 +143,81 @@ admin.post('/jobs/:id/done', async (c) => {
   if (!job) return c.json({ error: 'job não existe' }, 404)
   await c.env.DB.prepare('UPDATE ingest_jobs SET status = ?2, error = ?3, progress = ?4, updated_at = unixepoch() WHERE id = ?1')
     .bind(id, ok ? 'done' : 'error', error ?? null, ok ? 100 : 0).run()
-  if (ok) await c.env.MEDIA.delete(job.staging_key)
+  if (ok) {
+    await c.env.MEDIA.delete(job.staging_key)
+    // comercial/vinheta recém-ingerido com transcrição → o LLM propõe a
+    // promessa em background (fase 12); com promessa detectada, a peça fica
+    // fora do rodízio até o operador confirmar no painel
+    c.executionCtx.waitUntil(extraiPromessa(c.env, id))
+  }
   return c.json({ ok: true })
+})
+
+// ── promessas de comerciais (fase 12) ──────────────────────────────────────
+
+admin.get('/promessas', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT p.media_id, p.transcript, p.proposta, p.condicao, p.status, p.updated_at,
+            m.tipo, m.metadata, m.status media_status
+     FROM media_promises p JOIN media_items m ON m.id = p.media_id
+     ORDER BY CASE p.status WHEN 'pendente' THEN 0 ELSE 1 END, p.updated_at DESC`,
+  ).all()
+  return c.json(results)
+})
+
+// backfill / fábrica: grava a transcrição e já dispara a análise
+admin.post('/promessas/:id/transcript', async (c) => {
+  const { transcript } = await c.req.json<{ transcript?: string }>().catch(() => ({ transcript: '' }))
+  const id = c.req.param('id')
+  if (!transcript?.trim()) return c.json({ error: 'transcript vazio' }, 400)
+  const m = await c.env.DB.prepare('SELECT id FROM media_items WHERE id = ?1').bind(id).first()
+  if (!m) return c.json({ error: 'mídia não encontrada' }, 404)
+  await salvaTranscript(c.env, id, transcript)
+  await extraiPromessa(c.env, id)
+  return c.json({ ok: true })
+})
+
+admin.post('/promessas/:id/extrair', async (c) => {
+  await extraiPromessa(c.env, c.req.param('id'))
+  return c.json({ ok: true })
+})
+
+admin.post('/promessas/:id/decidir', async (c) => {
+  const b = await c.req.json<{ status?: string; condicao?: Proposta }>().catch(() => ({} as { status?: string; condicao?: Proposta }))
+  const id = c.req.param('id')
+  const status = String(b.status ?? '')
+  if (!['confirmada', 'generico', 'ignorar', 'pendente'].includes(status)) {
+    return c.json({ error: 'status inválido' }, 400)
+  }
+  let condicao: string | null = null
+  if (status === 'confirmada') {
+    const cd = b.condicao
+    if (!cd || !['a_seguir', 'bloco_horario', 'evento'].includes(cd.tipo)) {
+      return c.json({ error: 'confirmar exige a condição (tipo da promessa)' }, 400)
+    }
+    if (cd.tipo === 'a_seguir') {
+      // sem série alvo não há como cumprir — melhor "ignorar" que prometer no escuro
+      if (!cd.series_id || !SLUG.test(cd.series_id)) {
+        return c.json({ error: 'promessa "a seguir" precisa de uma série alvo válida' }, 400)
+      }
+      const existe = await c.env.DB.prepare(
+        `SELECT 1 FROM media_items WHERE json_extract(metadata,'$.series_id') = ?1 AND status = 'ready' LIMIT 1`,
+      ).bind(cd.series_id).first()
+      if (!existe) return c.json({ error: `nenhuma mídia pronta com series_id "${cd.series_id}"` }, 400)
+    }
+    condicao = JSON.stringify({ tipo: cd.tipo, series_id: cd.series_id ?? null, descricao: cd.descricao ?? '' })
+  }
+  const r = await c.env.DB.prepare(
+    `UPDATE media_promises SET status = ?2, condicao = ?3, updated_at = unixepoch() WHERE media_id = ?1`,
+  ).bind(id, status, condicao).run()
+  if ((r.meta.changes ?? 0) === 0) return c.json({ error: 'promessa não encontrada' }, 404)
+
+  // o pool de comerciais mudou — replaneja os canais da mídia
+  const { results: chs } = await c.env.DB.prepare(
+    'SELECT DISTINCT channel_id ch FROM media_channels WHERE media_id = ?1',
+  ).bind(id).all<{ ch: string }>()
+  for (const r2 of chs) await scheduleChannel(c.env, r2.ch, 48, true)
+  return c.json({ ok: true, canais_replanejados: chs.map((x) => x.ch) })
 })
 
 // ── catálogo ───────────────────────────────────────────────────────────────
