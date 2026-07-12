@@ -1,113 +1,117 @@
 # Feature: Diretor IA (fase 10)
 
-> Especificado em 2026-07-12. Estado: em desenho. Depende de: fase 9
-> (Diretor determinístico) — o Diretor IA é uma camada FINA por cima dele.
+> v2 — atualizado em 2026-07-12 com as decisões do Gabriel: LLM = **Gemini**
+> (free tier ⇒ custo zero), **canais nostálgicos** com identidade própria,
+> **chat com o Diretor** no admin, e resiliência a remoção de mídia.
+> Depende de: fase 9 (compilador determinístico + estrutura de canais).
 
-## O princípio que organiza tudo: o LLM decide, o código calcula
+## A visão: canais nostálgicos
 
-O LLM **nunca** escreve na `epg_virtual` diretamente. LLM é ótimo em decisão
-editorial ("sábado pede maratona", "esse comercial combina com esse horário")
-e ruim em aritmética de timestamps. Então a divisão é:
+A Biel TV não é um canal — é **vários**, cada um imitando um canal da infância:
 
-```
-contexto ──▶ LLM (1 chamada/dia) ──▶ PLANO editorial (JSON validado)
-                                          │
-                          compilador determinístico (fase 9)
-                                          │
-                              linhas exatas na epg_virtual
-                     (matemática de 10s, cue points, rodízio, promos)
-```
+- **Jetix** — só programação da era Jetix (desenhos, vinhetas e comerciais dela)
+- **Cartoon Network** — desenhos, comerciais e filmes da CN
+- **Disney Channel** — mesmo modelo
+- (outros conforme a nostalgia pedir)
 
-Se o LLM falhar, alucinar id, ou a API cair: o **fallback é o próprio montador
-determinístico**, que estende a grade sozinho. A TV nunca depende do LLM pra
-continuar no ar — o LLM só a deixa mais interessante.
+Uso pessoal: a graça é a experiência da TV linear da infância — ligar e "estar
+passando" — que streaming não reproduz. Logo, o trabalho do Diretor de cada
+canal é um só: **imitar a programação do canal original** — ritmo, blocos
+típicos, horários característicos, vinhetas da casa entre programas,
+comerciais da época nos intervalos.
 
-## Ciclo diário
+Estrutura:
 
-1. **Cron** no Worker (03:00 America/Sao_Paulo) — mesmo trigger da fase 9.
-2. **Coleta de contexto** (D1): resumo do catálogo (séries, episódios em ordem,
-   durações, tags, `last_played_at`), o que passou nas últimas 48h, dia da
-   semana + feriados BR + datas especiais (Halloween, Natal…), regras fixas da
-   `channel_master_grid`, diretrizes do dono (tabela `config`, ex.:
-   `diretriz_semana = "foca em Power Rangers"`), eventos agendados.
-3. **Chamada ao modelo** com **structured outputs** (`output_config.format`
-   com JSON schema) — a API garante JSON válido no schema; zero parsing frágil.
-4. **Validação dura em código**: todos os `media_id`/séries existem? blocos
-   cabem no dia? regras fixas respeitadas? campanhas satisfazíveis?
-   → inválido: 1 retry com a mensagem de erro; falhou de novo → fallback + log.
-5. **Compilação**: plano → linhas da `epg_virtual` (append-only, como hoje).
-6. **Visibilidade**: plano + tema do dia salvos na `config` → admin mostra
-   "grade de amanhã" (e o front pode exibir o tema, tipo "Sábado de Ação").
+- Tabela `channels`: id (`jetix`, `cartoon_network`, `disney_channel`), nome
+  de exibição, **`identidade`** (o prompt editorial: como aquele canal
+  programava — blocos, faixas horárias típicas, tom) e branding (cor/logo
+  pro front). Identidade é um campo editável no admin — eu escrevo a
+  primeira versão com base em referências históricas, Gabriel ajusta.
+- Mídia → canal: campo `canais` no metadata, definido no upload (o admin
+  ganha um seletor; a sugestão automática deduz pelo nome — "Jetix" no
+  arquivo → canal jetix).
+- O Diretor roda **por canal**, enxergando só o catálogo daquele canal.
+- O schema já suporta (`canal` em todas as tabelas de grade desde o dia 1).
 
-## Contrato de saída (rascunho do schema)
+## O princípio (inalterado): o LLM decide, o código calcula
 
-```jsonc
-{
-  "tema_do_dia": "Sábado nostalgia anos 2000",
-  "blocos": [
-    {
-      "inicio": "07:00",                    // compilador arredonda pra grade de 10s
-      "nome": "Manhã Animada",
-      "playlist": [                          // refs, nunca timestamps
-        { "tipo": "serie_sequencial", "series_id": "pucca", "episodios": 4 },
-        { "tipo": "media", "media_id": "flm_madagascar" }
-      ],
-      "breaks": { "duracao_alvo_seg": 120 }  // pods de ~2min nos cues/entre programas
-    }
-  ],
-  "eventos": [
-    { "tipo": "maratona", "series_id": "padrinhos_magicos",
-      "inicio": "22:00", "fim": "06:00" }
-  ],
-  "campanhas": [
-    { "media_id": "com_power_rangers", "min_execucoes": 5, "faixa": "18:00-22:00" }
-  ]
-}
-```
+O LLM nunca escreve na `epg_virtual`. Ele produz um **plano editorial** em
+JSON; validação de negócio e compilação em linhas exatas (matemática de 10s,
+cue points, rodízio, promos) são do código (fase 9). Qualquer falha do LLM →
+**fallback determinístico** estende a grade sozinho. A TV nunca sai do ar por
+causa de modelo.
 
-O compilador resolve refs → mídias concretas (rotação por `last_played_at`
-dentro do que o plano pede), fatia nos cue points, preenche breaks até a
-duração-alvo, aplica campanhas e valida promos condicionais (fase 12).
+## LLM: Gemini (decisão do Gabriel, 2026-07-12)
 
-## Modelo e custo
+Free tier da API do Gemini ⇒ custo zero. 1–2 chamadas/dia por canal + o chat
+cabem com folga nas cotas gratuitas.
 
-| Opção | Preço (in/out por MTok) | Custo estimado* | Quando |
-|---|---|---|---|
-| `claude-opus-4-8` (recomendado) | $5 / $25 | ~US$ 0,10/dia ≈ US$ 3/mês | decisão editorial melhor; padrão |
-| `claude-haiku-4-5` | $1 / $5 | ~US$ 0,02/dia ≈ US$ 0,60/mês | knob de economia máxima |
+- **Chamada**: REST puro (`generativelanguage.googleapis.com`) direto do
+  Worker — fetch, sem SDK pesado. `GEMINI_API_KEY` via `wrangler secret put`.
+- **JSON garantido**: `generationConfig.responseMimeType: "application/json"`
+  + `responseSchema` — o equivalente Gemini de structured outputs.
+- **Function calling** para o chat (ações tipadas, abaixo).
+- **Modelo**: começar no tier flash (cota gratuita generosa); subir se o
+  gosto editorial pedir.
 
-\* 1 chamada/dia ≈ ~5k tokens de contexto + ~3k de plano. Prompt caching não
-compensa em job diário (TTL de minutos/horas) — não usar.
+A arquitetura é agnóstica de provedor: o LLM é uma função
+`(contexto) → plano JSON`. Se o free tier mudar um dia, trocar de modelo é
+trocar essa função — nada mais se move.
 
-Implementação: SDK oficial `@anthropic-ai/sdk` (roda em Worker — é fetch puro),
-`ANTHROPIC_API_KEY` via `wrangler secret put`. Structured outputs via
-`client.messages.parse()` + `zodOutputFormat(PlanoSchema)` (Zod já valida os
-tipos; a validação de NEGÓCIO — ids existem etc. — continua em código nosso).
-Adaptive thinking ligado (`thinking: {type: "adaptive"}`).
+## Chat com o Diretor (aba no admin)
 
-## Autonomia (decisão do Gabriel — em aberto)
+Conversa em linguagem natural, por canal. Exemplos reais do Gabriel:
 
-- **Modo auto**: a grade de amanhã vai ao ar sem intervenção.
-- **Modo revisão**: aba "grade de amanhã" no admin com aprovar/regenerar.
-- **Sugestão (meio-termo)**: auto com **janela de veto** — o plano fica visível
-  no admin o dia inteiro; sem veto até 23h, vai ao ar. Autonomia + controle.
+- *"retire tal desenho da programação dos próximos 2 meses"*
+- *"faz uma maratona de X"*
+- *"passa um filme hoje à noite"*
 
-## Perguntas em aberto (decisões do dono do canal)
+Como funciona (mesmo princípio — o LLM emite **ações tipadas**, nunca SQL):
 
-1. **Identidade editorial**: qual é a "cara" da Biel TV? (nostalgia 90s/2000s?
-   infantil? mix por faixa horária — manhã infantil, noite nostalgia?)
-   Isso vira o núcleo do prompt do Diretor.
-2. **Autonomia**: auto, revisão, ou janela de veto?
-3. **Frequência**: 1x/dia planejando D+1 (padrão) ou também um "replan" leve
-   à tarde?
-4. **Modelo**: Opus 4.8 (~US$3/mês, melhor gosto editorial) ou Haiku
-   (~US$0,60/mês)?
+1. Mensagem → Gemini com function calling + contexto do canal (catálogo,
+   grade, diretrizes ativas).
+2. O LLM responde com ações: `add_directive` (exclusão/preferência com
+   vigência), `schedule_event` (maratona/filme com data e hora),
+   `replan_today` (recompila o resto do dia), ou `answer` (só conversa).
+3. Código valida (a mídia existe? as datas fazem sentido?) e executa; o chat
+   confirma o que de fato aconteceu: *"Feito — Padrinhos Mágicos fora da
+   grade do canal Jetix até 12/09."*
+4. Tabela `directives`: (canal, tipo, payload JSON, vigente_de, vigente_ate,
+   origem, status). O planejamento noturno trata diretrizes ativas como
+   **restrições duras** — pedido no chat vale até expirar, não só hoje.
+5. Pedido para hoje → replan imediato do resto do dia, **append-only** (nunca
+   corta o que está no ar).
 
-## Fases de implementação
+## Resiliência a remoção de mídia
 
-1. **(fase 9 — pré-requisito)** Compilador determinístico no cron do Worker:
-   `channel_master_grid`, rotação, pods com duração-alvo, shuffle com seed.
-2. **10a — Diretor IA mínimo**: contexto → structured output → validação →
-   compilação → fallback. Prompt com a identidade editorial do canal.
-3. **10b — Refinos**: janela de veto no admin, temas sazonais/feriados,
-   campanhas de comerciais, "replan" intradiário opcional.
+Gabriel vai remover vídeos para renovar o catálogo. Três camadas de defesa:
+
+1. **Remover pelo admin é o caminho feliz**: botão "remover" = apaga os
+   segmentos do R2 + marca `removed` no D1 + expurga a mídia da grade futura
+   (reflow a partir do fim do bloco atual).
+2. **Reconciliação noturna** (roda antes do planejamento): para cada mídia
+   `ready`, confere no R2 (HEAD no primeiro e no último segmento); sumiu →
+   `disabled` + aviso no admin; grade futura órfã → recompilada.
+3. **Compilador só escala `status='ready'`** (já é assim hoje) e valida cada
+   id citado no plano do LLM — plano citando mídia removida = erro de
+   validação → retry com a mensagem de erro → fallback.
+
+Última linha de defesa no player: o clamp defensivo já existe, e a mídia
+placeholder (backlog) cobre o pior caso com tela de "já voltamos".
+
+## Decisões em aberto
+
+- **Autonomia do plano noturno**: auto vs janela de veto. Com o chat dando
+  controle fino a qualquer momento, sugerido: **auto**.
+- Conteúdo das identidades (prompts Jetix/CN/Disney): primeira versão minha,
+  revisão do Gabriel no campo editável.
+
+## Ordem de implementação
+
+1. **(fase 9)** Compilador no cron + tabela `channels` + mapeamento
+   mídia→canal + reconciliação + troca de canal no front.
+2. **10a** — Planejamento noturno por canal (Gemini + responseSchema +
+   validação + fallback), com o prompt de identidade de cada canal.
+3. **10b** — Chat do Diretor (function calling + `directives` + replan).
+4. **10c** — Refinos: temas sazonais/feriados, campanhas de comerciais,
+   janela de veto se o Gabriel quiser.

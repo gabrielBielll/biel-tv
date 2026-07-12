@@ -33,19 +33,25 @@ front no Pages com `VITE_API_BASE`.
 Worker dispara a Action via `repository_dispatch` quando entra job na fila;
 secrets R2/D1 no repo. Depende de: fases 6 e 7.
 
-### Fase 9 — Diretor determinístico completo
-**Objetivo:** a grade se manter sozinha, sem `pnpm seed:local`.
-**Entregáveis:** montador portado pro cron do Worker (roda de madrugada, preenche 48h);
-regras da `channel_master_grid` (blocos fixos por dia/horário — pré-requisito dos
-comerciais de "horário fixo"); rotação por `last_played_at`; breaks com duração-alvo
-(2–3 comerciais); shuffle com seed + frequency capping (fim do rodízio que trava).
+### Fase 9 — Diretor determinístico + canais nostálgicos
+**Objetivo:** vários canais (Jetix, Cartoon Network, Disney Channel…) se mantendo
+sozinhos, cada um só com seu conteúdo.
+**Entregáveis:** tabela `channels` (identidade editorial editável + branding) e
+mapeamento mídia→canal (seletor no upload do admin); montador portado pro cron do
+Worker preenchendo 48h **por canal**; regras da `channel_master_grid`; rotação por
+`last_played_at`; breaks com duração-alvo (2–3 comerciais); shuffle com seed +
+frequency capping; troca de canal no front (lista/branding); **reconciliação
+catálogo↔R2** (mídia removida do storage → `disabled` + aviso + reflow da grade).
 
-### Fase 10 — Diretor IA (a camada editorial)
-**Objetivo:** o canal parecer ter um diretor humano.
-**Entregáveis:** cron chama LLM com contexto (dia da semana, catálogo, histórico,
-eventos) → JSON de decisões (maratonas, temas sazonais, campanhas de comerciais)
-→ validação determinística → `epg_virtual`. Fallback: se o LLM falhar, a fase 9
-segura a grade sozinha.
+### Fase 10 — Diretor IA (Gemini)
+**Objetivo:** cada canal parecer ter o diretor de programação do canal original.
+**Spec completa:** [features/diretor-ia.md](features/diretor-ia.md).
+**Entregáveis:** planejamento noturno por canal via **Gemini** (free tier ⇒ custo
+zero; JSON garantido via `responseSchema`) com prompt de identidade imitando a
+programação original; validação + compilação determinística + fallback (a fase 9
+segura a grade se o LLM falhar); **chat com o Diretor no admin** ("tira esse desenho
+por 2 meses", "maratona sábado") → ações tipadas → tabela `directives` → replan
+append-only.
 
 ### Fase 11 — Admin v2 (ingestão inteligente)
 **Objetivo:** upar qualquer coisa e o sistema entender sozinho.
@@ -63,7 +69,6 @@ Interna em 3 etapas: modelo+matching manual → captação por transcrição (wh
 ## 📦 Backlog (sem fase definida)
 
 - **Mídia placeholder** — segmento de fallback pra buraco de EPG (hoje o slot some).
-- **Multi-canal** — schema já suporta (`canal` em tudo); falta UI de troca e grades próprias.
 - **Sharding multi-conta R2 (30GB grátis)** — 1 domínio por conta OU mini-Worker por
   conta via workers.dev (custom domain exige zona na mesma conta).
 - **Auth real no admin** — Cloudflare Access ou login, no lugar do token único.
