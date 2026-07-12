@@ -92,10 +92,10 @@ export async function scheduleChannel(
 
   // eventos agendados (maratonas) que tocam a janela de planejamento
   const { results: eventos } = await env.DB.prepare(
-    `SELECT media_id, start_at, end_at FROM channel_events
+    `SELECT media_id, series_id, start_at, end_at FROM channel_events
      WHERE canal = ?1 AND status = 'agendado' AND end_at > ?2
      ORDER BY start_at`,
-  ).bind(canal, agora).all<{ media_id: string; start_at: number; end_at: number }>()
+  ).bind(canal, agora).all<{ media_id: string; series_id: string | null; start_at: number; end_at: number }>()
 
   // Promessas (fase 12): comercial/vinheta que promete programação só toca
   // quando a grade cumpre. Regras aplicadas ao pool:
@@ -110,6 +110,7 @@ export async function scheduleChannel(
   ).all<{ media_id: string; status: string; proposta: string | null; condicao: string | null }>()
   const foraDoRodizio = new Set<string>()
   const aSeguirDe = new Map<string, string[]>() // series_id alvo → promo ids
+  const promosEvento: Array<{ id: string; ate: number }> = [] // janela: agora → start do evento
   for (const p of promRows) {
     try {
       if (p.status === 'ignorar') { foraDoRodizio.add(p.media_id); continue }
@@ -128,6 +129,14 @@ export async function scheduleChannel(
           const lista = aSeguirDe.get(cond.series_id) ?? []
           lista.push(p.media_id)
           aSeguirDe.set(cond.series_id, lista) // …e entra no pool condicional
+        }
+        // promo de EVENTO destrava na janela de promoção: só enquanto houver
+        // uma maratona AGENDADA da série correspondente ainda por começar —
+        // "sábado tem maratona X" toca a semana toda ANTES do sábado, e some
+        // sozinha quando o evento começa (ou se for cancelado)
+        if (cond.tipo === 'evento' && cond.series_id) {
+          const alvo = eventos.find((e) => e.series_id === cond.series_id && e.start_at > agora)
+          if (alvo) promosEvento.push({ id: p.media_id, ate: alvo.start_at })
         }
       }
     } catch { /* json corrompido: trata como retida (não promete no escuro) */ }
@@ -190,12 +199,12 @@ export async function scheduleChannel(
   // acabarem antes do alvo, o intervalo fica mais curto (melhor que repetir).
   // Também evita emendar o último comercial do intervalo anterior no primeiro
   // deste, quando há alternativa.
+  let peIdx = 0
   const breakPod = () => {
-    if (adPool.length === 0) return
     const alvo = chan.break_target_seg ?? 120
     const usados = new Set<string>()
     let sum = 0
-    while (sum < alvo && usados.size < adPool.length) {
+    while (adPool.length > 0 && sum < alvo && usados.size < adPool.length) {
       let pick: MediaRow | null = null
       for (let k = 0; k < adPool.length; k++) {
         const cand = adPool[(ai + k) % adPool.length]
@@ -211,6 +220,18 @@ export async function scheduleChannel(
       sum += pick.duracao_seg
       usados.add(pick.id)
       lastAd = pick.id
+    }
+    // janela de promoção: enquanto a maratona não começou, cada intervalo
+    // fecha com UMA promo do evento (rodízio entre as elegíveis) — é assim
+    // que você fica sabendo durante a semana que sábado tem maratona
+    const eleg = promosEvento.filter((p) => t < p.ate)
+    if (eleg.length > 0) {
+      const pr = porId.get(eleg[peIdx++ % eleg.length].id)
+      if (pr && !usados.has(pr.id)) {
+        push(pr.id, t, t + pr.duracao_seg, 0)
+        t += pr.duracao_seg
+        lastAd = pr.id
+      }
     }
   }
 
@@ -249,12 +270,26 @@ export async function scheduleChannel(
   // abre com o pod entre-programas — o bloco anterior terminou num conteúdo
   let primeiroBloco = (cov?.m ?? onAir?.e) == null
 
+  // maratona de série: rotaciona episódios DIFERENTES dentro da janela
+  const evCursor = new Map<number, number>()
+  const proximoDaMaratona = (ev: { media_id: string; series_id: string | null; start_at: number }): MediaRow | undefined => {
+    if (ev.series_id) {
+      const eps = mediaTodas
+        .filter((x) => (x.tipo === 'episodio' || x.tipo === 'filme') && x.series_id === ev.series_id)
+        .sort((a, b) => a.id.localeCompare(b.id))
+      if (eps.length > 0) {
+        const i = evCursor.get(ev.start_at) ?? 0
+        evCursor.set(ev.start_at, i + 1)
+        return eps[i % eps.length]
+      }
+    }
+    return mediaTodas.find((x) => x.id === ev.media_id && (x.tipo === 'episodio' || x.tipo === 'filme'))
+  }
+
   while (t < target) {
     // maratona agendada cobrindo este instante? o evento manda na grade
     const ev = eventos.find((e) => t >= e.start_at - 300 && t < e.end_at)
-    const evMedia = ev
-      ? mediaTodas.find((x) => x.id === ev.media_id && (x.tipo === 'episodio' || x.tipo === 'filme'))
-      : undefined
+    const evMedia = ev ? proximoDaMaratona(ev) : undefined
     const prox = evMedia ?? queue[qi % queue.length]
     if (!evMedia) qi++
 

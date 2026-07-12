@@ -32,13 +32,14 @@ interface PlanoChat {
 
 // Brasil não tem horário de verão desde 2019 — offset fixo de -03:00.
 // Tolerante com o LLM: aceita "YYYY-MM-DD HH:MM", com "T", com segundos.
-const spToEpoch = (s: string): number | null => {
+// (Exportados: regra da casa é converter fuso num lugar só — editorial.ts reusa.)
+export const spToEpoch = (s: string): number | null => {
   const m = s.trim().match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(?::\d{2})?$/)
   if (!m) return null
   const t = Date.parse(`${m[1]}T${m[2]}:00-03:00`)
   return Number.isFinite(t) ? Math.floor(t / 1000) : null
 }
-const epochToSp = (e: number) =>
+export const epochToSp = (e: number) =>
   new Date((e - 3 * 3600) * 1000).toISOString().slice(0, 16).replace('T', ' ')
 
 // ── provedores ─────────────────────────────────────────────────────────────
@@ -524,7 +525,7 @@ export async function estadoDiretor(env: Env, canal: string) {
      ORDER BY created_at DESC`,
   ).bind(canal, now).all<any>()
   const { results: eventos } = await env.DB.prepare(
-    `SELECT id, media_id, start_at, end_at FROM channel_events
+    `SELECT id, media_id, series_id, criado_por, start_at, end_at FROM channel_events
      WHERE canal = ?1 AND status = 'agendado' AND end_at > ?2 ORDER BY start_at`,
   ).bind(canal, now).all<any>()
   const series = await getSeries(env, canal)
@@ -542,6 +543,9 @@ export async function estadoDiretor(env: Env, canal: string) {
     eventos: eventos.map((e: any) => ({
       id: e.id,
       media_id: e.media_id,
+      series_id: e.series_id ?? null,
+      alvo: e.series_id ? `série ${e.series_id}` : e.media_id,
+      editorial: e.criado_por === 'editorial',
       inicio: epochToSp(e.start_at),
       fim: epochToSp(e.end_at),
     })),

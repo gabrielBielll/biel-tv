@@ -5,6 +5,7 @@ import { chatDiretor, estadoDiretor, type ChatMsg } from './diretor'
 import { uploads } from './uploads'
 import { dispatchFabrica } from './fabrica'
 import { extraiPromessa, salvaTranscript, type Proposta } from './promessas'
+import { planejaEditorial } from './editorial'
 
 // API do painel admin. Tudo aqui exige `Authorization: Bearer <ADMIN_TOKEN>`.
 // Upload oficial: sessões multipart retomáveis em ./uploads.ts (/admin/uploads).
@@ -437,6 +438,15 @@ admin.post('/diretor/chat', async (c) => {
     return c.json({ error: 'a última mensagem precisa ser sua' }, 400)
   }
   return c.json(await chatDiretor(c.env, b.canal, msgs))
+})
+
+// Fase 10a: o diretor decide a noite AGORA (mesmo cérebro do cron diário).
+// forcar=true = "quero maratona hoje, escolha a melhor" (pula o "hoje não").
+admin.post('/diretor/planejar', async (c) => {
+  const b = await c.req.json<{ canal?: string; forcar?: boolean }>().catch(() => ({} as { canal?: string; forcar?: boolean }))
+  if (b.canal && !SLUG.test(b.canal)) return c.json({ error: 'canal inválido' }, 400)
+  const decisoes = await planejaEditorial(c.env, { canal: b.canal, forcar: Boolean(b.forcar) })
+  return c.json({ decisoes })
 })
 
 admin.get('/diretor/estado', async (c) => {

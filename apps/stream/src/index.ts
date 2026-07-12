@@ -5,6 +5,7 @@ import { buildLivePlaylist } from './playlist'
 import { admin } from './admin'
 import { reconcileAndRepair, runScheduler } from './scheduler'
 import { dispatchSeTemFila } from './fabrica'
+import { planejaEditorial } from './editorial'
 
 type Bindings = {
   DB: D1Database
@@ -120,11 +121,15 @@ export default {
   async scheduled(_event: ScheduledController, env: Bindings, ctx: ExecutionContext) {
     ctx.waitUntil((async () => {
       const rec = await reconcileAndRepair(env)
+      // 10a: o diretor editorial decide a noite ANTES do agendador estender
+      // a grade — falha do LLM nunca derruba o cron (rotação segura tudo)
+      let plano: unknown = null
+      try { plano = await planejaEditorial(env) } catch (e) { plano = String(e) }
       const reports = await runScheduler(env, { hours: 48 })
       // rede de segurança da fábrica: dispatch perdido ou run morta no
       // timeout → o cron re-acorda o GitHub Actions enquanto houver fila
       await dispatchSeTemFila(env)
-      console.log('[diretor]', JSON.stringify({ rec, reports }))
+      console.log('[diretor]', JSON.stringify({ rec, plano, reports }))
     })())
   },
 }

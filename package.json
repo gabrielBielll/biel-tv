@@ -21,7 +21,8 @@
     "verify:canais": "node scripts/verify-canais.mjs",
     "verify:diretor": "node scripts/verify-diretor.mjs",
     "verify:uploads": "node scripts/verify-uploads.mjs",
-    "verify:promessas": "node scripts/verify-promessas.mjs"
+    "verify:promessas": "node scripts/verify-promessas.mjs",
+    "verify:editorial": "node scripts/verify-editorial.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

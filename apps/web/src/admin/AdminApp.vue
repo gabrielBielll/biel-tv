@@ -650,6 +650,33 @@ async function enviarChat() {
   }
 }
 
+// fase 10a: o diretor decide a noite agora (mesmo cérebro do cron das 03:00)
+const planejando = ref(false)
+async function decidirANoite() {
+  if (planejando.value) return
+  planejando.value = true
+  chatMsgs.value.push({ role: 'user', text: `🌙 Diretor, decida a noite do canal ${nomeCanal(chatCanal.value)}.` })
+  try {
+    const res = await postJson('/diretor/planejar', { canal: chatCanal.value })
+    const body = await res.json()
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    const d = (body.decisoes ?? [])[0]
+    chatMsgs.value.push({
+      role: 'diretor',
+      text: d?.fez
+        ? `Decidido: maratona de ${d.series_id} hoje, ${d.inicio.slice(11)} → ${d.fim.slice(11)}. ${d.motivo}`
+        : `Hoje não teremos maratona: ${d?.motivo ?? 'sem decisão'}`,
+      acoes: d?.fez ? [`maratona de ${d.series_id}: ${d.inicio} → ${d.fim}`] : [],
+    })
+    fetchEstado()
+  } catch (e) {
+    chatMsgs.value.push({ role: 'diretor', text: `⚠️ ${(e as Error).message}` })
+  } finally {
+    planejando.value = false
+    localStorage.setItem(chatKey(), JSON.stringify(chatMsgs.value.slice(-40)))
+  }
+}
+
 async function cancelarDiretriz(id: number) {
   await postJson(`/diretor/diretriz/${id}/cancelar`, {})
   fetchEstado()
@@ -938,6 +965,9 @@ onBeforeUnmount(() => clearInterval(poll))
         <select v-model="chatCanal" class="chat-canal">
           <option v-for="c in channels" :key="c.id" :value="c.id">{{ c.nome }}</option>
         </select>
+        <button class="ghost" :disabled="planejando" title="o diretor olha a identidade do canal, as séries e o histórico e decide se hoje tem maratona" @click="decidirANoite">
+          {{ planejando ? 'decidindo…' : '🌙 decidir a noite' }}
+        </button>
         <button class="ghost" @click="replanejar">replanejar grade</button>
       </div>
 
@@ -967,8 +997,8 @@ onBeforeUnmount(() => clearInterval(poll))
           <button class="ghost" @click="cancelarDiretriz(d.id)">cancelar</button>
         </div>
         <div v-for="e in estado.eventos" :key="'e' + e.id" class="job-row">
-          <span class="chip st-queued">maratona</span>
-          <span class="dim grow">{{ e.media_id }}: {{ e.inicio }} → {{ e.fim }}</span>
+          <span class="chip st-queued">{{ e.editorial ? 'maratona 🌙' : 'maratona' }}</span>
+          <span class="dim grow">{{ e.alvo ?? e.media_id }}: {{ e.inicio }} → {{ e.fim }}</span>
           <button class="ghost" @click="cancelarEvento(e.id)">cancelar</button>
         </div>
       </template>
