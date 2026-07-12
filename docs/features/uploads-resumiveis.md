@@ -1,7 +1,14 @@
 # Feature: uploads persistentes e retomáveis
 
-> Checkpoint de 2026-07-12. Estado: diagnóstico e desenho concluídos; implementação não iniciada.
-> Prioridade: urgente, antes das demais entregas do Admin v2.
+> Checkpoint de 2026-07-12. Estado: ✅ IMPLEMENTADO, verificado e em produção.
+> Prova: `pnpm verify:uploads` (25/25 — inclui retomada real pós-reload no
+> Chromium e a bateria completa da deleção), `pnpm verify:admin` (12/12, upload
+> de navegador pelo fluxo novo), smoke em produção (upload de 1 e de 3 partes
+> processados pela fábrica + deleção definitiva com todas as recusas).
+> O que ficou de fora (por decisão, não por pendência): URL pré-assinada pro
+> navegador falar direto com o R2 — as partes hoje passam pelo Worker via
+> binding, o que já resolve o limite de request e a retomada; presign vira
+> otimização futura junto com o domínio próprio.
 
 ## Problema observado
 

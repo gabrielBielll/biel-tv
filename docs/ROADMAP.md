@@ -17,6 +17,7 @@
 | **10b — Chat do Diretor (Modo God)** | Chat real com IA por canal (Gemini 3.5 Flash → DeepSeek em cota/erro → aviso): exclusões com prazo, maratonas materializadas na grade, cancelamentos; snap de id + backstops determinísticos de datas + rodada de reparo; "ordens em vigor" com cancelar no painel | 2026-07-12 | 11/11 (`pnpm verify:diretor`, com LLM real) + smoke em produção |
 | **11a — Upload em lote/pasta** | Múltiplos arquivos ou pasta inteira no admin; série+episódio deduzidos ("pwr rangers/001.mp4" → `ep_pwr_rangers_e01`); envio sequencial pra fila | 2026-07-12 | e2e Playwright (pasta real → 3 jobs na fila) |
 | **10b.1 — Exclusão de série inteira** | Ação `excluir_serie` no chat do Diretor (uma ordem tira todos os episódios de uma série agrupada); endpoint pra agrupar mídia numa série retroativamente + editor no catálogo; `cancelar_exclusao` resolve diretriz de série OU exclusões individuais dos episódios (o LLM às vezes enumera em vez de usar a ação de série — o cancelamento cobre os dois formatos) | 2026-07-12 | 16/16 (`pnpm verify:diretor`) + smoke test real em produção (5 comerciais do Power Rangers, agrupados como série `pwr_rangers`, excluídos e restaurados) |
+| **11b — Uploads persistentes/retomáveis + deleção definitiva** | Sessão no D1 ANTES do 1º byte (lote inteiro reservado antes de transmitir); multipart pro R2 em partes fixas com timeout/retry/backoff e cancelamento por item; painel lista uploads interrompidos pós-reload e retoma só as partes ausentes ao reanexar (fingerprint: caminho relativo+nome+tamanho+mtime); `complete` idempotente (repetir nunca duplica job). Zona de perigo: deleção física exige disabled + confirmação digitada `EXCLUIR <id>` + fora da janela do player; apaga só o prefixo exato no R2 e replaneja os canais | 2026-07-12 | 25/25 (`pnpm verify:uploads`, com retomada real no Chromium) + 12/12 (`verify:admin` já no fluxo novo) + smoke em produção (uploads de 1 e 3 partes processados + deleção com todas as recusas) |
 
 ## ▶ Fases restantes
 
@@ -70,15 +71,17 @@ robusto aos dois formatos que o LLM pode escolher. Ver tabela de fases concluíd
   recompensa variável de propósito. Zero código ainda; só o chat direto
   (Modo God) existe.
 
-### Fase 11 — Admin v2 (ingestão inteligente) — 11a (lote/pasta) ✅ FEITA; falta o resto
+### Fase 11 — Admin v2 (ingestão inteligente) — 11a (lote/pasta) e 11b (retomáveis + deleção) ✅ FEITAS; falta o resto
 **Objetivo:** upar qualquer coisa e o sistema entender sozinho.
-**Urgente — upload persistente/retomável:** o fluxo atual perde o lote ao
-recarregar e pode ficar preso em `enviando` antes de criar o job. Diagnóstico,
-decisões e plano de testes em [features/uploads-resumiveis.md](features/uploads-resumiveis.md).
+**11b entregue** (spec e decisões: [features/uploads-resumiveis.md](features/uploads-resumiveis.md)):
+sessões multipart retomáveis substituíram o upload monolítico — reload não perde
+mais nada e arquivo grande não esbarra no limite de request. O POST /admin/upload
+antigo ficou só como compatibilidade temporária.
 **Entregáveis restantes:** classificação por LLM (nome sujo → título/série/episódio +
 confiança, hoje é heurística); fila `needs_review`; TMDB (título oficial, sinopse,
-**poster** → EPG rico); multipart presigned pro R2 (arquivos grandes sem passar
-pelo Worker — hoje o upload bufferiza no Worker, limitado pelo tamanho de request).
+**poster** → EPG rico); URL pré-assinada pro navegador enviar cada parte DIRETO ao
+R2 (hoje as partes passam pelo Worker via binding — funciona e é retomável, mas
+gasta invocações; presign entra junto com o domínio próprio, com CORS restrito ao painel).
 
 ### Fase 12 — Comerciais condicionais ("promessas")
 **Objetivo:** promos de sequência/horário/maratona só irem ao ar quando a grade cumpre.

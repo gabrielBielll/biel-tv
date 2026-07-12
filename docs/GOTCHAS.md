@@ -112,6 +112,25 @@ chamadas silenciosamente.** Durante um smoke test real, um loop `for id in
 Sempre verificar o HTTP status (ou pelo menos imprimir a resposta) dentro do
 loop, nunca silenciar com `>/dev/null` sem checagem.
 
+## R2 multipart (uploads retomáveis)
+
+**Toda parte, exceto a última, precisa ter EXATAMENTE o mesmo tamanho.** O R2
+é mais rígido que o S3 (que só exige ≥5 MiB): partes de tamanhos mistos fazem
+o `complete` falhar. Por isso o `PUT /admin/uploads/:sid/parts/:n` valida o
+tamanho byte a byte (parte n < total = `part_size` exato; última = resto) — um
+cliente bugado falha na hora com mensagem clara, e não minutos depois no
+complete. O simulador local (miniflare) é mais permissivo que o R2 real —
+não conclua que "funcionou local" cobre essa regra; o smoke de produção cobre.
+
+**`resumeMultipartUpload()` não valida nada** — retorna na hora mesmo se o
+uploadId não existe mais; o erro só aparece no `uploadPart`/`complete`
+seguinte. Trate esses dois pontos como o lugar de detectar sessão morta.
+
+**`wrangler r2 object put biel-tv-media/<key> --file <f> --local` escreve no
+MESMO estado que o wrangler dev em execução lê** (`.wrangler/state/v3`) — é o
+jeito de plantar fixtures de R2 em testes e2e sem rota de upload (usado em
+`verify-uploads.mjs` pros testes de deleção).
+
 ## ffmpeg / pipeline
 
 **Nem todo vídeo-fonte segmenta no número exato de segmentos esperado, mesmo
@@ -151,3 +170,11 @@ Todo `d1()` helper faz `JSON.parse(stdout.slice(stdout.indexOf('[')))` pra
 pular o preâmbulo — funciona, mas é frágil a mudanças de formato do
 wrangler. Mantenha esse padrão consistente se adicionar novo script (ou
 centralize em `_lib.mjs` se aparecer uma terceira cópia).
+
+**Playwright: `innerText` devolve o texto RENDERIZADO — inclusive
+`text-transform: uppercase` do CSS.** Os `h2` dos cards do admin usam
+uppercase via CSS, então `document.body.innerText.includes('Uploads
+interrompidos')` NUNCA casa (o texto rendido é "UPLOADS INTERROMPIDOS")
+enquanto o elemento existe normalmente no DOM. Em `waitForFunction`, compare
+com `textContent` (ignora CSS) ou normalize o case. Já causou um ❌
+falso num check cujo passo seguinte (que dependia do mesmo elemento) passava.

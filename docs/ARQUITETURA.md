@@ -102,7 +102,7 @@ Três cérebros, um contrato:
 | Fábrica de transcodificação = GitHub Actions | ffmpeg não roda em Worker; EC2 é cara e vira só dev; GH free = 2000 min/mês, runner 2-core. Worker pode disparar via `repository_dispatch`. |
 | Infra provisionada via wrangler (sem Terraform) | wrangler cria/deploya D1, R2, Worker, secrets; `wrangler.toml` versionado = infra as code. Falta só o API Token do Gabriel. |
 | MVP com 1 conta R2 | Custom domain de bucket exige a zona DNS na MESMA conta (free não tem zona de subdomínio) → 3 contas = 3 domínios ou mini-Worker por conta. Shard depois. `r2.dev` é rate-limited: nunca usar p/ vídeo. |
-| Upload do admin bufferizado no Worker | MVP local. Em produção: multipart direto no R2 via URL pré-assinada (limite de body do Worker) — ainda não feito, ver fase 11. |
+| Upload do admin: sessões multipart retomáveis via Worker | Sessão no D1 antes do 1º byte; partes fixas de 10 MiB pro R2 (binding), retomada pós-reload por fingerprint, `complete` idempotente (`apps/stream/src/uploads.ts`). URL pré-assinada (parte direto no R2, sem passar pelo Worker) fica como evolução junto com o domínio próprio. |
 | LLM do Diretor: Gemini 3.5 Flash → DeepSeek v4-flash | Free tier do Gemini ⇒ custo zero; DeepSeek como fallback de cota/erro (créditos do Gabriel). `responseSchema`/`response_format` garantem JSON válido nos dois. |
 | Cancelamento robusto a formato, não o prompt perfeito | O LLM às vezes enumera `excluir_media` em vez de emitir um `excluir_serie` só; em vez de tentar 100% de aderência via prompt, o cancelamento entende os dois formatos (ver GOTCHAS.md). |
 

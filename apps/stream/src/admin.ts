@@ -2,10 +2,11 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { runScheduler, scheduleChannel, reconcileAndRepair } from './scheduler'
 import { chatDiretor, estadoDiretor, type ChatMsg } from './diretor'
+import { uploads } from './uploads'
 
 // API do painel admin. Tudo aqui exige `Authorization: Bearer <ADMIN_TOKEN>`.
-// O upload do MVP bufferiza o corpo no Worker — suficiente pro dev local;
-// em produção o caminho certo é multipart direto no R2 via URL pré-assinada.
+// Upload oficial: sessões multipart retomáveis em ./uploads.ts (/admin/uploads).
+// O POST /upload monolítico abaixo fica só como compatibilidade temporária.
 
 type Bindings = {
   DB: D1Database
@@ -37,6 +38,9 @@ async function channelIds(db: D1Database): Promise<string[]> {
 }
 
 // ── upload / staging ───────────────────────────────────────────────────────
+
+// sessões multipart retomáveis (o cors+token acima cobrem o sub-app)
+admin.route('/uploads', uploads)
 
 admin.post('/upload', async (c) => {
   const raw = c.req.query('name') ?? 'upload.bin'
@@ -169,6 +173,96 @@ admin.post('/media/:id/status', async (c) => {
   return c.json({ ok: true })
 })
 
+// Zona de perigo: deleção FÍSICA e irreversível de uma mídia (segmentos no
+// R2 + todos os registros). Desativar continua sendo a ação normal; isto
+// aqui só passa com TODAS as travas (docs/features/uploads-resumiveis.md):
+// mídia já disabled, confirmação digitada exata, e fora da janela do player.
+admin.delete('/media/:id', async (c) => {
+  const id = c.req.param('id')
+  const b = await c.req.json<{ confirmacao?: string }>().catch(() => ({ confirmacao: '' }))
+
+  const m = await c.env.DB.prepare('SELECT status, path_prefix FROM media_items WHERE id = ?1')
+    .bind(id).first<{ status: string; path_prefix: string }>()
+  if (!m) return c.json({ error: 'mídia não encontrada' }, 404)
+  if (m.status !== 'disabled') {
+    return c.json({ error: 'só mídia desativada pode ser excluída de vez — desative primeiro' }, 409)
+  }
+  if ((b.confirmacao ?? '') !== `EXCLUIR ${id}`) {
+    return c.json({ error: `confirmação incorreta — digite exatamente "EXCLUIR ${id}"` }, 400)
+  }
+
+  // trava temporal: nada que esteja no ar, na janela recente do player
+  // (4 slots atrás + buffers) ou ainda na grade futura pode ser apagado.
+  const now = Math.floor(Date.now() / 1000)
+  const grade = await c.env.DB.prepare(
+    `SELECT SUM(CASE WHEN start_time_virtual > ?2 THEN 1 ELSE 0 END) futuras,
+            SUM(CASE WHEN start_time_virtual <= ?2 AND end_time_virtual > ?3 THEN 1 ELSE 0 END) recentes
+     FROM epg_virtual WHERE media_id = ?1`,
+  ).bind(id, now, now - 300).first<{ futuras: number | null; recentes: number | null }>()
+  if ((grade?.futuras ?? 0) > 0) {
+    return c.json({ error: 'a mídia ainda tem blocos na grade futura — replaneje o canal e tente de novo' }, 409)
+  }
+  if ((grade?.recentes ?? 0) > 0) {
+    return c.json({ error: 'a mídia esteve no ar há instantes (janela do player) — aguarde uns 5 minutos' }, 409)
+  }
+
+  // trava de prefixo: só apagamos chaves media/<id>/... — nunca um prefixo
+  // vazio/estranho, e a barra final garante que media/ep_x2 não cai junto.
+  if (!/^media\/[a-z0-9_]{3,40}$/.test(m.path_prefix)) {
+    return c.json({ error: `path_prefix inesperado ("${m.path_prefix}") — deleção recusada por segurança` }, 500)
+  }
+  const prefixo = `${m.path_prefix}/`
+
+  // canais afetados (antes de apagar os vínculos) e staging de job antigo
+  const { results: canais } = await c.env.DB.prepare(
+    'SELECT DISTINCT channel_id ch FROM media_channels WHERE media_id = ?1',
+  ).bind(id).all<{ ch: string }>()
+  const job = await c.env.DB.prepare('SELECT staging_key FROM ingest_jobs WHERE id = ?1')
+    .bind(id).first<{ staging_key: string }>()
+  const { results: sessoes } = await c.env.DB.prepare(
+    'SELECT id, staging_key, r2_upload_id, status FROM upload_sessions WHERE media_id = ?1',
+  ).bind(id).all<{ id: string; staging_key: string; r2_upload_id: string; status: string }>()
+
+  // R2 primeiro (idempotente): repetir a limpeza depois de falha parcial é
+  // seguro — a mídia continua disabled e os registros só somem no fim.
+  let segmentosApagados = 0
+  let cursor: string | undefined
+  do {
+    const lote = await c.env.MEDIA.list({ prefix: prefixo, cursor })
+    if (lote.objects.length > 0) {
+      await c.env.MEDIA.delete(lote.objects.map((o) => o.key))
+      segmentosApagados += lote.objects.length
+    }
+    cursor = lote.truncated ? lote.cursor : undefined
+  } while (cursor)
+  if (job?.staging_key) await c.env.MEDIA.delete(job.staging_key)
+  for (const s of sessoes) {
+    if (s.status === 'ativa') {
+      try { await c.env.MEDIA.resumeMultipartUpload(s.staging_key, s.r2_upload_id).abort() } catch { /* já não existia */ }
+    }
+    await c.env.MEDIA.delete(s.staging_key)
+  }
+
+  // D1 numa transação só; media_items por ÚLTIMO — falha parcial deixa a
+  // mídia visível (disabled) e a operação pode ser repetida inteira.
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM media_cue_points WHERE media_id = ?1').bind(id),
+    c.env.DB.prepare('DELETE FROM media_channels WHERE media_id = ?1').bind(id),
+    c.env.DB.prepare('DELETE FROM epg_virtual WHERE media_id = ?1').bind(id),
+    c.env.DB.prepare('DELETE FROM channel_events WHERE media_id = ?1').bind(id),
+    c.env.DB.prepare(`UPDATE directives SET status = 'cancelada' WHERE status = 'ativa' AND payload LIKE ?1`).bind(`%"${id}"%`),
+    c.env.DB.prepare('DELETE FROM ingest_jobs WHERE id = ?1').bind(id),
+    c.env.DB.prepare('DELETE FROM upload_parts WHERE session_id IN (SELECT id FROM upload_sessions WHERE media_id = ?1)').bind(id),
+    c.env.DB.prepare('DELETE FROM upload_sessions WHERE media_id = ?1').bind(id),
+    c.env.DB.prepare('DELETE FROM media_items WHERE id = ?1').bind(id),
+  ])
+
+  // o pool desses canais mudou — replaneja (append-only, bloco no ar intacto)
+  for (const r of canais) await scheduleChannel(c.env, r.ch, 48, true)
+
+  return c.json({ ok: true, segmentos_apagados: segmentosApagados, canais_replanejados: canais.map((r) => r.ch) })
+})
+
 admin.post('/media/:id/channels', async (c) => {
   const { channels } = await c.req.json<{ channels: string[] }>().catch(() => ({ channels: null as unknown as string[] }))
   if (!Array.isArray(channels)) return c.json({ error: 'channels deve ser uma lista' }, 400)
@@ -212,7 +306,7 @@ admin.post('/channels/:id', async (c) => {
 // ── agendador / reconciliação ──────────────────────────────────────────────
 
 admin.post('/schedule/run', async (c) => {
-  const b = await c.req.json<{ canal?: string; hours?: number; rebuild?: boolean }>().catch(() => ({}))
+  const b = await c.req.json<{ canal?: string; hours?: number; rebuild?: boolean }>().catch(() => ({} as { canal?: string; hours?: number; rebuild?: boolean }))
   const reports = await runScheduler(c.env, {
     canal: b.canal,
     hours: b.hours,

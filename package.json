@@ -18,7 +18,8 @@
     "factory": "node scripts/factory-local.mjs",
     "verify:admin": "node scripts/verify-admin.mjs",
     "verify:canais": "node scripts/verify-canais.mjs",
-    "verify:diretor": "node scripts/verify-diretor.mjs"
+    "verify:diretor": "node scripts/verify-diretor.mjs",
+    "verify:uploads": "node scripts/verify-uploads.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

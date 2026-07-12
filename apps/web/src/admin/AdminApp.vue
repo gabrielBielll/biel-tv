@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const API = import.meta.env.VITE_API_BASE ?? ''
 const TOKEN_KEY = 'bieltv_admin_token'
@@ -25,6 +25,7 @@ const msg = ref('')
 // lote (vários arquivos / pasta)
 interface ItemLote {
   file: File
+  rel: string
   dur: number
   tipo: string
   titulo: string
@@ -32,10 +33,27 @@ interface ItemLote {
   series: string
   ep: string
   status: string
+  pct: number
+  sess?: SessaoUpload
+  ctrl?: AbortController
+  cancelado?: boolean
 }
 const lote = ref<ItemLote[]>([])
 const loteCanais = ref<string[]>([])
 const loteEnviando = ref(false)
+
+// uploads interrompidos (sessões ativas no servidor sem arquivo neste tab)
+interface Retomada {
+  sess: any
+  file: File
+  status: string
+  pct: number
+  ctrl?: AbortController
+  cancelado?: boolean
+}
+const pendentes = ref<any[]>([])
+const retomadas = ref<Retomada[]>([])
+const formSess = ref('')
 
 // chat do Diretor (Modo God)
 const chatCanal = ref('')
@@ -81,10 +99,24 @@ async function refresh() {
   try {
     jobs.value = await (await api('/jobs')).json()
     media.value = await (await api('/media')).json()
+    pendentes.value = await (await api('/uploads')).json()
   } catch {
     /* sem pânico em polling */
   }
 }
+
+const fetchPendentes = async () => {
+  try { pendentes.value = await (await api('/uploads')).json() } catch { /* poll cobre */ }
+}
+
+// sessões que ESTE tab já está tratando não aparecem como "interrompidas"
+const pendentesVisiveis = computed(() => {
+  const ativos = new Set<string>()
+  for (const i of lote.value) if (i.sess) ativos.add(i.sess.id)
+  for (const r of retomadas.value) if (r.status !== 'na fila' && !r.status.startsWith('erro')) ativos.add(r.sess.id)
+  if (formSess.value) ativos.add(formSess.value)
+  return pendentes.value.filter((p) => !ativos.has(p.id))
+})
 
 // ── sugestão automática (heurística; a camada LLM entra depois) ────────────
 function probeFile(f: File): Promise<{ duration: number; width: number; height: number }> {
@@ -193,10 +225,99 @@ async function montaLote(files: File[]) {
     const id = ep
       ? `ep_${serieSlug}_e${ep.padStart(2, '0')}`
       : `${prefix}_${slug(titulo).slice(0, 28)}`
-    itens.push({ file: f, dur, tipo, titulo, id, series: serieSlug, ep, status: 'pronto' })
+    itens.push({ file: f, rel: rel ?? '', dur, tipo, titulo, id, series: serieSlug, ep, status: 'pronto', pct: 0 })
   }
   lote.value = itens
   loteCanais.value = [...canaisSugeridos]
+}
+
+// ── upload multipart retomável ──────────────────────────────────────────────
+// A sessão nasce no SERVIDOR antes do primeiro byte; cada parte confirmada
+// fica registrada lá (upload_parts). Reload no meio → a sessão aparece em
+// "uploads interrompidos" e continua de onde parou quando o mesmo arquivo é
+// reanexado (o navegador não restaura <input type="file"> sozinho).
+const PART_SIZE = 10 * 1024 * 1024
+
+interface SessaoUpload {
+  id: string
+  media_id: string
+  part_size: number
+  parts_total: number
+  partes: number[]
+}
+
+const relDe = (f: File) => ((f as any).webkitRelativePath as string | undefined) ?? ''
+const espera = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+interface MetaEnvio { id: string; tipo: string; titulo: string; series: string; ep: string; tags?: string; canais: string[] }
+
+// cria (ou retoma, se o servidor reconhecer o fingerprint) uma sessão
+async function criaSessao(m: MetaEnvio, f: File): Promise<SessaoUpload> {
+  const res = await postJson('/uploads', {
+    media_id: m.id, tipo: m.tipo, title: m.titulo,
+    series_id: m.series || null, episode: m.ep ? Number(m.ep) : null,
+    tags: m.tags ?? '', canais: m.canais.join(','), part_size: PART_SIZE,
+    file: { name: f.name, rel: relDe(f), size: f.size, last_modified: f.lastModified },
+  })
+  const body = await res.json()
+  if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+  return body
+}
+
+// uma parte: timeout próprio + retry com backoff (rede instável, 429, 5xx)
+async function enviaParte(sess: SessaoUpload, f: File, n: number, alvo: { ctrl?: AbortController; cancelado?: boolean }) {
+  const ini = (n - 1) * sess.part_size
+  const blob = f.slice(ini, Math.min(ini + sess.part_size, f.size))
+  for (let tent = 1; tent <= 4; tent++) {
+    const ctrl = new AbortController()
+    alvo.ctrl = ctrl
+    const timer = setTimeout(() => ctrl.abort(), 180_000)
+    let transitorio = ''
+    try {
+      const res = await fetch(`${API}/admin/uploads/${sess.id}/parts/${n}`, {
+        method: 'PUT', headers: hdr(), body: blob, signal: ctrl.signal,
+      })
+      if (res.ok) return
+      const body = await res.json().catch(() => ({} as { error?: string }))
+      if (res.status === 429 || res.status >= 500) transitorio = body.error ?? `HTTP ${res.status}`
+      else throw new Error(body.error ?? `HTTP ${res.status}`) // 4xx = definitivo
+    } catch (e) {
+      if (alvo.cancelado) throw new Error('cancelado')
+      const err = e as Error
+      if (err.name === 'AbortError') transitorio = 'timeout no envio'
+      else if (err instanceof TypeError) transitorio = 'falha de rede'
+      else if (!transitorio) throw err
+    } finally {
+      clearTimeout(timer)
+    }
+    if (tent === 4) throw new Error(`parte ${n}/${sess.parts_total}: ${transitorio}`)
+    await espera(1000 * 3 ** (tent - 1)) // 1s, 3s, 9s
+  }
+}
+
+// sobe só as partes que faltam e completa (o complete é idempotente no servidor)
+async function enviaArquivo(sess: SessaoUpload, f: File, alvo: { ctrl?: AbortController; cancelado?: boolean }, onPct: (p: number) => void) {
+  const feitas = new Set(sess.partes)
+  const tamParte = (n: number) => (n < sess.parts_total ? sess.part_size : f.size - (sess.parts_total - 1) * sess.part_size)
+  let ok = 0
+  for (const n of feitas) ok += tamParte(n)
+  onPct(Math.min(99, Math.round((ok / f.size) * 100)))
+  for (let n = 1; n <= sess.parts_total; n++) {
+    if (feitas.has(n)) continue
+    if (alvo.cancelado) throw new Error('cancelado')
+    await enviaParte(sess, f, n, alvo)
+    ok += tamParte(n)
+    onPct(Math.min(99, Math.round((ok / f.size) * 100)))
+  }
+  const res = await postJson(`/uploads/${sess.id}/complete`, {})
+  const body = await res.json()
+  if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+  onPct(100)
+}
+
+async function cancelaSessao(sess?: SessaoUpload) {
+  if (!sess) return
+  try { await api(`/uploads/${sess.id}`, { method: 'DELETE' }) } catch { /* melhor esforço */ }
 }
 
 async function enviarLote() {
@@ -205,43 +326,139 @@ async function enviarLote() {
     return
   }
   loteEnviando.value = true
-  for (const item of lote.value) {
-    if (item.status === 'na fila') continue
-    item.status = 'enviando…'
+  const fila = lote.value.filter((i) => i.status !== 'na fila')
+  // 1º: TODAS as sessões reservadas antes de qualquer byte — um reload no
+  // meio não perde mais nenhum item do lote (todos ficam retomáveis)
+  for (const item of fila) {
+    item.cancelado = false
     try {
-      const { staging_key } = await upload(item.file, () => {})
-      const res = await postJson('/jobs', {
-        id: item.id,
-        tipo: item.tipo,
-        title: item.titulo,
-        series_id: item.series || null,
-        episode: item.ep ? Number(item.ep) : null,
-        tags: '',
-        canais: loteCanais.value.join(','),
-        staging_key,
-        original_name: item.file.name,
-      })
-      const body = await res.json()
-      item.status = res.ok ? 'na fila' : `erro: ${body.error ?? res.status}`
+      item.sess = await criaSessao(
+        { id: item.id, tipo: item.tipo, titulo: item.titulo, series: item.series, ep: item.ep, canais: loteCanais.value },
+        item.file,
+      )
+      item.status = 'reservado'
     } catch (e) {
       item.status = `erro: ${(e as Error).message}`
+    }
+  }
+  // 2º: um arquivo por vez, partes com retry, cancelável por item
+  for (const item of fila) {
+    if (!item.sess || item.cancelado || item.status.startsWith('erro')) continue
+    try {
+      await enviaArquivo(item.sess, item.file, item, (p) => {
+        item.pct = p
+        item.status = `enviando ${p}%`
+      })
+      item.status = 'na fila'
+    } catch (e) {
+      if ((e as Error).message === 'cancelado') {
+        await cancelaSessao(item.sess)
+        item.status = 'cancelado'
+      } else {
+        item.status = `erro: ${(e as Error).message}`
+      }
     }
     refresh()
   }
   loteEnviando.value = false
-  msg.value = `✔ lote enviado — a fábrica processa um por vez`
+  const okCount = fila.filter((i) => i.status === 'na fila').length
+  msg.value = `✔ lote: ${okCount}/${fila.length} na fila — a fábrica processa um por vez`
 }
 
-function upload(f: File, onPct: (n: number) => void): Promise<{ staging_key: string }> {
-  return new Promise((res, rej) => {
-    const x = new XMLHttpRequest()
-    x.open('POST', `${API}/admin/upload?name=${encodeURIComponent(f.name)}`)
-    x.setRequestHeader('authorization', `Bearer ${token.value}`)
-    x.upload.onprogress = (e) => e.lengthComputable && onPct(Math.round((e.loaded / e.total) * 100))
-    x.onload = () => (x.status < 300 ? res(JSON.parse(x.responseText)) : rej(new Error(x.responseText)))
-    x.onerror = () => rej(new Error('falha de rede no upload'))
-    x.send(f)
-  })
+function cancelarItem(item: ItemLote) {
+  item.cancelado = true
+  item.ctrl?.abort()
+  if (item.status === 'reservado' || item.status === 'pronto') {
+    cancelaSessao(item.sess)
+    item.status = 'cancelado'
+  }
+}
+
+async function tentarDeNovo(item: ItemLote) {
+  item.cancelado = false
+  item.status = 'retomando…'
+  try {
+    // o servidor devolve a MESMA sessão (fingerprint) com as partes já feitas
+    item.sess = await criaSessao(
+      { id: item.id, tipo: item.tipo, titulo: item.titulo, series: item.series, ep: item.ep, canais: loteCanais.value },
+      item.file,
+    )
+    await enviaArquivo(item.sess, item.file, item, (p) => {
+      item.pct = p
+      item.status = `enviando ${p}%`
+    })
+    item.status = 'na fila'
+    refresh()
+  } catch (e) {
+    item.status = `erro: ${(e as Error).message}`
+  }
+}
+
+// ── retomada pós-reload: reanexar arquivos e casar com as sessões ──────────
+async function reanexar(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const files = [...(input.files ?? [])].filter((f) => f.size > 0)
+  input.value = ''
+  if (files.length === 0) return
+  const casadas: Retomada[] = []
+  for (const p of pendentesVisiveis.value) {
+    // 1º tenta o fingerprint completo (com caminho relativo — distingue
+    // arquivos de mesmo nome em subpastas diferentes)…
+    let f = files.find((f) =>
+      relDe(f) === p.file_rel && f.name === p.file_name && f.size === p.file_size && f.lastModified === p.file_mtime)
+    // …senão, aceita nome+tamanho+mtime quando o match é ÚNICO (pasta
+    // reanexada como arquivos avulsos perde o caminho relativo)
+    if (!f) {
+      const cand = files.filter((f) => f.name === p.file_name && f.size === p.file_size && f.lastModified === p.file_mtime)
+      if (cand.length === 1) f = cand[0]
+    }
+    if (f) casadas.push({ sess: p, file: f, status: 'aguardando…', pct: 0 })
+  }
+  msg.value = casadas.length
+    ? `retomando ${casadas.length} upload(s); ${files.length - casadas.length} arquivo(s) sem correspondência`
+    : '✖ nenhum arquivo corresponde a um upload pendente (nome, tamanho e data precisam bater)'
+  retomadas.value.push(...casadas)
+  for (const r of casadas) await retomaUma(r)
+}
+
+async function retomaUma(r: Retomada) {
+  try {
+    const sess = await criaSessao(
+      {
+        id: r.sess.media_id, tipo: r.sess.tipo, titulo: r.sess.title,
+        series: r.sess.series_id ?? '', ep: r.sess.episode ? String(r.sess.episode) : '',
+        tags: r.sess.tags, canais: String(r.sess.canais ?? '').split(',').filter(Boolean),
+      },
+      r.file,
+    )
+    r.sess = { ...r.sess, ...sess }
+    await enviaArquivo(sess, r.file, r, (p) => {
+      r.pct = p
+      r.status = `enviando ${p}%`
+    })
+    r.status = 'na fila'
+    refresh()
+  } catch (e) {
+    r.status = (e as Error).message === 'cancelado' ? 'cancelado' : `erro: ${(e as Error).message}`
+  }
+}
+
+function cancelarRetomada(r: Retomada) {
+  r.cancelado = true
+  r.ctrl?.abort()
+}
+
+async function descartar(p: any) {
+  await api(`/uploads/${p.id}`, { method: 'DELETE' })
+  fetchPendentes()
+}
+
+const cancelForm = ref<{ ctrl?: AbortController; cancelado?: boolean } | null>(null)
+function cancelarForm() {
+  if (cancelForm.value) {
+    cancelForm.value.cancelado = true
+    cancelForm.value.ctrl?.abort()
+  }
 }
 
 async function submit() {
@@ -253,31 +470,72 @@ async function submit() {
   sending.value = true
   msg.value = ''
   pct.value = 0
+  const alvo: { ctrl?: AbortController; cancelado?: boolean } = {}
+  cancelForm.value = alvo
+  let sess: SessaoUpload | undefined
   try {
-    const { staging_key } = await upload(file.value, (n) => (pct.value = n))
-    const res = await postJson('/jobs', {
-      ...form.value,
-      canais: form.value.canais.join(','),
-      episode: form.value.episode ? Number(form.value.episode) : null,
-      staging_key,
-      original_name: file.value.name,
-    })
-    const body = await res.json()
-    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    sess = await criaSessao(
+      {
+        id: form.value.id, tipo: form.value.tipo, titulo: form.value.title,
+        series: form.value.series_id, ep: form.value.episode, tags: form.value.tags,
+        canais: form.value.canais,
+      },
+      file.value,
+    )
+    formSess.value = sess.id
+    await enviaArquivo(sess, file.value, alvo, (n) => (pct.value = n))
     msg.value = `✔ "${form.value.title}" entrou na fila — a fábrica processa em instantes`
     file.value = null
     meta.value = null
     refresh()
   } catch (e) {
-    msg.value = `✖ ${(e as Error).message}`
+    if ((e as Error).message === 'cancelado') {
+      await cancelaSessao(sess)
+      msg.value = 'upload cancelado'
+    } else {
+      msg.value = `✖ ${(e as Error).message}`
+    }
+    fetchPendentes()
   } finally {
     sending.value = false
+    cancelForm.value = null
+    formSess.value = ''
   }
 }
 
 async function toggle(m: any) {
   await postJson(`/media/${m.id}/status`, { status: m.status === 'ready' ? 'disabled' : 'ready' })
   refresh()
+}
+
+// ── zona de perigo: deleção física e irreversível ──────────────────────────
+// Só aparece pra mídia já desativada; o backend re-valida tudo de novo
+// (disabled + confirmação exata + fora da janela do player).
+const del = ref<{ id: string; entendo: boolean; texto: string; busy: boolean; erro: string } | null>(null)
+function abreDel(m: any) {
+  del.value = { id: m.id, entendo: false, texto: '', busy: false, erro: '' }
+}
+async function confirmaDel() {
+  if (!del.value) return
+  del.value.busy = true
+  del.value.erro = ''
+  try {
+    const res = await api(`/media/${del.value.id}`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmacao: del.value.texto }),
+    })
+    const body = await res.json()
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    msg.value = `✔ mídia apagada de vez (${body.segmentos_apagados} objetos removidos do R2)`
+    del.value = null
+    refresh()
+  } catch (e) {
+    if (del.value) {
+      del.value.erro = (e as Error).message
+      del.value.busy = false
+    }
+  }
 }
 
 const canaisDe = (m: any): string[] => (m.canais ? String(m.canais).split(',') : [])
@@ -437,9 +695,12 @@ onBeforeUnmount(() => clearInterval(poll))
               <input type="checkbox" :value="c.id" v-model="form.canais" /> {{ c.nome }}
             </label>
           </div>
-          <button class="primary" :disabled="sending" @click="submit">
-            {{ sending ? `enviando… ${pct}%` : 'enviar pra fila' }}
-          </button>
+          <div class="row">
+            <button class="primary" :disabled="sending" @click="submit">
+              {{ sending ? `enviando… ${pct}%` : 'enviar pra fila' }}
+            </button>
+            <button v-if="sending" class="ghost" @click="cancelarForm">cancelar</button>
+          </div>
           <div v-if="sending" class="bar"><div class="bar-fill" :style="{ width: pct + '%' }" /></div>
         </div>
       </template>
@@ -452,7 +713,7 @@ onBeforeUnmount(() => clearInterval(poll))
             <input type="checkbox" :value="c.id" v-model="loteCanais" /> {{ c.nome }}
           </label>
         </div>
-        <div v-for="item in lote" :key="item.file.name" class="lote-row">
+        <div v-for="item in lote" :key="item.rel || item.file.name" class="lote-row">
           <span class="mono">{{ item.id }}</span>
           <input v-model="item.titulo" class="lote-titulo" />
           <select v-model="item.tipo">
@@ -461,7 +722,15 @@ onBeforeUnmount(() => clearInterval(poll))
             <option value="comercial">com</option>
             <option value="vinheta">vin</option>
           </select>
-          <span class="chip" :class="item.status === 'na fila' ? 'st-done' : item.status.startsWith('erro') ? 'st-error' : 'st-queued'">{{ item.status }}</span>
+          <span class="chip" :class="item.status === 'na fila' ? 'st-done' : item.status.startsWith('erro') || item.status === 'cancelado' ? 'st-error' : 'st-queued'">{{ item.status }}</span>
+          <button
+            v-if="item.status.startsWith('enviando') || item.status === 'reservado'"
+            class="ghost" title="cancelar este item" @click="cancelarItem(item)"
+          >✕</button>
+          <button
+            v-else-if="item.status.startsWith('erro') || item.status === 'cancelado'"
+            class="ghost" title="tentar de novo (continua de onde parou)" @click="tentarDeNovo(item)"
+          >↻</button>
         </div>
         <button class="primary" :disabled="loteEnviando" @click="enviarLote">
           {{ loteEnviando ? 'enviando lote…' : `enviar ${lote.length} pra fila` }}
@@ -469,6 +738,39 @@ onBeforeUnmount(() => clearInterval(poll))
       </template>
 
       <p v-if="msg" :class="msg.startsWith('✖') ? 'err' : 'ok'">{{ msg }}</p>
+
+      <template v-if="pendentesVisiveis.length || retomadas.length">
+        <h2 class="mt">Uploads interrompidos</h2>
+        <p class="dim">
+          O navegador não guarda o arquivo depois de um reload — reanexe o(s) mesmo(s)
+          arquivo(s) (ou a pasta) e o envio continua de onde parou.
+        </p>
+        <div class="row">
+          <label class="pasta-btn grow">
+            📎 reanexar arquivo(s)
+            <input type="file" multiple class="oculto reanexa-arquivos" @change="reanexar" />
+          </label>
+          <label class="pasta-btn grow">
+            📁 reanexar a pasta
+            <input type="file" webkitdirectory multiple class="oculto reanexa-pasta" @change="reanexar" />
+          </label>
+        </div>
+        <div v-for="p in pendentesVisiveis" :key="p.id" class="job-row">
+          <span class="mono">{{ p.media_id }}</span>
+          <span class="dim grow">{{ p.title }} · {{ p.partes.length }}/{{ p.parts_total }} partes enviadas</span>
+          <span class="chip st-queued">interrompido</span>
+          <button class="ghost" title="abandona e limpa este upload" @click="descartar(p)">descartar</button>
+        </div>
+        <div v-for="r in retomadas" :key="r.sess.id" class="job-row">
+          <span class="mono">{{ r.sess.media_id }}</span>
+          <span class="dim grow">{{ r.sess.title }}</span>
+          <span class="chip" :class="r.status === 'na fila' ? 'st-done' : r.status.startsWith('erro') || r.status === 'cancelado' ? 'st-error' : 'st-queued'">{{ r.status }}</span>
+          <button
+            v-if="r.status.startsWith('enviando') || r.status.startsWith('aguardando')"
+            class="ghost" @click="cancelarRetomada(r)"
+          >✕</button>
+        </div>
+      </template>
     </section>
 
     <section class="card">
@@ -482,28 +784,52 @@ onBeforeUnmount(() => clearInterval(poll))
       </div>
 
       <h2 class="mt">Catálogo</h2>
-      <div v-for="m in media" :key="m.id" class="job-row wrapy">
-        <span class="mono">{{ m.id }}</span>
-        <span class="dim grow">{{ titleOf(m) }} · {{ m.tipo }} · {{ fmtDur(m.duracao_seg) }}</span>
-        <span class="canal-chips">
+      <template v-for="m in media" :key="m.id">
+        <div class="job-row wrapy">
+          <span class="mono">{{ m.id }}</span>
+          <span class="dim grow">{{ titleOf(m) }} · {{ m.tipo }} · {{ fmtDur(m.duracao_seg) }}</span>
+          <span class="canal-chips">
+            <button
+              v-for="c in channels"
+              :key="c.id"
+              class="chip chip-btn"
+              :class="{ 'chip-on': canaisDe(m).includes(c.id) }"
+              :title="`${canaisDe(m).includes(c.id) ? 'remover de' : 'adicionar a'} ${c.nome}`"
+              @click="toggleCanal(m, c.id)"
+            >{{ c.nome }}</button>
+          </span>
+          <input
+            class="series-input"
+            :value="seriesOf(m)"
+            placeholder="série (p/ excluir a temporada toda)"
+            @change="saveSeries(m, ($event.target as HTMLInputElement).value)"
+          />
+          <span class="chip" :class="m.status === 'ready' ? 'st-done' : 'st-error'">{{ m.status }}</span>
+          <button class="ghost" @click="toggle(m)">{{ m.status === 'ready' ? 'desativar' : 'ativar' }}</button>
           <button
-            v-for="c in channels"
-            :key="c.id"
-            class="chip chip-btn"
-            :class="{ 'chip-on': canaisDe(m).includes(c.id) }"
-            :title="`${canaisDe(m).includes(c.id) ? 'remover de' : 'adicionar a'} ${c.nome}`"
-            @click="toggleCanal(m, c.id)"
-          >{{ c.nome }}</button>
-        </span>
-        <input
-          class="series-input"
-          :value="seriesOf(m)"
-          placeholder="série (p/ excluir a temporada toda)"
-          @change="saveSeries(m, ($event.target as HTMLInputElement).value)"
-        />
-        <span class="chip" :class="m.status === 'ready' ? 'st-done' : 'st-error'">{{ m.status }}</span>
-        <button class="ghost" @click="toggle(m)">{{ m.status === 'ready' ? 'desativar' : 'ativar' }}</button>
-      </div>
+            v-if="m.status === 'disabled'"
+            class="ghost perigo"
+            title="apaga os arquivos e todos os registros — não tem volta"
+            @click="abreDel(m)"
+          >🗑 excluir de vez</button>
+        </div>
+        <div v-if="del && del.id === m.id" class="del-zone">
+          <p class="err small">
+            Isto apaga os segmentos do R2 e todos os registros desta mídia. <b>Não tem volta.</b>
+          </p>
+          <label class="check small dim">
+            <input type="checkbox" v-model="del.entendo" /> entendo que a ação é irreversível
+          </label>
+          <div class="row">
+            <input v-model="del.texto" :placeholder="`digite EXCLUIR ${m.id}`" spellcheck="false" />
+            <button class="primary perigo-btn" :disabled="!del.entendo || del.busy" @click="confirmaDel">
+              {{ del.busy ? 'apagando…' : 'apagar de vez' }}
+            </button>
+            <button class="ghost" @click="del = null">voltar</button>
+          </div>
+          <p v-if="del.erro" class="err small">{{ del.erro }}</p>
+        </div>
+      </template>
     </section>
 
     <section v-if="god" class="card god-card">
@@ -646,6 +972,13 @@ button.ghost:hover { color: var(--text); }
 .lote-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .lote-row select { width: auto; padding: 5px 6px; font-size: 12px; }
 .lote-titulo { flex: 1; padding: 5px 8px; font-size: 13px; }
+
+.perigo { color: #ff6b6b; border-color: rgba(255, 107, 107, 0.5); }
+.perigo:hover { color: #ff8f8f; }
+.perigo-btn { background: #c0392b; }
+.del-zone { border: 1px solid rgba(255, 107, 107, 0.4); border-radius: 8px; padding: 10px 12px;
+  margin: 6px 0 10px; display: flex; flex-direction: column; gap: 8px; }
+.del-zone .check { display: flex; align-items: center; gap: 6px; flex-direction: row; }
 
 .chat-head { display: flex; gap: 10px; margin-bottom: 10px; }
 .chat-canal { width: auto; }
