@@ -1,0 +1,55 @@
+# A fábrica de transcodificação — roda de graça no GitHub Actions.
+#
+# Acorda quando o Worker dispara um repository_dispatch (job novo na fila) e
+# drena a fila inteira antes de encerrar (FACTORY_DRAIN=1). O cron diário do
+# Worker re-dispara se sobrar fila (dispatch perdido, run morta no timeout), e
+# o workflow_dispatch permite acionar na mão pela aba Actions.
+#
+# concurrency: uma run por vez — dispatches durante uma run em andamento
+# colapsam numa única run enfileirada (o claim é atômico de todo jeito, mas
+# assim não queimamos minutos com runners concorrentes).
+name: fabrica
+
+on:
+  repository_dispatch:
+    types: [fabrica]
+  workflow_dispatch:
+
+concurrency:
+  group: fabrica
+  cancel-in-progress: false
+
+jobs:
+  transcodifica:
+    runs-on: ubuntu-latest
+    # folga pra lotes grandes (17 vídeos ≈ 45min na EC2; runner tem 4 vCPU) —
+    # minutos são cobrados por uso real, timeout alto não custa nada; se ainda
+    # assim estourar, o self-heal do claim devolve o job preso pra fila em 2h
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: garante ffmpeg
+        run: ffmpeg -version >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y ffmpeg)
+
+      - name: dependências (só runtime — sem playwright/browsers)
+        run: pnpm install --prod --frozen-lockfile
+
+      - name: drena a fila de ingestão
+        env:
+          BASE: https://biel-tv-stream.biel-cesa95.workers.dev
+          FACTORY_TARGET: remote
+          FACTORY_DRAIN: '1'
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: biel-tv-media
+        run: node scripts/factory-local.mjs
