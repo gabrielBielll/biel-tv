@@ -52,4 +52,8 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: biel-tv-media
+          # o passo final do pipeline registra a mídia no D1 via wrangler —
+          # sem estas duas, o job transcodifica tudo e morre no registro
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: '97603ea0b9784ad4a9d3b80bd73f1ea4'
         run: node scripts/factory-local.mjs
