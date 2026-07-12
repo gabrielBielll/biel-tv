@@ -77,11 +77,23 @@ robusto aos dois formatos que o LLM pode escolher. Ver tabela de fases concluíd
 sessões multipart retomáveis substituíram o upload monolítico — reload não perde
 mais nada e arquivo grande não esbarra no limite de request. O POST /admin/upload
 antigo ficou só como compatibilidade temporária.
-**Entregáveis restantes:** classificação por LLM (nome sujo → título/série/episódio +
-confiança, hoje é heurística); fila `needs_review`; TMDB (título oficial, sinopse,
-**poster** → EPG rico); URL pré-assinada pro navegador enviar cada parte DIRETO ao
-R2 (hoje as partes passam pelo Worker via binding — funciona e é retomável, mas
-gasta invocações; presign entra junto com o domínio próprio, com CORS restrito ao painel).
+**Entregáveis restantes:**
+- **11c — Classificação por LLM com "contexto do lote" (campo de texto livre)** —
+  pedido do Gabriel (2026-07-12): ao subir arquivos de nome obscuro
+  ("julyperli 01.mp4"), um campo livre no upload deixa explicar do que se trata
+  ("subi 5 episódios da série X, sem especificação nos nomes"). O Gemini recebe
+  nomes + caminhos + durações + esse contexto e devolve, POR ARQUIVO, título
+  limpo/série/episódio/tipo/canais + grau de confiança (JSON garantido via
+  responseSchema, mesmo padrão do chat do Diretor, com fallback DeepSeek).
+  Confiança baixa → fila `needs_review` pro operador confirmar antes de ir ao ar.
+  Campo opcional: sem texto, a heurística atual continua valendo. O contexto
+  fica guardado na sessão de upload (a 11b já criou o lugar natural pra isso).
+- TMDB (título oficial, sinopse, **poster** → EPG rico).
+- URL pré-assinada pro navegador enviar cada parte DIRETO ao R2 (hoje as partes
+  passam pelo Worker via binding — funciona e é retomável, mas gasta invocações;
+  presign entra junto com o **domínio próprio**, com CORS restrito ao painel).
+  Gabriel vai providenciar o domínio nos próximos dias — quando chegar, o mesmo
+  domínio destrava TAMBÉM o bucket público (segmentos fora do Worker, ver fase 7).
 
 ### Fase 12 — Comerciais condicionais ("promessas")
 **Objetivo:** promos de sequência/horário/maratona só irem ao ar quando a grade cumpre.
