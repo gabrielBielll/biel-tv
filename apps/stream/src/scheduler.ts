@@ -117,22 +117,31 @@ export async function scheduleChannel(
 
   const push = (m: string, s: number, e: number, seg: number) => rows.push([canal, m, s, e, seg])
 
-  // intervalo com duração-alvo: 1..N comerciais, sem repetir o anterior
+  // Intervalo com duração-alvo: enche até ~alvo segundos, mas NUNCA repete o
+  // mesmo comercial dentro do mesmo intervalo. Se os comerciais distintos
+  // acabarem antes do alvo, o intervalo fica mais curto (melhor que repetir).
+  // Também evita emendar o último comercial do intervalo anterior no primeiro
+  // deste, quando há alternativa.
   const breakPod = () => {
     if (adPool.length === 0) return
     const alvo = chan.break_target_seg ?? 120
+    const usados = new Set<string>()
     let sum = 0
-    let guard = 0
-    while (sum < alvo && guard++ < 10) {
-      let pick = adPool[ai % adPool.length]
-      if (pick.id === lastAd && adPool.length > 1) {
-        ai++
-        pick = adPool[ai % adPool.length]
+    while (sum < alvo && usados.size < adPool.length) {
+      let pick: MediaRow | null = null
+      for (let k = 0; k < adPool.length; k++) {
+        const cand = adPool[(ai + k) % adPool.length]
+        if (usados.has(cand.id)) continue
+        if (usados.size === 0 && cand.id === lastAd && adPool.length > 1) continue
+        pick = cand
+        ai += k + 1
+        break
       }
-      ai++
+      if (!pick) break
       push(pick.id, t, t + pick.duracao_seg, 0)
       t += pick.duracao_seg
       sum += pick.duracao_seg
+      usados.add(pick.id)
       lastAd = pick.id
     }
   }

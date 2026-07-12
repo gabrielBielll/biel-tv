@@ -80,11 +80,19 @@ function pods(canal) {
 }
 const podsJ = pods('jetix')
 const podsC = pods('cartoon_network')
-check('Jetix: intervalos com duração-alvo (~120s)', podsJ.length > 3 && podsJ.every((p) => p.total >= 100),
-  `${podsJ.length} pods, ex.: ${podsJ[0]?.total}s`)
-const semRepete = podsC.every((p) => p.ads.every((a, i) => i === 0 || a !== p.ads[i - 1]))
-check('Cartoon: pods sem comercial repetido em sequência', podsC.length > 3 && semRepete,
-  `${podsC.length} pods`)
+// invariante forte: NENHUM intervalo repete o mesmo comercial (em nenhum canal)
+let semDup = true
+let ondeDup = ''
+for (const [canal, ps] of [['jetix', podsJ], ['cartoon_network', podsC]]) {
+  for (const p of ps) {
+    if (new Set(p.ads).size !== p.ads.length) { semDup = false; ondeDup = `${canal}: [${p.ads.join(', ')}]`; break }
+  }
+}
+check('nenhum intervalo repete o mesmo comercial (bug do Power Rangers 2x)', semDup, ondeDup || 'limpo')
+check('Jetix (1 comercial): intervalos de 1 só, sem back-to-back',
+  podsJ.length > 3 && podsJ.every((p) => p.ads.length === 1), `${podsJ.length} pods`)
+check('Cartoon (2 comerciais): intervalos usam os 2 sem repetir',
+  podsC.length > 3 && podsC.some((p) => p.ads.length === 2), `${podsC.length} pods`)
 
 // ── 5. idempotência (rodar de novo não duplica) ────────────────────────────
 const again = await (await post('/admin/schedule/run')).json()
