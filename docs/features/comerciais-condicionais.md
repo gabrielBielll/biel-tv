@@ -1,7 +1,16 @@
 # Feature: comerciais condicionais à programação
 
-> Backlog — especificado em 2026-07-12 a partir da ideia do Gabriel.
-> Estado: não iniciado. Depende de: Diretor determinístico completo (roadmap #4).
+> Especificado em 2026-07-12 a partir da ideia do Gabriel.
+> Estado: ✅ etapas 1 e 2 IMPLEMENTADAS e em produção (2026-07-12) —
+> transcrição na fábrica (faster-whisper), extração da promessa por LLM,
+> fila de revisão no painel, e agendador que segura promessa não confirmada
+> e veicula "a_seguir" só colado no programa prometido.
+> Prova: `pnpm verify:promessas` (10/10 com LLM real) + backfill no catálogo real.
+> O que mudou vs o desenho original: modelo simplificado pra UMA tabela
+> `media_promises` (transcript + proposta + condição + status) em vez de
+> `ad_conditions`; "bloco_horario"/"evento" ficam RETIDOS (fora do rodízio)
+> até a fase 10a garantir blocos fixos — nunca prometemos no escuro.
+> Etapa 3 (programação guiada por promo) segue pendente — entra com a 10a.
 
 ## O problema
 

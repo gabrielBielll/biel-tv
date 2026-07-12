@@ -102,12 +102,17 @@ antigo ficou só como compatibilidade temporária.
   Gabriel vai providenciar o domínio nos próximos dias — quando chegar, o mesmo
   domínio destrava TAMBÉM o bucket público (segmentos fora do Worker, ver fase 7).
 
-### Fase 12 — Comerciais condicionais ("promessas")
+### Fase 12 — Comerciais condicionais ("promessas") — etapas 1+2 ✅ FEITAS em 2026-07-12
 **Objetivo:** promos de sequência/horário/maratona só irem ao ar quando a grade cumpre.
-**Spec completa:** [features/comerciais-condicionais.md](features/comerciais-condicionais.md).
-Interna em 3 etapas: modelo+matching manual → captação por transcrição (whisper+LLM
-+confirmação humana) → programação guiada por promo. Pré-requisito (`series_id`
-canônico) já existe e está em uso real desde a fase 10b.1 — falta só o resto.
+**Spec:** [features/comerciais-condicionais.md](features/comerciais-condicionais.md).
+**Entregue:** whisper na fábrica (transcreve na ingestão + backfill do catálogo),
+LLM propõe a promessa (com casador determinístico de série), fila de revisão no
+painel (pendente = fora do ar até decidir), e o agendador cumpre: "a seguir"
+confirmado fecha o intervalo colado no programa prometido; horário/evento ficam
+retidos até a 10a. 10/10 (`pnpm verify:promessas`, LLM real).
+**Falta (etapa 3, junto com a 10a):** programação GUIADA por promo — o Diretor
+montar blocos/sequências justamente porque tem a promo perfeita pra eles, e
+promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o bloco.
 
 ## 📦 Backlog (sem fase definida)
 
