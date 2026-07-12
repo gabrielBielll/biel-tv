@@ -200,10 +200,16 @@ admin.post('/promessas/:id/decidir', async (c) => {
       if (!cd.series_id || !SLUG.test(cd.series_id)) {
         return c.json({ error: 'promessa "a seguir" precisa de uma série alvo válida' }, 400)
       }
+      // o alvo precisa ser série de CONTEÚDO — "a seguir" toca colado num
+      // episódio/filme; série de comerciais nunca aparece como programa
       const existe = await c.env.DB.prepare(
-        `SELECT 1 FROM media_items WHERE json_extract(metadata,'$.series_id') = ?1 AND status = 'ready' LIMIT 1`,
+        `SELECT 1 FROM media_items
+         WHERE json_extract(metadata,'$.series_id') = ?1 AND status = 'ready'
+           AND tipo IN ('episodio','filme') LIMIT 1`,
       ).bind(cd.series_id).first()
-      if (!existe) return c.json({ error: `nenhuma mídia pronta com series_id "${cd.series_id}"` }, 400)
+      if (!existe) {
+        return c.json({ error: `"${cd.series_id}" não tem episódio/filme pronto — agrupe os episódios da série alvo no catálogo primeiro` }, 400)
+      }
     }
     condicao = JSON.stringify({ tipo: cd.tipo, series_id: cd.series_id ?? null, descricao: cd.descricao ?? '' })
   }
