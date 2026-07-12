@@ -49,9 +49,10 @@ catálogo↔R2** (mídia removida do storage → `disabled` + aviso + reflow da 
 **Entregáveis:** planejamento noturno por canal via **Gemini** (free tier ⇒ custo
 zero; JSON garantido via `responseSchema`) com prompt de identidade imitando a
 programação original; validação + compilação determinística + fallback (a fase 9
-segura a grade se o LLM falhar); **chat com o Diretor no admin** ("tira esse desenho
-por 2 meses", "maratona sábado") → ações tipadas → tabela `directives` → replan
-append-only.
+segura a grade se o LLM falhar); **Votaton** no front (pedidos de programação SEM
+garantia, com votação simulada, pity timer e celebração da conquista — recompensa
+variável de propósito); **Modo God escondido** (flag `god_mode` + easter egg no
+admin): chat direto com ações garantidas → tabela `directives` → replan append-only.
 
 ### Fase 11 — Admin v2 (ingestão inteligente)
 **Objetivo:** upar qualquer coisa e o sistema entender sozinho.

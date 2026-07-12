@@ -58,29 +58,58 @@ A arquitetura é agnóstica de provedor: o LLM é uma função
 `(contexto) → plano JSON`. Se o free tier mudar um dia, trocar de modelo é
 trocar essa função — nada mais se move.
 
-## Chat com o Diretor (aba no admin)
+## Falar com o canal: dois modos (decisão do Gabriel, 2026-07-12)
 
-Conversa em linguagem natural, por canal. Exemplos reais do Gabriel:
+Separação de poderes: **Votaton = pedidos SOFT** (o Diretor pondera, sem
+garantia) · **Modo God = ordens HARD** (código executa, garantido).
 
-- *"retire tal desenho da programação dos próximos 2 meses"*
-- *"faz uma maratona de X"*
-- *"passa um filme hoje à noite"*
+### Votaton — o modo telespectador (a experiência padrão)
 
-Como funciona (mesmo princípio — o LLM emite **ações tipadas**, nunca SQL):
+Inspirado nos votatons da época (o Votatoon da Cartoon): na **página da TV**
+(não no admin), por canal, um espaço "peça sua programação". O pedido **não é
+garantido** — de propósito. A incerteza simula outros telespectadores votando
+e transforma o atendimento em conquista (recompensa variável, o "gatilho" que
+o Gabriel descreveu).
 
-1. Mensagem → Gemini com function calling + contexto do canal (catálogo,
-   grade, diretrizes ativas).
-2. O LLM responde com ações: `add_directive` (exclusão/preferência com
-   vigência), `schedule_event` (maratona/filme com data e hora),
-   `replan_today` (recompila o resto do dia), ou `answer` (só conversa).
-3. Código valida (a mídia existe? as datas fazem sentido?) e executa; o chat
-   confirma o que de fato aconteceu: *"Feito — Padrinhos Mágicos fora da
-   grade do canal Jetix até 12/09."*
-4. Tabela `directives`: (canal, tipo, payload JSON, vigente_de, vigente_ate,
-   origem, status). O planejamento noturno trata diretrizes ativas como
-   **restrições duras** — pedido no chat vale até expirar, não só hoje.
-5. Pedido para hoje → replan imediato do resto do dia, **append-only** (nunca
-   corta o que está no ar).
+1. Pedido entra na tabela `votaton_requests` (canal, pedido, data, status:
+   `pendente`/`atendido`/`perdeu`, peso).
+2. Na resolução (no planejamento noturno e/ou em **eventos de votaton**
+   agendados, ex.: sexta à tarde, como era na TV), o Diretor atende com
+   **probabilidade configurável** (padrão ~50%) e gera concorrentes
+   plausíveis + placar simulado pra imersão: *"Pucca 38% × Padrinhos 41% ×
+   Kick Buttowski 21%"*.
+3. **Pity timer**: pedido que perde ganha peso na rodada seguinte — a
+   conquista sempre chega, só não se sabe quando. (Sem isso, azar em série
+   vira frustração; com isso, vira expectativa.)
+4. **A vitória é celebrada**: selo "PEDIDO DOS TELESPECTADORES" na grade +
+   aviso na UI ("Você pediu, vai passar: hoje às 19h!").
+5. A UI **nunca quebra a quarta parede** — jamais admite que existe um único
+   telespectador.
+
+### Modo God — escondido
+
+O chat direto com o Diretor (o poder de verdade) fica fora da vista pra não
+quebrar a imersão do votaton:
+
+- Vive no admin, mas a aba **só aparece com a flag `god_mode` ligada**
+  (tabela `config`).
+- Ativação discreta — proposta padrão: **easter egg** (clicar 5× no logo
+  BIEL TV do admin liga/desliga a flag); alternativa: toggle minúsculo no
+  rodapé do admin. O front do votaton nunca menciona que o modo existe.
+- Conversa em linguagem natural com **ações garantidas** (o LLM emite ações
+  tipadas, nunca SQL): `add_directive` (ex.: *"retire tal desenho da
+  programação dos próximos 2 meses"* — exclusão/preferência com vigência),
+  `schedule_event` (maratona/filme com data e hora), `replan_today`
+  (recompila o resto do dia, **append-only** — nunca corta o que está no ar),
+  `answer` (só conversa).
+- Código valida (mídia existe? datas ok?) e executa; o chat confirma o que de
+  fato aconteceu: *"Feito — Padrinhos Mágicos fora da grade do Jetix até
+  12/09."*
+- Tabela `directives`: (canal, tipo, payload JSON, vigente_de, vigente_ate,
+  origem, status). O planejamento noturno trata diretrizes ativas como
+  **restrições duras** — valem até expirar, não só hoje.
+- Pelo Modo God também se ajusta o próprio votaton: probabilidade, frequência
+  dos eventos, ou forçar um resultado.
 
 ## Resiliência a remoção de mídia
 
