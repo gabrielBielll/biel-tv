@@ -3,34 +3,53 @@
 > Bugs reais encontrados, suas causas exatas e o fix — pra não redescobrir o
 > mesmo problema duas vezes. Atualizado em 2026-07-12.
 
-## 🔴 Risco operacional #1: a fábrica de produção não é automática
+## Fábrica: GitHub Actions desde 2026-07-12 (a EC2 é só fallback)
 
-**A transcodificação só acontece se um processo Node estiver rodando nesta
-EC2**, escutando a fila de produção. Ele **não sobe sozinho** se a máquina
-reiniciar — e quando ele não está rodando, uploads pelo admin **ficam
-`queued` para sempre, sem erro nenhum, sem aviso nenhum**. Foi exatamente
-isso que aconteceu em 2026-07-12: 17 vídeos reais subidos pelo Gabriel
-ficaram parados na fila porque a única fábrica ativa apontava pro Worker
-*local*, não pro de produção.
+A transcodificação roda no workflow `fabrica` (`.github/workflows/fabrica.yml`),
+acordado automaticamente pelo Worker quando entra job na fila. **Se uploads
+ficarem presos em `queued`:** (1) veja a aba Actions do repo (run travada?
+falhou no setup?); (2) dispare na mão: `gh workflow run fabrica`; (3) o cron
+diário do Worker também re-dispara enquanto houver fila. Job preso em
+`processing` volta pra fila sozinho após 2h.
 
-**Checar se está rodando:** `ps aux | grep FACTORY_TARGET` (ou veja se
-`ingest_jobs` na produção tem itens `queued` há mais de ~1 min).
-
-**Religar:**
+**Fallback manual (EC2 ou qualquer máquina com ffmpeg):**
 ```bash
-cd apps/stream
+cd biel-tv
 FACTORY_TARGET=remote \
 BASE=https://biel-tv-stream.biel-cesa95.workers.dev \
 ADMIN_TOKEN=<token de produção> \
+CLOUDFLARE_API_TOKEN=<cfat_...> CLOUDFLARE_ACCOUNT_ID=97603ea0b9784ad4a9d3b80bd73f1ea4 \
 R2_ACCOUNT_ID=97603ea0b9784ad4a9d3b80bd73f1ea4 \
 R2_ACCESS_KEY_ID=<...> R2_SECRET_ACCESS_KEY=<...> R2_BUCKET=biel-tv-media \
 node scripts/factory-local.mjs
 ```
-(rodar em background/`nohup`, senão morre quando a sessão fecha)
+(sem FACTORY_DRAIN ele vira daemon; com `FACTORY_DRAIN=1` drena e sai)
 
-**Solução definitiva:** fase 8 (fábrica no GitHub Actions) elimina esse
-processo manual de vez. Até lá, checar se está viva é o primeiro passo de
-qualquer sessão que for mexer em upload/ingestão.
+## GitHub Actions (aprendizados do primeiro dia, 2026-07-12)
+
+**O pipeline precisa de DOIS conjuntos de credenciais — R2 *e* Cloudflare.**
+O sintoma da segunda faltando é cruel: o job transcodifica 8 minutos, sobe
+tudo pro R2… e morre no ÚLTIMO passo (`✖ wrangler d1 execute falhou
+(register-<id>)`), porque o registro no D1 usa wrangler, que exige
+`CLOUDFLARE_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`). Na EC2 nunca doeu porque
+o token sempre esteve no ambiente. Custou uma leva inteira de jobs falhados.
+
+**ffmpeg do runner ≠ ffmpeg da EC2 — e isso muda o comportamento do Node.**
+O runner usa o ffmpeg do Ubuntu; a EC2 usa build estático (BtbN). Versões
+diferentes despejam volumes diferentes de avisos (rips antigos com timestamps
+tortos geram aviso POR FRAME), e o `execFile` do Node mata o processo com
+`maxBuffer exceeded` (padrão: 1 MiB). Sintoma: job morre DEPOIS de minutos de
+trabalho com um crash dump cujo rodapé ("Node.js vX") era o que acabava
+gravado como erro. Fixes permanentes: `maxBuffer: 64 MiB` em todas as
+chamadas + `uncaughtException/unhandledRejection → ✖ mensagem limpa` no cli.
+
+**Runs fixam o commit do MOMENTO do evento.** Push depois do dispatch NÃO
+entra na run pendente (nem na ativa). Pra rodar código novo: cancele as runs
+velhas e dispare de novo (`gh run cancel` + `gh workflow run fabrica`).
+
+**Push de `.github/workflows/` exige escopo `workflow` no token do gh.** O
+login padrão do gh não inclui; `gh auth refresh -h github.com -s workflow`
+(device flow — precisa do Gabriel no navegador).
 
 ## Infra & deploy
 
@@ -170,6 +189,12 @@ Todo `d1()` helper faz `JSON.parse(stdout.slice(stdout.indexOf('[')))` pra
 pular o preâmbulo — funciona, mas é frágil a mudanças de formato do
 wrangler. Mantenha esse padrão consistente se adicionar novo script (ou
 centralize em `_lib.mjs` se aparecer uma terceira cópia).
+
+**`python3 - <<'EOF'` engole o stdin do pipe.** `echo "$X" | python3 - <<EOF`
+NÃO funciona: o heredoc vira o stdin (é de onde o python lê o script), então
+o pipe é descartado e `sys.stdin.read()` volta vazio. Ou passa os dados por
+argumento/arquivo, ou embute no script. Custou dois "vigias" de background
+imprimindo lixo em silêncio.
 
 **Playwright: `innerText` devolve o texto RENDERIZADO — inclusive
 `text-transform: uppercase` do CSS.** Os `h2` dos cards do admin usam

@@ -45,7 +45,7 @@ Três cérebros, um contrato:
 | `apps/web` | Vue 3 + hls.js: player multi-canal, AGORA/INTERVALO/A SEGUIR, grade; `/admin.html`: upload (individual/lote/pasta), fila, catálogo, Modo God | Cloudflare Pages (produção) |
 | `packages/db` | Migrations SQL + tipos/SQL compartilhados | D1 (SQLite, produção + simulado local) |
 | `packages/pipeline` | CLI: probe → normaliza → segmenta → blackdetect → upload → registra (`--target local\|remote`) | roda onde tiver ffmpeg |
-| `scripts/factory-local.mjs` | Fábrica: drena `ingest_jobs` via `/admin`, roda o pipeline, re-gera a grade. **Processo manual — ver risco operacional em [GOTCHAS.md](GOTCHAS.md)** | EC2 hoje (`FACTORY_TARGET=remote` p/ produção); GitHub Actions na fase 8 |
+| `scripts/factory-local.mjs` | Fábrica: drena `ingest_jobs` via `/admin`, roda o pipeline (com progresso % pro painel), re-gera a grade | **GitHub Actions** (workflow `fabrica`, acordado por dispatch do Worker; `FACTORY_DRAIN=1`); EC2 = fallback manual/dev |
 | `scripts/seed-epg.mjs` | Atalho fino: só chama `POST /admin/schedule/run` no Worker | idem |
 | `scripts/_lib.mjs` | `fetchRetry()` compartilhado pelos scripts de verificação | dev |
 
@@ -110,9 +110,10 @@ Três cérebros, um contrato:
 
 **Produção:** Worker + Pages + D1 + R2 na Cloudflare (conta `biel-cesa95`), tudo
 provisionado via `wrangler` (sem Terraform — o `wrangler.toml` versionado já é a
-infra as code). Fábrica de transcodificação: processo manual nesta EC2
-apontado pra produção (`FACTORY_TARGET=remote`) — **risco operacional #1**,
-ver [GOTCHAS.md](GOTCHAS.md). Deploy: `docs/../README.md` tem os comandos exatos.
+infra as code). Fábrica de transcodificação: **GitHub Actions** (workflow
+`fabrica` — o Worker dispara via `repository_dispatch` quando entra job; cron
+diário re-dispara se sobrar fila; ver GOTCHAS.md pro fallback manual). Deploy:
+`docs/../README.md` tem os comandos exatos.
 
 **Dev local (EC2 atual):**
 - `pnpm dev` → Worker em `127.0.0.1:8787` · vite em `100.76.123.18:5173` (IP Tailscale;

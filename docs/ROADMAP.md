@@ -36,19 +36,25 @@
   Gabriel tiver domínio próprio → bucket público + custom domain tira isso do
   Worker. Pro uso pessoal atual, o free tier (100k req/dia) sobra.
 
-### 🔴 Fase 8 — Fábrica no GitHub Actions (subiu de prioridade)
-**Objetivo:** transcodificação de graça e a EC2 virar só máquina de dev (desligável).
-**Por que é urgente agora:** a fábrica de produção hoje é um processo Node manual
-nesta EC2 (`FACTORY_TARGET=remote node scripts/factory-local.mjs`) que **não
-sobrevive a um reboot e não sobe sozinho** — se ele cair, uploads pelo admin
-ficam presos na fila sem erro nenhum (foi exatamente o que aconteceu em
-2026-07-12, ver [GOTCHAS.md](GOTCHAS.md)). Enquanto a fase 8 não existir,
-**checar se a fábrica está viva é o primeiro passo de qualquer sessão que for
-mexer em upload**.
-**Entregáveis:** workflow com ffmpeg + whisper-ready rodando o mesmo pipeline
-(`--target remote` já pronto e testado em produção); Worker dispara a Action via
-`repository_dispatch` quando entra job na fila; secrets R2/D1 no repo.
-Depende de: fases 6 e 7 (ambas concluídas — sem bloqueio).
+### ~~Fase 8~~ ✅ CONCLUÍDA em 2026-07-12 — a fábrica roda no GitHub Actions
+- **Fluxo:** job entra na fila (upload/POST) → Worker dispara `repository_dispatch`
+  → workflow `fabrica` acorda, drena a fila inteira (FACTORY_DRAIN=1) e encerra.
+  Cron diário re-dispara se sobrar fila; `workflow_dispatch` = botão manual na aba
+  Actions (ou `gh workflow run fabrica`). Concurrency de grupo único: dispatches
+  durante uma run colapsam em no máximo 1 run enfileirada.
+- **Resiliência:** job preso em `processing` há 2h volta pra fila sozinho (runner
+  morto no timeout); upload pro R2 com retry por segmento; erros de pipeline
+  viram mensagem legível na fila (não crash dump).
+- **Prova real:** dispatch automático acionado 3× por uploads reais do Gabriel;
+  ep_avdaeasavntsdjnprlet03ep11 processado de ponta a ponta no runner (17:37 UTC)
+  com progresso % ao vivo no painel; fila de 12 episódios drenando em produção.
+- **EC2 aposentada da produção** — virou só máquina de dev (fallback manual da
+  fábrica continua documentado em [GOTCHAS.md](GOTCHAS.md)).
+- **Custo:** GitHub free = 2.000 min/mês de runner em repo privado; um episódio
+  de ~22min consome ~8min de runner. Uso pessoal cabe com folga; se apertar,
+  tornar o repo público zera o custo de minutos.
+- whisper-ready: o runner já tem o ambiente pra fase 12 instalar o whisper no
+  mesmo workflow.
 
 ### ~~Fase 9~~ ✅ CONCLUÍDA em 2026-07-12 (ver tabela acima)
 Pendência levada pra fase 10: regras da `channel_master_grid` (blocos fixos por
