@@ -50,14 +50,15 @@ async function processJob(job) {
     ...(job.series_id ? ['--series', job.series_id] : []),
     ...(job.episode ? ['--episode', String(job.episode)] : []),
     ...(job.tags ? ['--tags', job.tags] : []),
+    ...(job.canais ? ['--canais', job.canais] : []),
   ]
   const r = spawnSync('node', args, { encoding: 'utf8' })
   rmSync(src, { force: true })
   if (r.status !== 0) {
     throw new Error((r.stderr || r.stdout || 'pipeline falhou').trim().split('\n').at(-1))
   }
-  log(`"${job.id}" ingerido — re-gerando a grade (sem tocar no que está no ar)`)
-  spawnSync('node', [join(ROOT, 'scripts/seed-epg.mjs')], { stdio: 'ignore' })
+  log(`"${job.id}" ingerido — replanejando a grade dos canais (bloco no ar preservado)`)
+  await post('/admin/schedule/run', { rebuild: true })
 }
 
 async function tick() {

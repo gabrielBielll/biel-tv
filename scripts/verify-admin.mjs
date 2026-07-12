@@ -35,6 +35,8 @@ if (health?.status !== 'ok') {
   console.error('✖ wrangler dev fora do ar — rode `pnpm dev` antes')
   process.exit(1)
 }
+const chs = await fetch(`${WORKER}/channels`).then((r) => r.json()).catch(() => [])
+const CANAL = chs.find((c) => c.has_content)?.id ?? 'jetix'
 const unauth = await fetch(`${WORKER}/admin/jobs`)
 check('API /admin exige token (401 sem Bearer)', unauth.status === 401)
 
@@ -44,9 +46,13 @@ const auth = { authorization: `Bearer ${TOKEN}` }
 const { spawnSync } = await import('node:child_process')
 function cleanTestMedia() {
   spawnSync('npx', ['wrangler', 'd1', 'execute', 'biel-tv-db', '--local', '--command',
-    `DELETE FROM ingest_jobs WHERE id='${MEDIA_ID}'; DELETE FROM media_cue_points WHERE media_id='${MEDIA_ID}'; DELETE FROM epg_virtual WHERE media_id='${MEDIA_ID}'; DELETE FROM media_items WHERE id='${MEDIA_ID}';`],
+    `DELETE FROM ingest_jobs WHERE id='${MEDIA_ID}'; DELETE FROM media_cue_points WHERE media_id='${MEDIA_ID}'; DELETE FROM epg_virtual WHERE media_id='${MEDIA_ID}'; DELETE FROM media_channels WHERE media_id='${MEDIA_ID}'; DELETE FROM media_items WHERE id='${MEDIA_ID}';`],
     { cwd: join(ROOT, 'apps', 'stream'), stdio: 'ignore' })
-  spawnSync('node', [join(ROOT, 'scripts/seed-epg.mjs')], { stdio: 'ignore' })
+  // REBUILD=1: replaneja o futuro (fecha os buracos deixados pelas linhas removidas)
+  spawnSync('node', [join(ROOT, 'scripts/seed-epg.mjs')], {
+    stdio: 'ignore',
+    env: { ...process.env, REBUILD: '1' },
+  })
 }
 cleanTestMedia()
 
@@ -119,6 +125,14 @@ check('sugestão automática: título e id pré-preenchidos',
   Boolean(suggested?.inputs?.[0]) && (suggested?.inputs?.[1] ?? '').startsWith('com_'),
   `título="${suggested?.inputs?.[0]}" id="${suggested?.inputs?.[1]}"`)
 
+// canais: formulário mostra os 3 e marcamos o primeiro (upload exige ≥1)
+const nCanais = await page.evaluate(() => document.querySelectorAll('.canais-check input[type=checkbox]').length)
+check('seletor de canais no formulário de upload', nCanais >= 3, `${nCanais} canais`)
+await page.evaluate(() => {
+  const cb = document.querySelector('.canais-check input[type=checkbox]')
+  if (cb && !cb.checked) cb.click()
+})
+
 // id determinístico pro teste + envia
 await page.evaluate((id) => {
   const el = document.querySelectorAll('.form input')[1]
@@ -160,13 +174,13 @@ check('staging limpo após o processamento', stagingGone)
 
 let inEpg = false
 for (let i = 0; i < 12 && !inEpg; i++) {
-  const epg = await fetch(`${WORKER}/epg/bieltv_1`).then((r) => r.json())
+  const epg = await fetch(`${WORKER}/epg/${CANAL}`).then((r) => r.json())
   inEpg = epg.items.some((it) => it.media_id === MEDIA_ID)
   if (!inEpg) await sleep(5000)
 }
 check('grade re-gerada já escala o novo comercial', inEpg)
 
-const epgNow = await fetch(`${WORKER}/epg/bieltv_1`).then((r) => r.json())
+const epgNow = await fetch(`${WORKER}/epg/${CANAL}`).then((r) => r.json())
 check('canal continua no ar sem buraco (1 item is_now)', epgNow.items.filter((i) => i.is_now).length === 1)
 
 await browser.close()

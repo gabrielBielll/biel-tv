@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 const esc = (s) => String(s).replaceAll("'", "''")
 
-export function buildRegisterSql({ id, tipo, paddedDur, segmentCount, baseUrl, metadata, cues }) {
+export function buildRegisterSql({ id, tipo, paddedDur, segmentCount, baseUrl, metadata, cues, canais = [] }) {
   const lines = [
     `INSERT OR REPLACE INTO media_items
   (id, tipo, status, duracao_seg, segment_count, base_url, path_prefix, metadata)
@@ -16,6 +16,11 @@ VALUES
   if (cues.length > 0) {
     const values = cues.map((c) => `('${esc(id)}',${c},'black')`).join(',')
     lines.push(`INSERT INTO media_cue_points (media_id, time_seg, kind) VALUES ${values};`)
+  }
+  if (canais.length > 0) {
+    lines.push(`DELETE FROM media_channels WHERE media_id = '${esc(id)}';`)
+    const values = canais.map((c) => `('${esc(id)}','${esc(c)}')`).join(',')
+    lines.push(`INSERT OR IGNORE INTO media_channels (media_id, channel_id) VALUES ${values};`)
   }
   return lines.join('\n\n')
 }

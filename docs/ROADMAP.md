@@ -11,6 +11,7 @@
 | **3 — Frontend** | Vue 3 + hls.js: player ao vivo, AGORA/INTERVALO/A SEGUIR, grade com merge | 2026-07-11 | 11/11 em Chromium headless (`pnpm verify:web`) |
 | **4a — Montador determinístico** | Grade com ritmo de TV (vinheta → programa c/ breaks nos cues → comercial em rodízio), append-only | 2026-07-12 | rodando no canal `bieltv_1` |
 | **5a — Admin local-first** | Upload no navegador c/ sugestão automática, fila, fábrica local, catálogo | 2026-07-12 | 11/11 (`pnpm verify:admin`); conteúdo real do Gabriel no ar |
+| **9 — Diretor determinístico + canais** | Canais Jetix/CN/Disney c/ identidade editável; agendador no cron do Worker (48h por canal, rotação `last_played_at`, pods ~120s, shuffle c/ seed); mídia→canal no upload/catálogo; multi-canal no front c/ branding; reconciliação R2↔D1 auto-curativa; flag Modo God no admin | 2026-07-12 | 17/17 (`pnpm verify:canais`) + suítes antigas verdes (66 checks) |
 
 ## ▶ Fases restantes
 
@@ -33,15 +34,10 @@ front no Pages com `VITE_API_BASE`.
 Worker dispara a Action via `repository_dispatch` quando entra job na fila;
 secrets R2/D1 no repo. Depende de: fases 6 e 7.
 
-### Fase 9 — Diretor determinístico + canais nostálgicos
-**Objetivo:** vários canais (Jetix, Cartoon Network, Disney Channel…) se mantendo
-sozinhos, cada um só com seu conteúdo.
-**Entregáveis:** tabela `channels` (identidade editorial editável + branding) e
-mapeamento mídia→canal (seletor no upload do admin); montador portado pro cron do
-Worker preenchendo 48h **por canal**; regras da `channel_master_grid`; rotação por
-`last_played_at`; breaks com duração-alvo (2–3 comerciais); shuffle com seed +
-frequency capping; troca de canal no front (lista/branding); **reconciliação
-catálogo↔R2** (mídia removida do storage → `disabled` + aviso + reflow da grade).
+### ~~Fase 9~~ ✅ CONCLUÍDA em 2026-07-12 (ver tabela acima)
+Pendência levada pra fase 10: regras da `channel_master_grid` (blocos fixos por
+dia/horário) entram junto com o planejamento editorial — hoje o agendador usa
+rotação + pods; as regras fixas fazem mais sentido quando o Diretor IA as gerar.
 
 ### Fase 10 — Diretor IA (Gemini)
 **Objetivo:** cada canal parecer ter o diretor de programação do canal original.

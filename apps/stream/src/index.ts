@@ -3,6 +3,7 @@ import type { Context } from 'hono'
 import { SEGMENT_DURATION, SQL_EPG_OVERLAP, type EpgRowWithMedia } from '@bieltv/db'
 import { buildLivePlaylist } from './playlist'
 import { admin } from './admin'
+import { reconcileAndRepair, runScheduler } from './scheduler'
 
 type Bindings = {
   DB: D1Database
@@ -14,6 +15,18 @@ type Bindings = {
 const app = new Hono<{ Bindings: Bindings }>()
 
 app.route('/admin', admin)
+
+// Lista pública de canais (pro front montar o seletor)
+app.get('/channels', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT ch.id, ch.nome, ch.cor, EXISTS(
+       SELECT 1 FROM media_channels mc JOIN media_items m ON m.id = mc.media_id
+       WHERE mc.channel_id = ch.id AND m.status = 'ready' AND m.tipo IN ('episodio','filme')
+     ) AS has_content
+     FROM channels ch ORDER BY ch.ordem, ch.id`,
+  ).all<{ id: string; nome: string; cor: string; has_content: number }>()
+  return c.json(results.map((r) => ({ ...r, has_content: Boolean(r.has_content) })), 200, CORS)
+})
 
 const CORS = { 'access-control-allow-origin': '*' } as const
 const WINDOW_BEHIND = 4 // slots passados na janela…
@@ -99,8 +112,13 @@ app.get('/media/*', async (c) => {
 
 export default {
   fetch: app.fetch,
-  // O Diretor de programação (IA) entra aqui na fase 4.
-  async scheduled(_event: ScheduledController, _env: Bindings, _ctx: ExecutionContext) {
-    console.log('[diretor] cron disparado — scheduler será implementado na fase 4')
+  // Cron diário: reconcilia catálogo↔storage e estende a grade de cada canal
+  // pra 48h. A camada editorial (Gemini) entra por cima disso na fase 10.
+  async scheduled(_event: ScheduledController, env: Bindings, ctx: ExecutionContext) {
+    ctx.waitUntil((async () => {
+      const rec = await reconcileAndRepair(env)
+      const reports = await runScheduler(env, { hours: 48 })
+      console.log('[diretor]', JSON.stringify({ rec, reports }))
+    })())
   },
 }

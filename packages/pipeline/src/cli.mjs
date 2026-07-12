@@ -29,6 +29,7 @@ const { values: opt, positionals } = parseArgs({
     episode: { type: 'string' },
     tags: { type: 'string' },
     target: { type: 'string', default: 'local' },
+    canais: { type: 'string' },
     'base-url': { type: 'string' },
     'min-edge': { type: 'string', default: '60' },
     crf: { type: 'string', default: '23' },
@@ -50,6 +51,8 @@ if (!input || !existsSync(input)) die(`arquivo de entrada não encontrado: ${inp
 if (!opt.id || !/^[a-z0-9_]+$/.test(opt.id)) die('--id obrigatório (minúsculas, dígitos e _)')
 if (!TIPOS.includes(opt.tipo)) die(`--tipo obrigatório: ${TIPOS.join('|')}`)
 if (!['local', 'remote'].includes(opt.target)) die('--target deve ser local ou remote')
+const canais = (opt.canais ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+for (const c of canais) if (!/^[a-z0-9_]{2,40}$/.test(c)) die(`canal inválido: ${c}`)
 const baseUrl = opt['base-url'] ?? (opt.target === 'local' ? '' : process.env.R2_PUBLIC_BASE_URL)
 if (opt.target === 'remote' && !baseUrl) die('para remote informe --base-url (domínio público do bucket)')
 
@@ -105,7 +108,7 @@ const metadata = {
   tags: opt.tags ? opt.tags.split(',').map((t) => t.trim()).filter(Boolean) : [],
 }
 runD1(ROOT, buildRegisterSql({
-  id: opt.id, tipo: opt.tipo, paddedDur, segmentCount: segCount, baseUrl, metadata, cues,
+  id: opt.id, tipo: opt.tipo, paddedDur, segmentCount: segCount, baseUrl, metadata, cues, canais,
 }), { local: opt.target === 'local', label: `register-${opt.id}` })
 
 if (!opt['keep-workdir']) rmSync(normalized, { force: true })

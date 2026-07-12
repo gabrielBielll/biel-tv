@@ -63,6 +63,15 @@ await page.goto(WEB, { waitUntil: 'domcontentloaded' })
 const brand = await page.waitForSelector('.brand', { timeout: 10_000 }).catch(() => null)
 check('app monta (marca BIEL TV visível)', Boolean(brand))
 
+const pillInfo = await page
+  .waitForFunction(() => document.querySelectorAll('.canal-pill').length >= 3, { timeout: 10_000 })
+  .then(() => page.evaluate(() => ({
+    n: document.querySelectorAll('.canal-pill').length,
+    ativo: document.querySelector('.canal-pill.ativo')?.textContent?.trim() ?? '',
+  })))
+  .catch(() => null)
+check('seletor de canais renderizado', Boolean(pillInfo), pillInfo ? `${pillInfo.n} canais, no ar: ${pillInfo.ativo}` : '')
+
 const hasGuide = await page
   .waitForFunction(() => document.querySelectorAll('.guide-item').length >= 3, { timeout: 15_000 })
   .then(() => true).catch(() => false)
@@ -112,6 +121,22 @@ if (playing) {
   const vErr = await page.evaluate(() => document.querySelector('video').error?.message ?? null)
   check('sem erro no elemento de vídeo', vErr === null, vErr ?? '')
 }
+
+// troca de canal ao vivo: clica no próximo canal com conteúdo
+const trocou = await page.evaluate(() => {
+  const pills = [...document.querySelectorAll('.canal-pill:not(.off)')]
+  const alvo = pills.find((p) => !p.classList.contains('ativo'))
+  if (!alvo) return null
+  const nome = alvo.textContent.trim()
+  alvo.click()
+  return nome
+})
+await page.waitForTimeout(5000)
+const aposTroca = await page.evaluate(() => ({
+  panel: Boolean(document.querySelector('.now-panel .now-title')),
+  video: Boolean(document.querySelector('video')),
+}))
+check('troca de canal ao vivo sem quebrar', Boolean(trocou) && aposTroca.panel && aposTroca.video, trocou ?? '')
 
 check('sem exceções JS na página', pageErrors.length === 0, pageErrors[0] ?? '')
 

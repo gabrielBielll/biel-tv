@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8787'
-const CANAL = 'bieltv_1'
+const CANAL = process.env.CANAL ?? 'jetix'
 
 let pass = 0
 let fail = 0
@@ -61,7 +61,7 @@ console.log('fonte de teste: 47s, 640x360@25fps, áudio mono 44.1kHz, preto em 2
 const ing = spawnSync('node', [
   join(ROOT, 'packages/pipeline/src/cli.mjs'), 'ingest', src,
   '--id', 'filme_test', '--tipo', 'filme', '--title', "Filme d'Teste",
-  '--tags', 'teste,filme', '--min-edge', '10',
+  '--tags', 'teste,filme', '--min-edge', '10', '--canais', CANAL,
 ], { stdio: 'inherit' })
 check('pipeline ingest terminou com exit 0', ing.status === 0)
 if (ing.status !== 0) process.exit(1)
@@ -113,6 +113,17 @@ if (health?.status !== 'ok') {
   const bytes = segRes.ok ? (await segRes.arrayBuffer()).byteLength : 0
   check('segmento ingerido é servido pelo Worker via R2', bytes > 10_000, `${(bytes / 1024).toFixed(0)}KB`)
 }
+
+// não deixa o filme de teste poluindo a grade real do canal
+// (a rota de status já purga a grade futura e replaneja o canal)
+await fetch(`${BASE}/admin/media/filme_test/status`, {
+  method: 'POST',
+  headers: {
+    authorization: `Bearer ${process.env.ADMIN_TOKEN ?? 'bieltv-dev-2026'}`,
+    'content-type': 'application/json',
+  },
+  body: JSON.stringify({ status: 'disabled' }),
+}).catch(() => {})
 
 console.log(`\n${fail === 0 ? '🎉' : '💥'} ${pass}/${pass + fail} checagens passaram`)
 process.exit(fail === 0 ? 0 : 1)

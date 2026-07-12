@@ -54,9 +54,16 @@ cabem com folga nas cotas gratuitas.
 - **Modelo**: começar no tier flash (cota gratuita generosa); subir se o
   gosto editorial pedir.
 
+**Fallback de provedor (decisão do Gabriel, 2026-07-12): Gemini → DeepSeek.**
+Se o Gemini responder erro de cota (`429` / `RESOURCE_EXHAUSTED`), a mesma
+chamada é repetida no **DeepSeek** (`api.deepseek.com`, API compatível com o
+formato OpenAI, modelo `deepseek-v4-flash`, `response_format: json_object` +
+validação nossa por cima — o Gabriel tem créditos lá). Se os dois falharem →
+fallback determinístico, como sempre. `DEEPSEEK_API_KEY` via secret.
+
 A arquitetura é agnóstica de provedor: o LLM é uma função
-`(contexto) → plano JSON`. Se o free tier mudar um dia, trocar de modelo é
-trocar essa função — nada mais se move.
+`(contexto) → plano JSON`. A cadeia Gemini → DeepSeek → determinístico cobre
+cota, indisponibilidade e resposta inválida — nada mais se move.
 
 ## Falar com o canal: dois modos (decisão do Gabriel, 2026-07-12)
 

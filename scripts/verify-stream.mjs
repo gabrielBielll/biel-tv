@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8787'
-const CANAL = process.env.CANAL ?? 'bieltv_1'
+const TOKEN = process.env.ADMIN_TOKEN ?? 'bieltv-dev-2026'
+let CANAL = process.env.CANAL ?? ''
 
 let pass = 0
 let fail = 0
@@ -39,6 +40,17 @@ const live = async (q = '') => {
 // 1) health
 const health = await fetch(`${BASE}/health`).then((r) => r.json()).catch(() => null)
 check('GET /health', health?.status === 'ok')
+
+// canal alvo (primeiro com conteúdo) + garante cobertura da grade
+if (!CANAL) {
+  const chs = await fetch(`${BASE}/channels`).then((r) => r.json()).catch(() => [])
+  CANAL = chs.find((c) => c.has_content)?.id ?? 'jetix'
+}
+await fetch(`${BASE}/admin/schedule/run`, {
+  method: 'POST',
+  headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+  body: '{}',
+}).catch(() => {})
 
 // 2) EPG
 const epg = await fetch(`${BASE}/epg/${CANAL}`).then((r) => r.json()).catch(() => null)
