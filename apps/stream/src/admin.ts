@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
 import { runScheduler, scheduleChannel, reconcileAndRepair } from './scheduler'
 
 // API do painel admin. Tudo aqui exige `Authorization: Bearer <ADMIN_TOKEN>`.
@@ -16,6 +17,10 @@ export const admin = new Hono<{ Bindings: Bindings }>()
 
 const TIPOS = ['episodio', 'filme', 'comercial', 'vinheta']
 const SLUG = /^[a-z0-9_]{2,40}$/
+
+// Em produção o painel (Pages) chama esta API cross-origin — o cors() também
+// responde os preflights OPTIONS antes da checagem de token.
+admin.use('*', cors())
 
 admin.use('*', async (c, next) => {
   const token = c.req.header('authorization')?.replace(/^Bearer\s+/i, '')
