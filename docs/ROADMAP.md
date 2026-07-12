@@ -17,10 +17,7 @@
 
 ## ▶ Fases restantes
 
-### Fase 6 — Repositório + primeiro commit
-**Objetivo:** o projeto sair desta máquina e ter história.
-**Entregáveis:** commit inicial, repo GitHub na conta **gabriell b**, push, README/docs visíveis.
-**🔒 Bloqueio:** Gabriel rodar `! gh auth login` (adicionar a conta gabriell b ao gh).
+### ~~Fase 6~~ ✅ CONCLUÍDA em 2026-07-12 — https://github.com/gabrielBielll/biel-tv (privado)
 
 ### ~~Fase 7~~ ✅ CONCLUÍDA em 2026-07-12 — A TV ESTÁ NO AR
 - **Site:** https://biel-tv.pages.dev (Cloudflare Pages)
@@ -56,12 +53,12 @@ garantia, com votação simulada, pity timer e celebração da conquista — rec
 variável de propósito); **Modo God escondido** (flag `god_mode` + easter egg no
 admin): chat direto com ações garantidas → tabela `directives` → replan append-only.
 
-### Fase 11 — Admin v2 (ingestão inteligente)
+### Fase 11 — Admin v2 (ingestão inteligente) — 11a (lote/pasta) ✅ FEITA; falta o resto
 **Objetivo:** upar qualquer coisa e o sistema entender sozinho.
-**Entregáveis:** classificação por LLM (nome sujo → título/série/episódio + confiança);
-fila `needs_review`; TMDB (título oficial, sinopse, **poster** → EPG rico);
-upload em lote de pasta/série ("pwr rangers/001.mp4" → S01E01…);
-multipart presigned pro R2 (arquivos grandes sem passar pelo Worker).
+**Entregáveis restantes:** classificação por LLM (nome sujo → título/série/episódio +
+confiança, hoje é heurística); fila `needs_review`; TMDB (título oficial, sinopse,
+**poster** → EPG rico); multipart presigned pro R2 (arquivos grandes sem passar
+pelo Worker — hoje o upload bufferiza no Worker, limitado pelo tamanho de request).
 
 ### Fase 12 — Comerciais condicionais ("promessas")
 **Objetivo:** promos de sequência/horário/maratona só irem ao ar quando a grade cumpre.
