@@ -5,6 +5,7 @@
 import { spawnSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { fetchRetry } from './_lib.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8787'
@@ -30,7 +31,7 @@ function d1(sql) {
 }
 
 async function chat(text) {
-  const res = await fetch(`${BASE}/admin/diretor/chat`, {
+  const res = await fetchRetry(`${BASE}/admin/diretor/chat`, {
     method: 'POST', headers: auth,
     body: JSON.stringify({ canal: CANAL, mensagens: [{ role: 'user', text }] }),
   })
@@ -39,7 +40,7 @@ async function chat(text) {
   return body
 }
 
-const health = await fetch(`${BASE}/health`).then((r) => r.json()).catch(() => null)
+const health = await fetchRetry(`${BASE}/health`).then((r) => r.json()).catch(() => null)
 if (health?.status !== 'ok') {
   console.error('✖ wrangler dev fora do ar — rode `pnpm dev` antes')
   process.exit(1)
@@ -48,19 +49,29 @@ if (health?.status !== 'ok') {
 // limpeza de rodadas anteriores
 d1(`UPDATE directives SET status='cancelada' WHERE canal='${CANAL}' AND status='ativa'`)
 d1(`UPDATE channel_events SET status='cancelado' WHERE canal='${CANAL}' AND status='agendado'`)
-await fetch(`${BASE}/admin/schedule/run`, { method: 'POST', headers: auth, body: JSON.stringify({ canal: CANAL, rebuild: true }) })
+await fetchRetry(`${BASE}/admin/schedule/run`, { method: 'POST', headers: auth, body: JSON.stringify({ canal: CANAL, rebuild: true }) })
 
 const now = Math.floor(Date.now() / 1000)
 
+// As chamadas de LLM (chat()) levam vários segundos — o servidor calcula seu
+// próprio `now` no MOMENTO em que processa o pedido, sempre um pouco depois
+// do `now` capturado aqui no início do script. Uma linha cujo início cai
+// nesse intervalo sobrevive corretamente à exclusão (o servidor nem sabia
+// dela ainda) mas pareceria "não excluída" se comparada contra o `now`
+// antigo. Por isso os checks de "sumiu da grade" usam um `now` recapturado
+// DEPOIS do chat() retornar — nesse ponto o servidor já processou tudo.
+const freshNow = () => Math.floor(Date.now() / 1000)
+
 // ── 1. excluir mídia por 2 meses ───────────────────────────────────────────
 const r1 = await chat(`Retire o desenho Madagascar (id ${ALVO}) da programação pelos próximos 2 meses, por favor.`)
+const t1 = freshNow()
 console.log(`   diretor [${r1.provedor}]: ${String(r1.resposta).slice(0, 120)}…`)
 check('exclusão: LLM respondeu e o código executou', r1.acoes_executadas?.some((a) => a.includes(ALVO)),
   r1.acoes_executadas?.join(' | ') ?? '')
 const dir = d1(`SELECT vigente_ate FROM directives WHERE canal='${CANAL}' AND status='ativa' AND payload LIKE '%${ALVO}%'`)[0]
-const dias = dir?.vigente_ate ? Math.round((dir.vigente_ate - now) / 86400) : null
+const dias = dir?.vigente_ate ? Math.round((dir.vigente_ate - t1) / 86400) : null
 check('diretriz gravada com prazo ~60 dias', dias !== null && dias >= 50 && dias <= 70, `${dias} dias`)
-const aindaTem = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${ALVO}' AND start_time_virtual > ${now}`)[0].c
+const aindaTem = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${ALVO}' AND start_time_virtual > ${t1}`)[0].c
 check('Madagascar saiu da grade futura do Jetix', aindaTem === 0, `${aindaTem} blocos restantes`)
 
 // ── 2. maratona hoje à noite ───────────────────────────────────────────────
@@ -82,24 +93,63 @@ if (ev) {
     `${conteudos.length} blocos de conteúdo na janela`)
 }
 
+const estado1 = await fetchRetry(`${BASE}/admin/diretor/estado?canal=${CANAL}`, { headers: auth }).then((r) => r.json())
+check('GET /diretor/estado lista o evento da maratona', estado1.eventos?.some((e) => e.media_id === MARATONA))
+
+// Cancela pelo endpoint real do painel (exercita esse caminho E isola o
+// teste de exclusão de série a seguir — evento > exclusão por design, então
+// deixá-lo ativo faria o Madruga "sobreviver" corretamente à exclusão de
+// série, dando falso-negativo num teste que não é sobre maratona).
+const evId = estado1.eventos?.find((e) => e.media_id === MARATONA)?.id
+if (evId) {
+  const rc = await fetchRetry(`${BASE}/admin/diretor/evento/${evId}/cancelar`, { method: 'POST', headers: auth }).then((r) => r.json())
+  check('cancelar evento pelo painel funciona', rc.ok === true)
+}
+
 // ── 3. cancelar a exclusão ─────────────────────────────────────────────────
 const r3 = await chat(`Pode cancelar a exclusão do Madagascar (id ${ALVO})? Quero ele de volta na programação.`)
+const t3 = freshNow()
 console.log(`   diretor [${r3.provedor}]: ${String(r3.resposta).slice(0, 120)}…`)
 check('cancelamento: ação executada', r3.acoes_executadas?.some((a) => a.includes(ALVO)),
   r3.acoes_executadas?.join(' | ') ?? '')
-const voltou = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${ALVO}' AND start_time_virtual > ${now}`)[0].c
+const voltou = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${ALVO}' AND start_time_virtual > ${t3}`)[0].c
 check('Madagascar voltou pra grade', voltou > 0, `${voltou} blocos`)
 
-// ── 4. estado pro painel + limpeza ─────────────────────────────────────────
-const estado = await fetch(`${BASE}/admin/diretor/estado?canal=${CANAL}`, { headers: auth }).then((r) => r.json())
-check('GET /diretor/estado lista o evento da maratona', estado.eventos?.some((e) => e.media_id === MARATONA))
-
-// cancela a maratona de teste pra não poluir a TV real e replaneja
-const evId = estado.eventos?.find((e) => e.media_id === MARATONA)?.id
-if (evId) {
-  const rc = await fetch(`${BASE}/admin/diretor/evento/${evId}/cancelar`, { method: 'POST', headers: auth }).then((r) => r.json())
-  check('cancelar evento pelo painel funciona', rc.ok === true)
+// ── 4. excluir uma "temporada" (série) inteira ─────────────────────────────
+// agrupa 2 mídias reais numa série temporária via o endpoint retroativo
+const SERIE = 'serie_teste_verify'
+const S1 = 'ep_madagascar_cupcake'
+const S2 = 'ep_seu_madruga_vai_aos_eua'
+for (const id of [S1, S2]) {
+  await fetchRetry(`${BASE}/admin/media/${id}/series`, { method: 'POST', headers: auth, body: JSON.stringify({ series_id: SERIE }) })
 }
+
+const r4 = await chat(`Retire a temporada inteira ${SERIE} da programação por 1 mês.`)
+const t4 = freshNow()
+console.log(`   diretor [${r4.provedor}]: ${String(r4.resposta).slice(0, 120)}…`)
+check('excluir série: ação executada (uma ação só, não uma por episódio)',
+  r4.acoes_executadas?.some((a) => a.includes(SERIE)) && r4.acoes_executadas.length <= 2,
+  r4.acoes_executadas?.join(' | ') ?? '')
+const f1 = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${S1}' AND start_time_virtual > ${t4}`)[0].c
+const f2 = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${S2}' AND start_time_virtual > ${t4}`)[0].c
+check('AMBOS os episódios da série saíram da grade', f1 === 0 && f2 === 0, `${S1}:${f1} ${S2}:${f2}`)
+
+const r5 = await chat(`Pode cancelar a exclusão da temporada ${SERIE}? Quero ela de volta.`)
+const t5 = freshNow()
+console.log(`   diretor [${r5.provedor}]: ${String(r5.resposta).slice(0, 120)}…`)
+check('cancelar exclusão de série: ação executada', r5.acoes_executadas?.some((a) => a.includes(SERIE)))
+const v1 = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${S1}' AND start_time_virtual > ${t5}`)[0].c
+const v2 = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${S2}' AND start_time_virtual > ${t5}`)[0].c
+check('AMBOS voltaram pra grade', v1 > 0 && v2 > 0)
+
+// desagrupa (limpa o metadata de teste)
+for (const id of [S1, S2]) {
+  await fetchRetry(`${BASE}/admin/media/${id}/series`, { method: 'POST', headers: auth, body: JSON.stringify({ series_id: '' }) })
+}
+const semSerie = d1(`SELECT COUNT(*) c FROM media_items WHERE json_extract(metadata,'$.series_id')='${SERIE}'`)[0].c
+check('agrupamento de teste desfeito', semSerie === 0)
+
+// ── 5. limpeza final ────────────────────────────────────────────────────────
 const limpo = d1(`SELECT COUNT(*) c FROM channel_events WHERE canal='${CANAL}' AND status='agendado'`)[0].c
 check('nenhum evento de teste sobrou', limpo === 0)
 

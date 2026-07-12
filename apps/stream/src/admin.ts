@@ -129,6 +129,27 @@ admin.get('/media', async (c) => {
   return c.json(results)
 })
 
+// Agrupa (ou desagrupa) retroativamente uma mídia numa série/temporada —
+// necessário pro Diretor poder excluir "a temporada inteira" de uma vez
+// (media_channels não tem esse conceito; series_id vive dentro do metadata).
+admin.post('/media/:id/series', async (c) => {
+  const { series_id } = await c.req.json<{ series_id?: string }>().catch(() => ({ series_id: '' }))
+  const id = c.req.param('id')
+  const row = await c.env.DB.prepare('SELECT metadata FROM media_items WHERE id = ?1').bind(id).first<{ metadata: string }>()
+  if (!row) return c.json({ error: 'mídia não encontrada' }, 404)
+  let meta: Record<string, unknown> = {}
+  try { meta = JSON.parse(row.metadata) } catch { /* metadata inválido — recomeça limpo */ }
+  const slug = (series_id ?? '').trim()
+  if (slug) {
+    if (!SLUG.test(slug)) return c.json({ error: 'series_id inválido (minúsculas/dígitos/_, 2–40)' }, 400)
+    meta.series_id = slug
+  } else {
+    delete meta.series_id
+  }
+  await c.env.DB.prepare('UPDATE media_items SET metadata = ?2 WHERE id = ?1').bind(id, JSON.stringify(meta)).run()
+  return c.json({ ok: true })
+})
+
 admin.post('/media/:id/status', async (c) => {
   const { status } = await c.req.json<{ status: string }>().catch(() => ({ status: '' }))
   if (!['ready', 'disabled'].includes(status)) return c.json({ error: 'status inválido' }, 400)

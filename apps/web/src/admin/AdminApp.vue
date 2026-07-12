@@ -42,7 +42,7 @@ const chatCanal = ref('')
 const chatMsgs = ref<{ role: 'user' | 'diretor'; text: string; acoes?: string[] }[]>([])
 const chatInput = ref('')
 const chatBusy = ref(false)
-const estado = ref<{ diretrizes: any[]; eventos: any[] }>({ diretrizes: [], eventos: [] })
+const estado = ref<{ diretrizes: any[]; eventos: any[]; series: any[] }>({ diretrizes: [], eventos: [], series: [] })
 
 const hdr = () => ({ authorization: `Bearer ${token.value}` })
 
@@ -281,6 +281,14 @@ async function toggle(m: any) {
 }
 
 const canaisDe = (m: any): string[] => (m.canais ? String(m.canais).split(',') : [])
+const seriesOf = (m: any): string => {
+  try { return JSON.parse(m.metadata).series_id ?? '' } catch { return '' }
+}
+async function saveSeries(m: any, val: string) {
+  await postJson(`/media/${m.id}/series`, { series_id: val.trim() })
+  refresh()
+  fetchEstado()
+}
 
 async function toggleCanal(m: any, canalId: string) {
   const atual = canaisDe(m)
@@ -487,6 +495,12 @@ onBeforeUnmount(() => clearInterval(poll))
             @click="toggleCanal(m, c.id)"
           >{{ c.nome }}</button>
         </span>
+        <input
+          class="series-input"
+          :value="seriesOf(m)"
+          placeholder="série (p/ excluir a temporada toda)"
+          @change="saveSeries(m, ($event.target as HTMLInputElement).value)"
+        />
         <span class="chip" :class="m.status === 'ready' ? 'st-done' : 'st-error'">{{ m.status }}</span>
         <button class="ghost" @click="toggle(m)">{{ m.status === 'ready' ? 'desativar' : 'ativar' }}</button>
       </div>
@@ -522,14 +536,23 @@ onBeforeUnmount(() => clearInterval(poll))
       <template v-if="estado.diretrizes.length || estado.eventos.length">
         <h2 class="mt">Ordens em vigor</h2>
         <div v-for="d in estado.diretrizes" :key="'d' + d.id" class="job-row">
-          <span class="chip st-error">exclusão</span>
-          <span class="dim grow">{{ d.media_id }}{{ d.ate ? ` até ${d.ate}` : ' (sem prazo)' }}</span>
+          <span class="chip st-error">{{ d.tipo === 'excluir_serie' ? 'exclusão (série)' : 'exclusão' }}</span>
+          <span class="dim grow">{{ d.alvo }}{{ d.ate ? ` até ${d.ate}` : ' (sem prazo)' }}</span>
           <button class="ghost" @click="cancelarDiretriz(d.id)">cancelar</button>
         </div>
         <div v-for="e in estado.eventos" :key="'e' + e.id" class="job-row">
           <span class="chip st-queued">maratona</span>
           <span class="dim grow">{{ e.media_id }}: {{ e.inicio }} → {{ e.fim }}</span>
           <button class="ghost" @click="cancelarEvento(e.id)">cancelar</button>
+        </div>
+      </template>
+
+      <template v-if="estado.series?.length">
+        <h2 class="mt">Séries agrupadas neste canal</h2>
+        <p class="dim">Peça no chat: "tira a temporada inteira de &lt;série&gt;".</p>
+        <div v-for="s in estado.series" :key="s.series_id" class="job-row">
+          <span class="mono">{{ s.series_id }}</span>
+          <span class="dim grow">{{ s.titulo }} · {{ s.n }} episódio(s)</span>
         </div>
       </template>
 
@@ -606,6 +629,7 @@ button.ghost:hover { color: var(--text); }
 .chip-btn { background: transparent; color: var(--text-dim); cursor: pointer; opacity: 0.5; }
 .chip-btn.chip-on { opacity: 1; color: var(--text); border-color: var(--accent); }
 .canal-chips { display: flex; gap: 4px; }
+.series-input { width: 200px; flex: none; padding: 5px 8px; font-size: 12px; }
 .st-queued { color: #ffb020; border-color: rgba(255, 176, 32, 0.5); }
 .st-processing { color: #4da3ff; border-color: rgba(77, 163, 255, 0.5); }
 .st-done { color: var(--ok); border-color: rgba(56, 217, 122, 0.5); }

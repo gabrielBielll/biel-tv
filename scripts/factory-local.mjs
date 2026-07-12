@@ -11,6 +11,10 @@ import { fileURLToPath } from 'node:url'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8787'
 const TOKEN = process.env.ADMIN_TOKEN ?? 'bieltv-dev-2026'
+// 'local' (padrão): grava no D1/R2 SIMULADOS do wrangler — uso em dev.
+// 'remote': grava no D1/R2 DE VERDADE — necessário sempre que BASE aponta
+// pro Worker de produção (senão o job "conclui" sem nunca sair do R2 local).
+const TARGET = process.env.FACTORY_TARGET === 'remote' ? 'remote' : 'local'
 const POLL_MS = 5000
 const HDR = { authorization: `Bearer ${TOKEN}` }
 
@@ -45,14 +49,21 @@ async function processJob(job) {
   await streamPipeline(Readable.fromWeb(res.body), createWriteStream(src))
 
   const args = [
+    // --dns-result-order=ipv4first: o endpoint S3 do R2 resolve IPv6 e o
+    // fetch do Node dá SSL handshake failure nesta máquina — só IPv4 funciona.
+    '--dns-result-order=ipv4first',
     join(ROOT, 'packages/pipeline/src/cli.mjs'), 'ingest', src,
     '--id', job.id, '--tipo', job.tipo, '--title', job.title,
     ...(job.series_id ? ['--series', job.series_id] : []),
     ...(job.episode ? ['--episode', String(job.episode)] : []),
     ...(job.tags ? ['--tags', job.tags] : []),
     ...(job.canais ? ['--canais', job.canais] : []),
+    '--target', TARGET,
+    // base_url '' = servido via rota /media/* do Worker (mesmo esquema do
+    // resto do catálogo em produção — sem domínio público configurado ainda).
+    ...(TARGET === 'remote' ? ['--base-url', ''] : []),
   ]
-  const r = spawnSync('node', args, { encoding: 'utf8' })
+  const r = spawnSync('node', args, { encoding: 'utf8', env: process.env })
   rmSync(src, { force: true })
   if (r.status !== 0) {
     throw new Error((r.stderr || r.stdout || 'pipeline falhou').trim().split('\n').at(-1))
@@ -78,7 +89,7 @@ async function tick() {
   return true
 }
 
-log(`de olho na fila em ${BASE} (poll a cada ${POLL_MS / 1000}s)`)
+log(`de olho na fila em ${BASE} [target=${TARGET}] (poll a cada ${POLL_MS / 1000}s)`)
 for (;;) {
   try {
     // drena tudo que estiver na fila antes de dormir

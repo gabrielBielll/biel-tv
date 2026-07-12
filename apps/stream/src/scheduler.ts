@@ -11,6 +11,7 @@ interface MediaRow {
   duracao_seg: number
   segment_count: number
   last_played_at: number | null
+  series_id: string | null
 }
 
 export interface ScheduleReport {
@@ -61,22 +62,33 @@ export async function scheduleChannel(
   if (!chan) return { canal, added: 0, skipped: 'canal não existe' }
 
   const { results: mediaTodas } = await env.DB.prepare(
-    `SELECT m.id, m.tipo, m.duracao_seg, m.segment_count, m.last_played_at
+    `SELECT m.id, m.tipo, m.duracao_seg, m.segment_count, m.last_played_at,
+            json_extract(m.metadata, '$.series_id') series_id
      FROM media_items m JOIN media_channels mc ON mc.media_id = m.id
      WHERE mc.channel_id = ?1 AND m.status = 'ready'`,
   ).bind(canal).all<MediaRow>()
 
-  // diretrizes do Modo God: mídia excluída sai do pool enquanto vigente
+  // diretrizes do Modo God: mídia (ou série inteira) excluída sai do pool
+  // enquanto vigente. Eventos (maratona) ignoram isso de propósito — uma
+  // ordem explícita do chat vale mais que uma exclusão geral.
   const agora = Math.floor(Date.now() / 1000)
   const { results: dirs } = await env.DB.prepare(
-    `SELECT payload FROM directives
-     WHERE canal = ?1 AND status = 'ativa' AND tipo = 'excluir_media'
+    `SELECT tipo, payload FROM directives
+     WHERE canal = ?1 AND status = 'ativa' AND tipo IN ('excluir_media','excluir_serie')
        AND vigente_de <= ?2 AND (vigente_ate IS NULL OR vigente_ate > ?2)`,
-  ).bind(canal, agora).all<{ payload: string }>()
-  const excluidas = new Set(dirs.map((d) => {
-    try { return JSON.parse(d.payload).media_id as string } catch { return '' }
-  }))
-  const media = mediaTodas.filter((m) => !excluidas.has(m.id))
+  ).bind(canal, agora).all<{ tipo: string; payload: string }>()
+  const mediaExcluida = new Set<string>()
+  const serieExcluida = new Set<string>()
+  for (const d of dirs) {
+    try {
+      const p = JSON.parse(d.payload)
+      if (d.tipo === 'excluir_media' && p.media_id) mediaExcluida.add(p.media_id)
+      if (d.tipo === 'excluir_serie' && p.series_id) serieExcluida.add(p.series_id)
+    } catch { /* payload corrompido: ignora essa diretriz */ }
+  }
+  const media = mediaTodas.filter(
+    (m) => !mediaExcluida.has(m.id) && !(m.series_id && serieExcluida.has(m.series_id)),
+  )
 
   // eventos agendados (maratonas) que tocam a janela de planejamento
   const { results: eventos } = await env.DB.prepare(

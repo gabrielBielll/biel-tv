@@ -17,8 +17,9 @@ export interface ChatMsg {
 }
 
 interface Acao {
-  tipo: 'excluir_media' | 'cancelar_exclusao' | 'maratona' | 'replan' | 'nenhuma'
+  tipo: 'excluir_media' | 'excluir_serie' | 'cancelar_exclusao' | 'maratona' | 'replan' | 'nenhuma'
   media_id?: string
+  series_id?: string
   ate?: string // 'YYYY-MM-DD HH:MM' em America/Sao_Paulo
   inicio?: string
   fim?: string
@@ -51,8 +52,9 @@ const GEMINI_SCHEMA = {
       items: {
         type: 'OBJECT',
         properties: {
-          tipo: { type: 'STRING', enum: ['excluir_media', 'cancelar_exclusao', 'maratona', 'replan', 'nenhuma'] },
+          tipo: { type: 'STRING', enum: ['excluir_media', 'excluir_serie', 'cancelar_exclusao', 'maratona', 'replan', 'nenhuma'] },
           media_id: { type: 'STRING' },
+          series_id: { type: 'STRING' },
           ate: { type: 'STRING' },
           inicio: { type: 'STRING' },
           fim: { type: 'STRING' },
@@ -117,6 +119,32 @@ async function chamaDeepSeek(env: Env, system: string, msgs: ChatMsg[]): Promise
   return JSON.parse(data.choices[0].message.content)
 }
 
+// ── séries/temporadas ────────────────────────────────────────────────────
+// series_id vem de metadata.series_id — preenchido automaticamente no upload
+// em lote/pasta (fase 11a), ou manualmente pelo admin pra agrupar uploads
+// avulsos numa "temporada" que pode ser excluída/reposta de uma vez.
+
+interface SerieInfo { ids: string[]; titulo: string }
+
+async function getSeries(env: Env, canal: string): Promise<Map<string, SerieInfo>> {
+  const { results } = await env.DB.prepare(
+    `SELECT m.id, m.metadata, json_extract(m.metadata, '$.series_id') sid
+     FROM media_items m JOIN media_channels mc ON mc.media_id = m.id
+     WHERE mc.channel_id = ?1 AND m.status = 'ready'
+       AND json_extract(m.metadata, '$.series_id') IS NOT NULL`,
+  ).bind(canal).all<{ id: string; metadata: string; sid: string }>()
+  const map = new Map<string, SerieInfo>()
+  for (const r of results) {
+    if (!r.sid) continue
+    let titulo = r.sid
+    try { titulo = String(JSON.parse(r.metadata).title ?? r.sid).split(/\s[—-]\s/)[0] } catch { /* usa o sid */ }
+    const info = map.get(r.sid) ?? { ids: [], titulo }
+    info.ids.push(r.id)
+    map.set(r.sid, info)
+  }
+  return map
+}
+
 // ── contexto do canal ──────────────────────────────────────────────────────
 
 async function montaSystemPrompt(env: Env, canal: string): Promise<string> {
@@ -126,6 +154,7 @@ async function montaSystemPrompt(env: Env, canal: string): Promise<string> {
      JOIN media_channels mc ON mc.media_id = m.id
      WHERE mc.channel_id = ?1 AND m.status = 'ready' ORDER BY m.tipo, m.id`,
   ).bind(canal).all<any>()
+  const series = await getSeries(env, canal)
   const now = Math.floor(Date.now() / 1000)
   const { results: dirs } = await env.DB.prepare(
     `SELECT id, payload, vigente_ate FROM directives
@@ -141,9 +170,13 @@ async function montaSystemPrompt(env: Env, canal: string): Promise<string> {
     try { titulo = JSON.parse(m.metadata).title ?? m.id } catch { /* segue o id */ }
     return `- ${m.id} | ${m.tipo} | ${Math.round(m.duracao_seg / 60)}min | ${titulo}`
   }).join('\n')
+  const linhaSeries = [...series.entries()]
+    .map(([sid, info]) => `- ${sid} ("${info.titulo}"): ${info.ids.length} episódio(s) — ${info.ids.join(', ')}`)
+    .join('\n') || '(nenhuma série agrupada — se o pedido mencionar "temporada" ou "série" e você não achar aqui, avise que precisa agrupar primeiro no catálogo)'
   const linhaDir = dirs.map((d: any) => {
     const p = JSON.parse(d.payload)
-    return `- exclusão: ${p.media_id}${d.vigente_ate ? ` até ${epochToSp(d.vigente_ate)}` : ' (sem prazo)'}`
+    const alvo = p.series_id ? `série ${p.series_id}` : p.media_id
+    return `- exclusão: ${alvo}${d.vigente_ate ? ` até ${epochToSp(d.vigente_ate)}` : ' (sem prazo)'}`
   }).join('\n') || '(nenhuma)'
   const linhaEv = evs.map((e: any) => `- maratona de ${e.media_id}: ${epochToSp(e.start_at)} → ${epochToSp(e.end_at)}`).join('\n') || '(nenhum)'
 
@@ -158,6 +191,9 @@ DATAS DE REFERÊNCIA (copie daqui ao converter prazos): amanhã = ${epochToSp(no
 CATÁLOGO DO CANAL (só estas mídias existem — use os ids EXATOS):
 ${linhaCat}
 
+SÉRIES/TEMPORADAS AGRUPADAS (pra excluir/repor TODOS os episódios de uma vez, use o series_id — não liste media_id por media_id):
+${linhaSeries}
+
 EXCLUSÕES ATIVAS:
 ${linhaDir}
 
@@ -165,24 +201,31 @@ EVENTOS AGENDADOS:
 ${linhaEv}
 
 VOCÊ RESPONDE SEMPRE em JSON com "resposta" (texto curto, no tom do canal, em português) e "acoes" (lista, pode ser vazia). Ações possíveis:
-- {"tipo":"excluir_media","media_id":"...","ate":"YYYY-MM-DD HH:MM"} — tira a mídia da programação até a data (omita "ate" se for sem prazo). Use quando pedirem para tirar/remover/pausar um conteúdo.
-- {"tipo":"cancelar_exclusao","media_id":"..."} — cancela uma exclusão ativa (o conteúdo volta).
+- {"tipo":"excluir_media","media_id":"...","ate":"YYYY-MM-DD HH:MM"} — tira UMA mídia da programação até a data (omita "ate" se for sem prazo). Use pra um episódio/comercial/vinheta específico.
+- {"tipo":"excluir_serie","series_id":"...","ate":"YYYY-MM-DD HH:MM"} — tira TODOS os episódios de uma série/temporada de uma vez (omita "ate" se for sem prazo). Use quando pedirem pra tirar uma temporada, série, ou "todos os episódios de X" inteira.
+- {"tipo":"cancelar_exclusao","media_id":"..."} OU {"tipo":"cancelar_exclusao","series_id":"..."} — cancela uma exclusão ativa (de mídia individual ou de série inteira; use o mesmo campo que foi usado pra excluir).
 - {"tipo":"maratona","media_id":"...","inicio":"YYYY-MM-DD HH:MM","fim":"YYYY-MM-DD HH:MM"} — agenda maratona daquela mídia no período (máx 24h).
 - {"tipo":"replan"} — replaneja a grade futura (use quando pedirem pra "mudar/embaralhar a programação").
 - {"tipo":"nenhuma"} — quando for só conversa/pergunta.
 
 REGRAS DURAS:
-- media_id precisa existir no catálogo acima; se não existir, explique na resposta e NÃO emita a ação.
+- media_id precisa existir no catálogo acima; series_id precisa existir na lista de séries agrupadas. Se não existir, explique na resposta e NÃO emita a ação.
+- Pedido de "temporada inteira" ou "todos os episódios de X" → SEMPRE use excluir_serie (uma ação só), NUNCA emita excluir_media repetido pra cada episódio.
+- Se o pedido menciona uma série que NÃO está na lista de séries agrupadas (está só como itens soltos no catálogo), explique isso na resposta e não invente um series_id.
 - Datas sempre no formato exato YYYY-MM-DD HH:MM, horário de São Paulo, no futuro.
 - Prazos relativos ("2 meses", "semana que vem") você SEMPRE converte em data absoluta somando à data de AGORA e coloca no campo "ate"/"inicio"/"fim".
 - TUDO que você prometer na "resposta" PRECISA ter a ação correspondente em "acoes" — resposta sem ação é só conversa e nada acontece de verdade.
-- Nunca invente mídias, datas impossíveis ou ações fora da lista.
+- Nunca invente mídias, séries, datas impossíveis ou ações fora da lista.
 - Os valores dos campos em "acoes" devem ser EXATOS e limpos: só o id ou a data, sem comentários, sem raciocínio, sem texto extra dentro das strings.
 - Confirme na "resposta" o que você fez, com as datas concretas.
 
 EXEMPLOS (suponha AGORA = 2026-07-12 14:00):
 Pedido: "tira o desenho X (id ep_x) por 2 meses"
 → {"resposta":"Feito! ep_x fora da grade até 2026-09-12 14:00.","acoes":[{"tipo":"excluir_media","media_id":"ep_x","ate":"2026-09-12 14:00"}]}
+Pedido: "tira a temporada inteira de Power Rangers (series_id pwr_rangers) por 1 mês"
+→ {"resposta":"Feito! Toda a temporada de pwr_rangers fora do ar até 2026-08-12 14:00.","acoes":[{"tipo":"excluir_serie","series_id":"pwr_rangers","ate":"2026-08-12 14:00"}]}
+Pedido: "tira TODOS os comerciais da série pwr_rangers por 3 dias" (mesmo dizendo "todos os X da série Y" — ainda é UMA excluir_serie, não uma excluir_media por item)
+→ {"resposta":"Feito! Todos os itens de pwr_rangers fora do ar até 2026-07-15 14:00.","acoes":[{"tipo":"excluir_serie","series_id":"pwr_rangers","ate":"2026-07-15 14:00"}]}
 Pedido: "maratona do Y (id ep_y) hoje das 20h às 23h"
 → {"resposta":"Maratona de ep_y confirmada: hoje, 20:00 às 23:00!","acoes":[{"tipo":"maratona","media_id":"ep_y","inicio":"2026-07-12 20:00","fim":"2026-07-12 23:00"}]}
 Pedido: "o que passa hoje?"
@@ -234,8 +277,9 @@ export function extraiPeriodo(texto: string, now: number): { ini: number; fim: n
 }
 
 // LLMs rápidos às vezes sujam o campo com raciocínio ("ep_x_ops_wait...").
-// Se o valor começa com um id válido do canal e o match é único, recorta.
-function snapMediaId(bruto: string | undefined, validos: string[]): string | undefined {
+// Se o valor começa com um id válido (de mídia OU de série) e o match é
+// único, recorta. Mesma função serve pros dois id-spaces, chamados à parte.
+function snapId(bruto: string | undefined, validos: string[]): string | undefined {
   if (!bruto) return undefined
   if (validos.includes(bruto)) return bruto
   const candidatos = validos.filter((v) => bruto.startsWith(v))
@@ -261,9 +305,15 @@ async function executa(
   ).bind(canal).all<{ id: string; tipo: string }>()
   const doCanal = new Map(results.map((r) => [r.id, r.tipo]))
   const ids = [...doCanal.keys()]
+  const series = await getSeries(env, canal)
+  const seriesIds = [...series.keys()]
 
   for (const bruta of acoes) {
-    const a: Acao = { ...bruta, media_id: snapMediaId(bruta.media_id, ids) }
+    const a: Acao = {
+      ...bruta,
+      media_id: snapId(bruta.media_id, ids),
+      series_id: snapId(bruta.series_id, seriesIds),
+    }
     if (a.tipo === 'nenhuma') continue
 
     if (a.tipo === 'replan') {
@@ -293,16 +343,73 @@ async function executa(
       continue
     }
 
+    if (a.tipo === 'excluir_serie') {
+      const info = a.series_id ? series.get(a.series_id) : undefined
+      if (!a.series_id || !info) {
+        recusadas.push(`excluir série ${a.series_id ?? '?'}: série não encontrada neste canal (agrupe os episódios primeiro no catálogo)`)
+        continue
+      }
+      let ate = a.ate ? spToEpoch(a.ate) : null
+      if (ate && ate <= now) ate = null
+      if (!ate) ate = interpretaPrazo(ultimoPedido, now)
+      await env.DB.prepare(
+        `INSERT INTO directives (canal, tipo, payload, vigente_de, vigente_ate)
+         VALUES (?1, 'excluir_serie', ?2, ?3, ?4)`,
+      ).bind(canal, JSON.stringify({ series_id: a.series_id }), now, ate).run()
+      const inList = info.ids.map((id) => `'${id.replace(/'/g, "''")}'`).join(',')
+      await env.DB.prepare(
+        `DELETE FROM epg_virtual WHERE canal = ?1 AND media_id IN (${inList}) AND start_time_virtual > ?2`,
+      ).bind(canal, now).run()
+      mexeuNaGrade = true
+      feitas.push(
+        `exclusão da série ${a.series_id} — ${info.ids.length} episódio(s)${ate ? ` até ${epochToSp(ate)}` : ' (sem prazo)'}`,
+      )
+      continue
+    }
+
     if (a.tipo === 'cancelar_exclusao') {
-      const r = await env.DB.prepare(
-        `UPDATE directives SET status = 'cancelada'
-         WHERE canal = ?1 AND status = 'ativa' AND tipo = 'excluir_media' AND payload LIKE ?2`,
-      ).bind(canal, `%"${a.media_id}"%`).run()
-      if ((r.meta.changes ?? 0) > 0) {
-        mexeuNaGrade = true
-        feitas.push(`exclusão de ${a.media_id} cancelada — volta pra grade`)
+      if (!a.media_id && !a.series_id) {
+        recusadas.push('cancelar exclusão: informe qual mídia ou série cancelar')
+        continue
+      }
+      let changes = 0
+      if (a.series_id) {
+        // cancela a diretriz de série (se o LLM excluiu com excluir_serie)...
+        const r1 = await env.DB.prepare(
+          `UPDATE directives SET status = 'cancelada'
+           WHERE canal = ?1 AND status = 'ativa' AND tipo = 'excluir_serie' AND payload LIKE ?2`,
+        ).bind(canal, `%"${a.series_id}"%`).run()
+        changes += r1.meta.changes ?? 0
+        // ...E qualquer exclusão individual dos episódios dessa série (caso o
+        // LLM tenha excluído um por um em vez de usar excluir_serie — já
+        // aconteceu na prática; cancelar por série tem que desfazer os dois).
+        const info = series.get(a.series_id)
+        if (info) {
+          for (const mid of info.ids) {
+            const r2 = await env.DB.prepare(
+              `UPDATE directives SET status = 'cancelada'
+               WHERE canal = ?1 AND status = 'ativa' AND tipo = 'excluir_media' AND payload LIKE ?2`,
+            ).bind(canal, `%"${mid}"%`).run()
+            changes += r2.meta.changes ?? 0
+          }
+        }
       } else {
-        recusadas.push(`cancelar exclusão de ${a.media_id}: não havia exclusão ativa`)
+        const r = await env.DB.prepare(
+          `UPDATE directives SET status = 'cancelada'
+           WHERE canal = ?1 AND status = 'ativa' AND tipo = 'excluir_media' AND payload LIKE ?2`,
+        ).bind(canal, `%"${a.media_id}"%`).run()
+        changes += r.meta.changes ?? 0
+      }
+      const alvoId = a.series_id ?? a.media_id
+      if (changes > 0) {
+        mexeuNaGrade = true
+        feitas.push(
+          a.series_id
+            ? `exclusão da série ${alvoId} cancelada (${changes} diretriz(es)) — episódios voltam pra grade`
+            : `exclusão de ${alvoId} cancelada — volta pra grade`,
+        )
+      } else {
+        recusadas.push(`cancelar exclusão de ${alvoId}: não havia exclusão ativa`)
       }
       continue
     }
@@ -408,11 +515,11 @@ export async function chatDiretor(env: Env, canal: string, mensagens: ChatMsg[])
   }
 }
 
-/** Estado pro painel: exclusões ativas e eventos futuros do canal. */
+/** Estado pro painel: exclusões ativas (mídia ou série), eventos futuros, e as séries agrupadas. */
 export async function estadoDiretor(env: Env, canal: string) {
   const now = Math.floor(Date.now() / 1000)
   const { results: diretrizes } = await env.DB.prepare(
-    `SELECT id, payload, vigente_ate, created_at FROM directives
+    `SELECT id, tipo, payload, vigente_ate, created_at FROM directives
      WHERE canal = ?1 AND status = 'ativa' AND (vigente_ate IS NULL OR vigente_ate > ?2)
      ORDER BY created_at DESC`,
   ).bind(canal, now).all<any>()
@@ -420,17 +527,24 @@ export async function estadoDiretor(env: Env, canal: string) {
     `SELECT id, media_id, start_at, end_at FROM channel_events
      WHERE canal = ?1 AND status = 'agendado' AND end_at > ?2 ORDER BY start_at`,
   ).bind(canal, now).all<any>()
+  const series = await getSeries(env, canal)
   return {
-    diretrizes: diretrizes.map((d: any) => ({
-      id: d.id,
-      media_id: JSON.parse(d.payload).media_id,
-      ate: d.vigente_ate ? epochToSp(d.vigente_ate) : null,
-    })),
+    diretrizes: diretrizes.map((d: any) => {
+      let p: any = {}
+      try { p = JSON.parse(d.payload) } catch { /* payload corrompido */ }
+      return {
+        id: d.id,
+        tipo: d.tipo,
+        alvo: p.series_id ?? p.media_id ?? '?',
+        ate: d.vigente_ate ? epochToSp(d.vigente_ate) : null,
+      }
+    }),
     eventos: eventos.map((e: any) => ({
       id: e.id,
       media_id: e.media_id,
       inicio: epochToSp(e.start_at),
       fim: epochToSp(e.end_at),
     })),
+    series: [...series.entries()].map(([sid, info]) => ({ series_id: sid, titulo: info.titulo, n: info.ids.length })),
   }
 }

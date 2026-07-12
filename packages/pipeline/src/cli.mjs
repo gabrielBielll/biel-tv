@@ -54,7 +54,9 @@ if (!['local', 'remote'].includes(opt.target)) die('--target deve ser local ou r
 const canais = (opt.canais ?? '').split(',').map((s) => s.trim()).filter(Boolean)
 for (const c of canais) if (!/^[a-z0-9_]{2,40}$/.test(c)) die(`canal inválido: ${c}`)
 const baseUrl = opt['base-url'] ?? (opt.target === 'local' ? '' : process.env.R2_PUBLIC_BASE_URL)
-if (opt.target === 'remote' && !baseUrl) die('para remote informe --base-url (domínio público do bucket)')
+// baseUrl === '' é válido e intencional (mídia servida via /media/* do Worker,
+// sem domínio público próprio) — só falha quando REALMENTE não foi informado.
+if (opt.target === 'remote' && baseUrl === undefined) die('para remote informe --base-url (domínio público do bucket)')
 
 const workdir = join(ROOT, '.ingest-work', opt.id)
 rmSync(workdir, { recursive: true, force: true })
