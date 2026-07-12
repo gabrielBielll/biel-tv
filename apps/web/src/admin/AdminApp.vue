@@ -782,7 +782,12 @@ onBeforeUnmount(() => clearInterval(poll))
       <div v-for="j in jobs" :key="j.id" class="job-row">
         <span class="mono">{{ j.id }}</span>
         <span class="dim grow">{{ j.title }}</span>
-        <span class="chip" :class="`st-${j.status}`">{{ STATUS_PT[j.status] ?? j.status }}</span>
+        <span v-if="j.status === 'processing' && j.progress > 0" class="mini-bar">
+          <span class="mini-bar-fill" :style="{ width: j.progress + '%' }" />
+        </span>
+        <span class="chip" :class="`st-${j.status}`">
+          {{ j.status === 'processing' && j.progress > 0 ? `processando ${j.progress}%` : (STATUS_PT[j.status] ?? j.status) }}
+        </span>
         <span v-if="j.error" class="err small">{{ j.error }}</span>
       </div>
 
@@ -950,6 +955,9 @@ button.ghost:hover { color: var(--text); }
 
 .bar { height: 5px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
 .bar-fill { height: 100%; background: var(--accent); }
+.mini-bar { width: 90px; height: 5px; flex: none; background: var(--panel-2);
+  border-radius: 999px; overflow: hidden; }
+.mini-bar-fill { display: block; height: 100%; background: #4da3ff; transition: width 0.6s; }
 
 .job-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
 .job-row:last-child { border-bottom: 0; }

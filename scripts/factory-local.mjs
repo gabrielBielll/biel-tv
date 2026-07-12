@@ -1,7 +1,9 @@
-// A "fábrica" local: drena a fila de ingestão do admin usando o pipeline.
-// Mesmo papel que a GitHub Action fará em produção — a API é idêntica:
-// claim → baixa do staging → pipeline ingest → marca done → re-gera a grade.
-import { spawnSync } from 'node:child_process'
+// A "fábrica": drena a fila de ingestão do admin usando o pipeline. Roda no
+// GitHub Actions (FACTORY_DRAIN=1) ou como daemon de dev na EC2 — a API é a
+// mesma: claim → baixa do staging → pipeline ingest → marca done → re-gera
+// a grade. O pipeline emite linhas "progresso: N%" que a gente repassa pro
+// Worker (POST /admin/jobs/:id/progress) — é o % que aparece na fila do painel.
+import { spawn } from 'node:child_process'
 import { createWriteStream, mkdirSync, rmSync } from 'node:fs'
 import { pipeline as streamPipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
@@ -53,7 +55,7 @@ async function processJob(job) {
 
   const args = [
     // --dns-result-order=ipv4first: o endpoint S3 do R2 resolve IPv6 e o
-    // fetch do Node dá SSL handshake failure nesta máquina — só IPv4 funciona.
+    // fetch do Node dá SSL handshake failure em algumas máquinas — só IPv4.
     '--dns-result-order=ipv4first',
     join(ROOT, 'packages/pipeline/src/cli.mjs'), 'ingest', src,
     '--id', job.id, '--tipo', job.tipo, '--title', job.title,
@@ -66,10 +68,44 @@ async function processJob(job) {
     // resto do catálogo em produção — sem domínio público configurado ainda).
     ...(TARGET === 'remote' ? ['--base-url', ''] : []),
   ]
-  const r = spawnSync('node', args, { encoding: 'utf8', env: process.env })
-  rmSync(src, { force: true })
-  if (r.status !== 0) {
-    throw new Error((r.stderr || r.stdout || 'pipeline falhou').trim().split('\n').at(-1))
+
+  // spawn assíncrono: enquanto o pipeline trabalha, a gente lê o stdout,
+  // pesca as linhas "progresso: N%" e repassa pro painel a cada ~5s.
+  let pct = -1
+  let pctEnviado = -1
+  const reporter = setInterval(() => {
+    if (pct > pctEnviado) {
+      pctEnviado = pct
+      post(`/admin/jobs/${job.id}/progress`, { pct }, 1).catch(() => { /* melhor esforço */ })
+    }
+  }, 5000)
+
+  try {
+    await new Promise((resolvePromise, reject) => {
+      const p = spawn('node', args, { env: process.env })
+      let saidaTail = ''
+      let lineBuf = ''
+      const come = (chunk) => {
+        saidaTail = (saidaTail + chunk).slice(-3000)
+        lineBuf += chunk
+        const lines = lineBuf.split('\n')
+        lineBuf = lines.pop() ?? ''
+        for (const line of lines) {
+          const m = line.match(/^progresso: (\d+)%$/)
+          if (m) pct = Math.min(99, Number(m[1]))
+        }
+      }
+      p.stdout.on('data', (d) => come(String(d)))
+      p.stderr.on('data', (d) => come(String(d)))
+      p.on('error', reject)
+      p.on('close', (code) => {
+        if (code === 0) resolvePromise(undefined)
+        else reject(new Error(saidaTail.trim().split('\n').filter((l) => !l.startsWith('progresso:')).at(-1) || 'pipeline falhou'))
+      })
+    })
+  } finally {
+    clearInterval(reporter)
+    rmSync(src, { force: true })
   }
   log(`"${job.id}" ingerido — replanejando a grade dos canais (bloco no ar preservado)`)
   await post('/admin/schedule/run', { rebuild: true })

@@ -109,15 +109,27 @@ admin.post('/jobs/claim', async (c) => {
   // Self-heal: um runner do Actions pode morrer no timeout com o job em
   // 'processing' — depois de 2h sem update, o job volta pra fila sozinho.
   await c.env.DB.prepare(
-    `UPDATE ingest_jobs SET status = 'queued', error = NULL, updated_at = unixepoch()
+    `UPDATE ingest_jobs SET status = 'queued', error = NULL, progress = 0, updated_at = unixepoch()
      WHERE status = 'processing' AND updated_at < unixepoch() - 7200`,
   ).run()
   const row = await c.env.DB.prepare(
-    `UPDATE ingest_jobs SET status = 'processing', updated_at = unixepoch()
+    `UPDATE ingest_jobs SET status = 'processing', progress = 0, updated_at = unixepoch()
      WHERE id = (SELECT id FROM ingest_jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1)
      RETURNING *`,
   ).first()
   return row ? c.json(row) : c.body(null, 204)
+})
+
+// A fábrica reporta o avanço da transcodificação (0–99) — o painel mostra
+// "processando 37%" no chip da fila. 100 é reservado pro done.
+admin.post('/jobs/:id/progress', async (c) => {
+  const { pct } = await c.req.json<{ pct?: number }>().catch(() => ({ pct: -1 }))
+  const n = Math.max(0, Math.min(99, Math.floor(Number(pct ?? -1))))
+  if (!Number.isFinite(n)) return c.json({ error: 'pct inválido' }, 400)
+  await c.env.DB.prepare(
+    `UPDATE ingest_jobs SET progress = ?2, updated_at = unixepoch() WHERE id = ?1 AND status = 'processing'`,
+  ).bind(c.req.param('id'), n).run()
+  return c.json({ ok: true })
 })
 
 admin.post('/jobs/:id/done', async (c) => {
@@ -126,8 +138,8 @@ admin.post('/jobs/:id/done', async (c) => {
   const job = await c.env.DB.prepare('SELECT staging_key FROM ingest_jobs WHERE id = ?1')
     .bind(id).first<{ staging_key: string }>()
   if (!job) return c.json({ error: 'job não existe' }, 404)
-  await c.env.DB.prepare('UPDATE ingest_jobs SET status = ?2, error = ?3, updated_at = unixepoch() WHERE id = ?1')
-    .bind(id, ok ? 'done' : 'error', error ?? null).run()
+  await c.env.DB.prepare('UPDATE ingest_jobs SET status = ?2, error = ?3, progress = ?4, updated_at = unixepoch() WHERE id = ?1')
+    .bind(id, ok ? 'done' : 'error', error ?? null, ok ? 100 : 0).run()
   if (ok) await c.env.MEDIA.delete(job.staging_key)
   return c.json({ ok: true })
 })

@@ -2,7 +2,7 @@
 // Porta do my-tv (normalization_worker + scene_analyzer), com o que o modelo
 // "live virtual" exige a mais: perfil único, keyframes exatos a cada 10s e
 // duração total padded para múltiplo de 10.
-import { execFileSync, execFile } from 'node:child_process'
+import { execFileSync, execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -53,7 +53,7 @@ export async function probe(input) {
  * keyframes forçados em t=0,10,20,... e final padded com preto/silêncio até
  * fechar múltiplo de 10s.
  */
-export async function normalize(input, outFile, { paddedDur, pad, hasAudio, crf = 23, fps = 30 }) {
+export async function normalize(input, outFile, { paddedDur, pad, hasAudio, crf = 23, fps = 30, onProgress }) {
   const vf = [
     'scale=1280:720:force_original_aspect_ratio=decrease',
     'pad=1280:720:(ow-iw)/2:(oh-ih)/2',
@@ -76,7 +76,39 @@ export async function normalize(input, outFile, { paddedDur, pad, hasAudio, crf 
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2',
     outFile,
   )
-  await execFileAsync(FFMPEG(), args)
+
+  // Sem onProgress mantém o caminho antigo (simples e à prova de regressão).
+  if (!onProgress) {
+    await execFileAsync(FFMPEG(), args)
+    return
+  }
+
+  // Com onProgress: `-progress pipe:1` faz o ffmpeg cuspir blocos key=value
+  // no stdout (out_time_us=…) — % real = tempo processado ÷ duração alvo.
+  await new Promise((resolvePromise, reject) => {
+    const p = spawn(FFMPEG(), ['-nostats', '-progress', 'pipe:1', ...args])
+    let buf = ''
+    let errTail = ''
+    p.stdout.on('data', (d) => {
+      buf += d
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const line of lines) {
+        const m = line.match(/^out_time_us=(\d+)/) ?? line.match(/^out_time_ms=(\d+)/)
+        if (m) {
+          // out_time_ms historicamente também vem em µs — tratamos ambos como µs
+          const pct = Math.min(99, Math.floor(Number(m[1]) / 1e6 / paddedDur * 100))
+          onProgress(pct)
+        }
+      }
+    })
+    p.stderr.on('data', (d) => { errTail = (errTail + d).slice(-2000) })
+    p.on('error', reject)
+    p.on('close', (code) => {
+      if (code === 0) resolvePromise(undefined)
+      else reject(new Error(errTail.trim().split('\n').at(-1) || `ffmpeg saiu com código ${code}`))
+    })
+  })
 }
 
 /** Passo 2 — corta o normalizado em .ts de 10s exatos, sem re-encodar. */

@@ -69,16 +69,29 @@ const pad = paddedDur - info.duration
 console.log(`1/5 probe: ${info.duration.toFixed(1)}s, ${info.width}x${info.height}, ` +
   `${info.vcodec}/${info.acodec ?? 'sem áudio'} → alvo ${paddedDur}s (${paddedDur / SEG} segmentos)`)
 
+// Progresso do job inteiro (0–100) em linhas "progresso: N%" no stdout —
+// a fábrica parseia e repassa pro painel. Normalização domina o tempo real:
+// 0→90; segmentação 92; cues 94; upload 94→99; o "done" da fila fecha em 100.
+let ultimoPct = -1
+function progresso(pct) {
+  if (pct > ultimoPct) {
+    ultimoPct = pct
+    console.log(`progresso: ${pct}%`)
+  }
+}
+
 // 2/5 normalização (a etapa demorada — re-encode completo)
 console.log(`2/5 normalizando p/ 720p H.264 (crf ${opt.crf})${pad > 0.01 ? ` + pad de ${pad.toFixed(1)}s` : ''}…`)
 const normalized = join(workdir, 'normalized.mp4')
 await normalize(input, normalized, {
   paddedDur, pad, hasAudio: info.hasAudio, crf: Number(opt.crf),
+  onProgress: (pct) => progresso(Math.floor(pct * 0.9)),
 })
 
 // 3/5 segmentação (cópia, sem re-encode)
 const segDir = join(workdir, 'segments')
 await segment(normalized, segDir)
+progresso(92)
 rmSync(join(segDir, '_index.m3u8'), { force: true })
 const segCount = listSegments(segDir).length
 if (segCount !== paddedDur / SEG) {
@@ -96,9 +109,17 @@ if (!opt['no-cues'] && opt.tipo !== 'comercial' && opt.tipo !== 'vinheta') {
 } else {
   console.log('4/5 cue points: pulado')
 }
+progresso(94)
 
 // 5/5 upload + registro
-const progress = (done, total) => process.stdout.write(`\r5/5 upload ${opt.target}: ${done}/${total} segmentos`)
+const progress = (done, total) => {
+  process.stdout.write(`\r5/5 upload ${opt.target}: ${done}/${total} segmentos`)
+  const pct = 94 + Math.floor((done / total) * 5)
+  if (pct > ultimoPct) {
+    ultimoPct = pct
+    process.stdout.write(`\nprogresso: ${pct}%\n`)
+  }
+}
 if (opt.target === 'local') uploadLocal(ROOT, segDir, opt.id, progress)
 else await uploadRemote(segDir, opt.id, progress)
 console.log()
