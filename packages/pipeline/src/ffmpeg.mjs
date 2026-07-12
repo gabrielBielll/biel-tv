@@ -9,6 +9,12 @@ import { join } from 'node:path'
 
 const execFileAsync = promisify(execFile)
 
+// 1 MiB (padrão do execFile) estoura fácil: ffmpeg despeja avisos POR FRAME
+// em fontes com timestamps tortos (rips antigos = a regra aqui), e o processo
+// morre com "maxBuffer exceeded" depois de minutos de trabalho. 64 MiB acomoda
+// qualquer verborragia real sem risco de memória.
+const BUF = { maxBuffer: 64 * 1024 * 1024 }
+
 export const SEG = 10
 
 function findBin(name, envVar) {
@@ -31,7 +37,7 @@ export async function probe(input) {
   const { stdout } = await execFileAsync(FFPROBE(), [
     '-v', 'error', '-print_format', 'json',
     '-show_format', '-show_streams', input,
-  ])
+  ], BUF)
   const info = JSON.parse(stdout)
   const v = info.streams.find((s) => s.codec_type === 'video')
   const a = info.streams.find((s) => s.codec_type === 'audio')
@@ -79,7 +85,7 @@ export async function normalize(input, outFile, { paddedDur, pad, hasAudio, crf 
 
   // Sem onProgress mantém o caminho antigo (simples e à prova de regressão).
   if (!onProgress) {
-    await execFileAsync(FFMPEG(), args)
+    await execFileAsync(FFMPEG(), args, BUF)
     return
   }
 
@@ -120,7 +126,7 @@ export async function segment(normalized, outDir) {
     '-hls_flags', 'independent_segments',
     '-hls_segment_filename', join(outDir, 'seg%05d.ts'),
     join(outDir, '_index.m3u8'),
-  ])
+  ], BUF)
 }
 
 /**
@@ -132,7 +138,7 @@ export async function detectBlack(file, { d = 1.0, picTh = 0.98, pixTh = 0.1 } =
     '-hide_banner', '-i', file,
     '-vf', `blackdetect=d=${d}:pic_th=${picTh}:pix_th=${pixTh}`,
     '-an', '-f', 'null', '-',
-  ])
+  ], BUF)
   const blacks = []
   for (const m of stderr.matchAll(/black_start:([\d.]+).*?black_end:([\d.]+)/g)) {
     blacks.push({ start: Number(m[1]), end: Number(m[2]) })
