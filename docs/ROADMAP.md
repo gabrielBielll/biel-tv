@@ -73,6 +73,12 @@ robusto aos dois formatos que o LLM pode escolher. Ver tabela de fases concluíd
   intervalos determinísticos (fase 9); falta o cron chamar o Gemini pra decidir
   temas/maratonas sozinho, seguindo a identidade de cada canal (editável no
   Modo God desde a fase 9, mas ainda não consumida por nada automático).
+  **Cenário-norte (Gabriel, 2026-07-12):** o Diretor decide sozinho "maratona
+  dos Padrinhos Mágicos hoje à noite", agenda o evento, e a promo da maratona
+  (fase 12, tipo `evento`) roda durante o dia/semana na janela de promoção —
+  você descobre ASSISTINDO que à noite tem Padrinhos, como TV de verdade.
+  A fase 12 já deixou o encaixe pronto: promo `evento` confirmada fica retida
+  esperando exatamente um `channel_events` correspondente pra destravar.
 - **10c — Votaton**: pedidos de programação SEM garantia no front da TV (não no
   admin), com votação simulada, pity timer e celebração da conquista —
   recompensa variável de propósito. Zero código ainda; só o chat direto
@@ -116,6 +122,14 @@ promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o 
 
 ## 📦 Backlog (sem fase definida)
 
+- **Normalização de volume (loudness) na ingestão** — pedido do Gabriel
+  (2026-07-12): comerciais/episódios com áudio MUITO mais alto que outros.
+  Desenho: filtro `loudnorm` do ffmpeg (EBU R128) no passo de normalização do
+  pipeline — alvo I=-16 LUFS / TP=-1.5 dB / LRA=11 no `-af` junto do
+  aresample (1 passada; 2 passadas = mais fiel, dobra o tempo de transcode).
+  Vale só pros uploads NOVOS; pro acervo existente, um job de re-normalização
+  só de áudio (vídeo em stream copy: `-c:v copy -af loudnorm -c:a aac` →
+  re-segmenta → re-sobe) é muito mais barato que re-transcodificar tudo.
 - **Upload: consistência da UI ao anexar durante um envio** — pedido do Gabriel
   (2026-07-12): anexar mais arquivos enquanto um lote sobe SUBSTITUI a lista
   visual (os em andamento continuam subindo por baixo — chegam a aparecer como

@@ -105,6 +105,7 @@ Três cérebros, um contrato:
 | Upload do admin: sessões multipart retomáveis via Worker | Sessão no D1 antes do 1º byte; partes fixas de 10 MiB pro R2 (binding), retomada pós-reload por fingerprint, `complete` idempotente (`apps/stream/src/uploads.ts`). URL pré-assinada (parte direto no R2, sem passar pelo Worker) fica como evolução junto com o domínio próprio. |
 | LLM do Diretor: Gemini 3.5 Flash → DeepSeek v4-flash | Free tier do Gemini ⇒ custo zero; DeepSeek como fallback de cota/erro (créditos do Gabriel). `responseSchema`/`response_format` garantem JSON válido nos dois. |
 | Cancelamento robusto a formato, não o prompt perfeito | O LLM às vezes enumera `excluir_media` em vez de emitir um `excluir_serie` só; em vez de tentar 100% de aderência via prompt, o cancelamento entende os dois formatos (ver GOTCHAS.md). |
+| **Comerciais 100% fidedignos** (decisão do Gabriel, 2026-07-12) | A experiência é REAL: promo só vai ao ar se a promessa é cumprida — inclusive nada de promos de outras temporadas do mesmo desenho (confunde). Promo não-verificável = fora do rodízio (`ignorar`), sem exceção de "charme nostálgico". Comercial de PRODUTO de época (brinquedo, comida) é fidedigno por natureza — é o pool genérico ideal. |
 
 ## Ambiente
 
