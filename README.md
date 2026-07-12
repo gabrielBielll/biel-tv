@@ -1,7 +1,24 @@
 # Biel TV
 
+> 🔴 **No ar:** [biel-tv.pages.dev](https://biel-tv.pages.dev) · API: `biel-tv-stream.biel-cesa95.workers.dev`
+>
 > 📚 **Onde estamos e pra onde vamos:** [docs/ARQUITETURA.md](docs/ARQUITETURA.md) ·
 > [docs/ROADMAP.md](docs/ROADMAP.md) · specs de features em [docs/features/](docs/features/)
+
+## Deploy (produção)
+
+```bash
+# uma vez: R2/D1/Pages já criados. Redeploy:
+cd apps/stream && npx wrangler deploy                       # Worker
+cd apps/web && VITE_API_BASE=https://biel-tv-stream.biel-cesa95.workers.dev npx vite build
+cd ../stream && npx wrangler pages deploy ../web/dist --project-name biel-tv --branch main
+# segredos: wrangler secret put ADMIN_TOKEN|GEMINI_API_KEY|DEEPSEEK_API_KEY
+# subir mídia nova pro R2: node --dns-result-order=ipv4first scripts/upload-all-remote.mjs
+```
+
+Precisa de `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` e as `R2_*` no ambiente
+(ficam no `~/.zshenv`). `--dns-result-order=ipv4first` é obrigatório pro upload S3
+(o IPv6 do endpoint R2 falha o handshake TLS neste ambiente).
 
 Canal de TV linear 24/7, 100% serverless: os vídeos são pré-segmentados em `.ts` de 10s
 (R2), e um Cloudflare Worker gera a playlist HLS "ao vivo" por matemática de relógio a

@@ -20,13 +20,17 @@
 **Entregáveis:** commit inicial, repo GitHub na conta **gabriell b**, push, README/docs visíveis.
 **🔒 Bloqueio:** Gabriel rodar `! gh auth login` (adicionar a conta gabriell b ao gh).
 
-### Fase 7 — Deploy real na Cloudflare
-**Objetivo:** a TV no mundo, fora da EC2.
-**Entregáveis:** D1 + R2 + Worker + Pages criados via wrangler (estilo Terraform, tudo daqui);
-migrations aplicadas no D1 remoto; mídia re-subida pro R2 real (`--target remote`);
-`ADMIN_TOKEN` como secret; `ALLOW_TIME_TRAVEL` desligado; domínio público do bucket;
-front no Pages com `VITE_API_BASE`.
-**🔒 Bloqueio:** Gabriel criar um **API Token** no dashboard da Cloudflare (~2 min, eu guio).
+### ~~Fase 7~~ ✅ CONCLUÍDA em 2026-07-12 — A TV ESTÁ NO AR
+- **Site:** https://biel-tv.pages.dev (Cloudflare Pages)
+- **API/Worker:** https://biel-tv-stream.biel-cesa95.workers.dev (D1 + R2 + cron 06:00 UTC)
+- **Repo:** https://github.com/gabrielBielll/biel-tv (privado)
+- D1 `biel-tv-db` (4 migrations + catálogo), R2 `biel-tv-media` (133 segmentos),
+  3 secrets (ADMIN_TOKEN forte, GEMINI, DEEPSEEK), `ALLOW_TIME_TRAVEL=0`,
+  alerta de gasto US$1 configurado. Verificado e2e em navegador na URL pública.
+- **Pendência de otimização** (não urgente): segmentos servidos via rota
+  `/media/*` do Worker (base_url=''), o que gasta invocações do Worker. Quando
+  Gabriel tiver domínio próprio → bucket público + custom domain tira isso do
+  Worker. Pro uso pessoal atual, o free tier (100k req/dia) sobra.
 
 ### Fase 8 — Fábrica no GitHub Actions
 **Objetivo:** transcodificação de graça e a EC2 virar só máquina de dev (desligável).
