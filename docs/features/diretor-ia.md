@@ -51,8 +51,10 @@ cabem com folga nas cotas gratuitas.
 - **JSON garantido**: `generationConfig.responseMimeType: "application/json"`
   + `responseSchema` — o equivalente Gemini de structured outputs.
 - **Function calling** para o chat (ações tipadas, abaixo).
-- **Modelo**: começar no tier flash (cota gratuita generosa); subir se o
-  gosto editorial pedir.
+- **Modelo**: `gemini-3.5-flash` (decisão do Gabriel, 2026-07-12 — o 2.5
+  vai expirar; confirmado disponível na API). Se um dia expirar de novo,
+  trocar a string; `gemini-flash-latest` existe como atalho, mas versão
+  fixa evita o Diretor mudar de comportamento sem aviso.
 
 **Fallback de provedor (decisão do Gabriel, 2026-07-12): Gemini → DeepSeek.**
 Se o Gemini responder erro de cota (`429` / `RESOURCE_EXHAUSTED`), a mesma
