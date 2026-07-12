@@ -12,6 +12,8 @@
 | **4a — Montador determinístico** | Grade com ritmo de TV (vinheta → programa c/ breaks nos cues → comercial em rodízio), append-only | 2026-07-12 | rodando no canal `bieltv_1` |
 | **5a — Admin local-first** | Upload no navegador c/ sugestão automática, fila, fábrica local, catálogo | 2026-07-12 | 11/11 (`pnpm verify:admin`); conteúdo real do Gabriel no ar |
 | **9 — Diretor determinístico + canais** | Canais Jetix/CN/Disney c/ identidade editável; agendador no cron do Worker (48h por canal, rotação `last_played_at`, pods ~120s, shuffle c/ seed); mídia→canal no upload/catálogo; multi-canal no front c/ branding; reconciliação R2↔D1 auto-curativa; flag Modo God no admin | 2026-07-12 | 17/17 (`pnpm verify:canais`) + suítes antigas verdes (66 checks) |
+| **10b — Chat do Diretor (Modo God)** | Chat real com IA por canal (Gemini 3.5 Flash → DeepSeek em cota/erro → aviso): exclusões com prazo, maratonas materializadas na grade, cancelamentos; snap de id + backstops determinísticos de datas + rodada de reparo; "ordens em vigor" com cancelar no painel | 2026-07-12 | 11/11 (`pnpm verify:diretor`, com LLM real) + smoke em produção |
+| **11a — Upload em lote/pasta** | Múltiplos arquivos ou pasta inteira no admin; série+episódio deduzidos ("pwr rangers/001.mp4" → `ep_pwr_rangers_e01`); envio sequencial pra fila | 2026-07-12 | e2e Playwright (pasta real → 3 jobs na fila) |
 
 ## ▶ Fases restantes
 
@@ -43,7 +45,7 @@ Pendência levada pra fase 10: regras da `channel_master_grid` (blocos fixos por
 dia/horário) entram junto com o planejamento editorial — hoje o agendador usa
 rotação + pods; as regras fixas fazem mais sentido quando o Diretor IA as gerar.
 
-### Fase 10 — Diretor IA (Gemini)
+### Fase 10 — Diretor IA (Gemini) — 10b (chat) ✅ FEITA; faltam 10a e 10c
 **Objetivo:** cada canal parecer ter o diretor de programação do canal original.
 **Spec completa:** [features/diretor-ia.md](features/diretor-ia.md).
 **Entregáveis:** planejamento noturno por canal via **Gemini** (free tier ⇒ custo

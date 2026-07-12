@@ -60,11 +60,30 @@ export async function scheduleChannel(
     .bind(canal).first<{ break_target_seg: number }>()
   if (!chan) return { canal, added: 0, skipped: 'canal não existe' }
 
-  const { results: media } = await env.DB.prepare(
+  const { results: mediaTodas } = await env.DB.prepare(
     `SELECT m.id, m.tipo, m.duracao_seg, m.segment_count, m.last_played_at
      FROM media_items m JOIN media_channels mc ON mc.media_id = m.id
      WHERE mc.channel_id = ?1 AND m.status = 'ready'`,
   ).bind(canal).all<MediaRow>()
+
+  // diretrizes do Modo God: mídia excluída sai do pool enquanto vigente
+  const agora = Math.floor(Date.now() / 1000)
+  const { results: dirs } = await env.DB.prepare(
+    `SELECT payload FROM directives
+     WHERE canal = ?1 AND status = 'ativa' AND tipo = 'excluir_media'
+       AND vigente_de <= ?2 AND (vigente_ate IS NULL OR vigente_ate > ?2)`,
+  ).bind(canal, agora).all<{ payload: string }>()
+  const excluidas = new Set(dirs.map((d) => {
+    try { return JSON.parse(d.payload).media_id as string } catch { return '' }
+  }))
+  const media = mediaTodas.filter((m) => !excluidas.has(m.id))
+
+  // eventos agendados (maratonas) que tocam a janela de planejamento
+  const { results: eventos } = await env.DB.prepare(
+    `SELECT media_id, start_at, end_at FROM channel_events
+     WHERE canal = ?1 AND status = 'agendado' AND end_at > ?2
+     ORDER BY start_at`,
+  ).bind(canal, agora).all<{ media_id: string; start_at: number; end_at: number }>()
 
   const contents = media.filter((m) => m.tipo === 'episodio' || m.tipo === 'filme')
   const ads = media.filter((m) => m.tipo === 'comercial')
@@ -146,13 +165,8 @@ export async function scheduleChannel(
     }
   }
 
-  while (t < target) {
-    if (vins.length > 0) {
-      const v = vins[vi++ % vins.length]
-      push(v.id, t, t + v.duracao_seg, 0)
-      t += v.duracao_seg
-    }
-    const c = queue[qi++ % queue.length]
+  // agenda um conteúdo com seus breaks nos cue points
+  const agendaConteudo = (c: MediaRow, comPodFinal: boolean) => {
     playedAt[c.id] = t
     const cues = (cuesOf[c.id] ?? []).filter((x) => x > 0 && x < c.duracao_seg)
     let pos = 0
@@ -164,7 +178,27 @@ export async function scheduleChannel(
     }
     push(c.id, t, t + (c.duracao_seg - pos), pos / SEGMENT_DURATION)
     t += c.duracao_seg - pos
-    breakPod()
+    if (comPodFinal) breakPod()
+  }
+
+  while (t < target) {
+    // maratona agendada cobrindo este instante? o evento manda na grade
+    const ev = eventos.find((e) => t >= e.start_at - 300 && t < e.end_at)
+    if (ev) {
+      const m = mediaTodas.find((x) => x.id === ev.media_id && (x.tipo === 'episodio' || x.tipo === 'filme'))
+      if (m) {
+        agendaConteudo(m, t + m.duracao_seg < ev.end_at)
+        continue
+      }
+    }
+
+    if (vins.length > 0) {
+      const v = vins[vi++ % vins.length]
+      push(v.id, t, t + v.duracao_seg, 0)
+      t += v.duracao_seg
+    }
+    const c = queue[qi++ % queue.length]
+    agendaConteudo(c, true)
   }
 
   // grava em lotes (ids são slugs internos validados — interpolação segura)

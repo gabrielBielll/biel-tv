@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { runScheduler, scheduleChannel, reconcileAndRepair } from './scheduler'
+import { chatDiretor, estadoDiretor, type ChatMsg } from './diretor'
 
 // API do painel admin. Tudo aqui exige `Authorization: Bearer <ADMIN_TOKEN>`.
 // O upload do MVP bufferiza o corpo no Worker — suficiente pro dev local;
@@ -201,6 +202,46 @@ admin.post('/schedule/run', async (c) => {
 
 admin.post('/reconcile', async (c) => {
   return c.json(await reconcileAndRepair(c.env))
+})
+
+// ── Diretor IA (chat do Modo God) ──────────────────────────────────────────
+
+admin.post('/diretor/chat', async (c) => {
+  const b = await c.req.json<{ canal?: string; mensagens?: ChatMsg[] }>().catch(() => null)
+  if (!b?.canal || !SLUG.test(b.canal)) return c.json({ error: 'canal obrigatório' }, 400)
+  const existe = await c.env.DB.prepare('SELECT id FROM channels WHERE id = ?1').bind(b.canal).first()
+  if (!existe) return c.json({ error: 'canal desconhecido' }, 400)
+  const msgs = (b.mensagens ?? [])
+    .filter((m) => m && (m.role === 'user' || m.role === 'diretor') && typeof m.text === 'string')
+    .map((m) => ({ role: m.role, text: m.text.slice(0, 2000) }))
+  if (msgs.length === 0 || msgs.at(-1)!.role !== 'user') {
+    return c.json({ error: 'a última mensagem precisa ser sua' }, 400)
+  }
+  return c.json(await chatDiretor(c.env, b.canal, msgs))
+})
+
+admin.get('/diretor/estado', async (c) => {
+  const canal = c.req.query('canal') ?? ''
+  if (!SLUG.test(canal)) return c.json({ error: 'canal obrigatório' }, 400)
+  return c.json(await estadoDiretor(c.env, canal))
+})
+
+admin.post('/diretor/diretriz/:id/cancelar', async (c) => {
+  const id = Number(c.req.param('id'))
+  const d = await c.env.DB.prepare("UPDATE directives SET status='cancelada' WHERE id = ?1 AND status='ativa' RETURNING canal")
+    .bind(id).first<{ canal: string }>()
+  if (!d) return c.json({ error: 'diretriz não encontrada' }, 404)
+  await scheduleChannel(c.env, d.canal, 48, true)
+  return c.json({ ok: true })
+})
+
+admin.post('/diretor/evento/:id/cancelar', async (c) => {
+  const id = Number(c.req.param('id'))
+  const e = await c.env.DB.prepare("UPDATE channel_events SET status='cancelado' WHERE id = ?1 AND status='agendado' RETURNING canal")
+    .bind(id).first<{ canal: string }>()
+  if (!e) return c.json({ error: 'evento não encontrado' }, 404)
+  await scheduleChannel(c.env, e.canal, 48, true)
+  return c.json({ ok: true })
 })
 
 // ── config (inclui a flag do Modo God) ─────────────────────────────────────
