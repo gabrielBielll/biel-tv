@@ -4,12 +4,15 @@ import { SEGMENT_DURATION, SQL_EPG_OVERLAP, type EpgRowWithMedia } from '@bieltv
 import { buildLivePlaylist } from './playlist'
 import { admin } from './admin'
 import { reconcileAndRepair, runScheduler } from './scheduler'
+import { dispatchSeTemFila } from './fabrica'
 
 type Bindings = {
   DB: D1Database
   MEDIA: R2Bucket
   ADMIN_TOKEN: string
   ALLOW_TIME_TRAVEL: string
+  GH_DISPATCH_TOKEN?: string
+  GH_REPO?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -118,6 +121,9 @@ export default {
     ctx.waitUntil((async () => {
       const rec = await reconcileAndRepair(env)
       const reports = await runScheduler(env, { hours: 48 })
+      // rede de segurança da fábrica: dispatch perdido ou run morta no
+      // timeout → o cron re-acorda o GitHub Actions enquanto houver fila
+      await dispatchSeTemFila(env)
       console.log('[diretor]', JSON.stringify({ rec, reports }))
     })())
   },

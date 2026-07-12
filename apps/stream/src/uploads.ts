@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { dispatchFabrica } from './fabrica'
 
 // Uploads persistentes e retomáveis (docs/features/uploads-resumiveis.md).
 //
@@ -18,6 +19,8 @@ type Bindings = {
   MEDIA: R2Bucket
   ADMIN_TOKEN: string
   ALLOW_TIME_TRAVEL: string
+  GH_DISPATCH_TOKEN?: string
+  GH_REPO?: string
 }
 
 export const uploads = new Hono<{ Bindings: Bindings }>()
@@ -259,6 +262,7 @@ uploads.post('/:sid/complete', async (c) => {
     c.env.DB.prepare("UPDATE upload_sessions SET status = 'concluida', updated_at = unixepoch() WHERE id = ?1").bind(sid),
     c.env.DB.prepare('DELETE FROM upload_parts WHERE session_id = ?1').bind(sid),
   ])
+  c.executionCtx.waitUntil(dispatchFabrica(c.env))
   return c.json({ ok: true, id: s.media_id, ja_concluida: false }, 201)
 })
 

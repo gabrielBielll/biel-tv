@@ -15,6 +15,9 @@ const TOKEN = process.env.ADMIN_TOKEN ?? 'bieltv-dev-2026'
 // 'remote': grava no D1/R2 DE VERDADE — necessário sempre que BASE aponta
 // pro Worker de produção (senão o job "conclui" sem nunca sair do R2 local).
 const TARGET = process.env.FACTORY_TARGET === 'remote' ? 'remote' : 'local'
+// FACTORY_DRAIN=1: processa até a fila secar e ENCERRA (modo GitHub Actions).
+// Sem a flag: daemon de polling infinito (modo dev na EC2).
+const DRAIN = process.env.FACTORY_DRAIN === '1'
 const POLL_MS = 5000
 const HDR = { authorization: `Bearer ${TOKEN}` }
 
@@ -89,7 +92,26 @@ async function tick() {
   return true
 }
 
-log(`de olho na fila em ${BASE} [target=${TARGET}] (poll a cada ${POLL_MS / 1000}s)`)
+log(`de olho na fila em ${BASE} [target=${TARGET}${DRAIN ? ', drain' : ''}] (poll a cada ${POLL_MS / 1000}s)`)
+if (DRAIN) {
+  // Actions: drena tudo e sai. Duas passadas vazias seguidas = fila seca de
+  // verdade (uma só poderia ser um claim que perdeu a corrida). Erros
+  // transitórios não encerram a run com trabalho pendente — só 5 seguidos.
+  let vazias = 0
+  let erros = 0
+  while (vazias < 2) {
+    try {
+      if (await tick()) { vazias = 0; erros = 0; continue }
+      vazias++
+    } catch (e) {
+      log(`erro no polling: ${e.message}`)
+      if (++erros >= 5) { log('5 erros seguidos — desistindo'); process.exit(1) }
+    }
+    await new Promise((r) => setTimeout(r, 3000))
+  }
+  log('fila vazia — encerrando (modo drain)')
+  process.exit(0)
+}
 for (;;) {
   try {
     // drena tudo que estiver na fila antes de dormir

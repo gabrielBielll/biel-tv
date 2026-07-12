@@ -6,6 +6,9 @@ compatibility_date = "2026-06-01"
 [vars]
 # Produção: viagem no tempo DESLIGADA. Em dev o .dev.vars sobrepõe com "1".
 ALLOW_TIME_TRAVEL = "0"
+# Repo da fábrica no GitHub Actions (repository_dispatch ao entrar job na fila).
+# O token fica no secret GH_DISPATCH_TOKEN; sem ele o dispatch é pulado em silêncio.
+GH_REPO = "gabrielBielll/biel-tv"
 # ADMIN_TOKEN é secret em produção (`wrangler secret put ADMIN_TOKEN`);
 # em dev vem do .dev.vars.
 

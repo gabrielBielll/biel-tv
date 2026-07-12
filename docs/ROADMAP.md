@@ -104,6 +104,21 @@ canônico) já existe e está em uso real desde a fase 10b.1 — falta só o res
 
 ## 📦 Backlog (sem fase definida)
 
+- **Progresso do processamento na fila (%)** — pedido do Gabriel (2026-07-12):
+  mostrar no chip da fila o avanço da transcodificação, como já existe no envio
+  ("processando 37%"). Desenho: o ffmpeg emite `-progress` (out_time); o pipeline
+  conhece a duração → % real; a fábrica manda `POST /admin/jobs/:id/progress` a
+  cada poucos segundos e o painel (que já faz polling de 4s) exibe. Ficou MAIS
+  valioso com a fábrica no GitHub Actions (não tem mais log local pra acompanhar).
+- **Upload: consistência da UI ao anexar durante um envio** — pedido do Gabriel
+  (2026-07-12): anexar mais arquivos enquanto um lote sobe SUBSTITUI a lista
+  visual (os em andamento continuam subindo por baixo — chegam a aparecer como
+  "interrompido" até concluírem sozinhos), e os novos ficam bloqueados até o
+  lote atual terminar. Consertos: (a) anexar no meio deve SOMAR ao lote (fila
+  única de envio, não substituir), (b) itens em voo continuam visíveis com
+  progresso, (c) após terminar, o botão "enviar pra fila" vira "enviado ✓"
+  (desabilitado) pra não sugerir reenvio — reenvio hoje é inofensivo (o servidor
+  deduplica), mas a UI não deve nem convidar.
 - **Mídia placeholder** — segmento de fallback pra buraco de EPG (hoje o slot some).
 - **Estender `scripts/_lib.mjs`** — `verify-pipeline.mjs`, `verify-admin.mjs` e
   `verify-stream.mjs` ainda usam `fetch()` cru; migrar pro `fetchRetry`

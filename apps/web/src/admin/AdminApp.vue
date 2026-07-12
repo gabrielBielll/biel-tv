@@ -414,8 +414,9 @@ async function reanexar(ev: Event) {
     }
     if (f) casadas.push({ sess: p, file: f, status: 'aguardando…', pct: 0 })
   }
+  const ignorados = files.length - casadas.length
   msg.value = casadas.length
-    ? `retomando ${casadas.length} upload(s); ${files.length - casadas.length} arquivo(s) sem correspondência`
+    ? `retomando ${casadas.length} upload(s)${ignorados ? `; ${ignorados} arquivo(s) ignorados (já enviados antes ou sem upload pendente — nada sobe em dobro)` : ''}`
     : '✖ nenhum arquivo corresponde a um upload pendente (nome, tamanho e data precisam bater)'
   retomadas.value.push(...casadas)
   for (const r of casadas) await retomaUma(r)
@@ -743,7 +744,9 @@ onBeforeUnmount(() => clearInterval(poll))
         <h2 class="mt">Uploads interrompidos</h2>
         <p class="dim">
           O navegador não guarda o arquivo depois de um reload — reanexe o(s) mesmo(s)
-          arquivo(s) (ou a pasta) e o envio continua de onde parou.
+          arquivo(s) (ou a pasta inteira) e o envio continua de onde parou. Pode mandar
+          a pasta toda sem medo: o que já subiu é ignorado e só as partes que faltam
+          são enviadas.
         </p>
         <div class="row">
           <label class="pasta-btn grow">

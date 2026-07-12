@@ -3,6 +3,7 @@ import { cors } from 'hono/cors'
 import { runScheduler, scheduleChannel, reconcileAndRepair } from './scheduler'
 import { chatDiretor, estadoDiretor, type ChatMsg } from './diretor'
 import { uploads } from './uploads'
+import { dispatchFabrica } from './fabrica'
 
 // API do painel admin. Tudo aqui exige `Authorization: Bearer <ADMIN_TOKEN>`.
 // Upload oficial: sessões multipart retomáveis em ./uploads.ts (/admin/uploads).
@@ -13,6 +14,8 @@ type Bindings = {
   MEDIA: R2Bucket
   ADMIN_TOKEN: string
   ALLOW_TIME_TRAVEL: string
+  GH_DISPATCH_TOKEN?: string
+  GH_REPO?: string
 }
 
 export const admin = new Hono<{ Bindings: Bindings }>()
@@ -91,6 +94,7 @@ admin.post('/jobs', async (c) => {
     String(b.tags ?? ''),
     canais.join(','),
   ).run()
+  c.executionCtx.waitUntil(dispatchFabrica(c.env))
   return c.json({ ok: true, id }, 201)
 })
 
@@ -102,6 +106,12 @@ admin.get('/jobs', async (c) => {
 })
 
 admin.post('/jobs/claim', async (c) => {
+  // Self-heal: um runner do Actions pode morrer no timeout com o job em
+  // 'processing' — depois de 2h sem update, o job volta pra fila sozinho.
+  await c.env.DB.prepare(
+    `UPDATE ingest_jobs SET status = 'queued', error = NULL, updated_at = unixepoch()
+     WHERE status = 'processing' AND updated_at < unixepoch() - 7200`,
+  ).run()
   const row = await c.env.DB.prepare(
     `UPDATE ingest_jobs SET status = 'processing', updated_at = unixepoch()
      WHERE id = (SELECT id FROM ingest_jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1)
