@@ -109,6 +109,24 @@ promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o 
 
 ## 📦 Backlog (sem fase definida)
 
+- **Diretor encomenda comerciais + vinhetas "a seguir" GERADAS por IA** —
+  pedido do Gabriel (2026-07-13). A inversão genial do problema da fase 12:
+  em vez de caçar promo de acervo que combine com a grade, GERAR a promo que
+  combina com a grade que o Diretor acabou de montar. Em partes:
+  1. *O Diretor diz o que falta*: relatório de lacunas determinístico
+     (séries sem promo "a seguir", maratona agendada sem promo de evento) no
+     painel/chat — ele "encomenda" as peças.
+  2. *Geração da vinheta "a seguir"*: template fixo de época (fundo + 3
+     quadros à direita, um por atração seguinte — como as vinhetas reais do
+     Jetix) + 1 imagem por série (casa com os posters do TMDB, fase 11) +
+     locução por IA ("A seguir: X! Depois, Y! E mais tarde, Z!") — TTS via
+     ElevenLabs (free tier) ou **Piper TTS local no runner (grátis, pt-BR)**;
+     montagem 100% ffmpeg (overlay/zoompan/drawtext) na própria fábrica —
+     nenhum gerador de vídeo pago necessário pro formato template.
+  3. *Fidedigna por construção*: a peça gerada já nasce com a promessa
+     confirmada (sequência = a da grade real) — e no limite o agendador
+     encomenda a vinheta certa pro intervalo certo (a "programação guiada
+     por promo" da fase 12, invertida).
 - **"A nomear" → transcrever um trecho no projeto externo do Gabriel** — ideia
   dele (2026-07-13): pra arquivo de nome irrecuperável, exportar um trecho
   (ex.: 60s de áudio, que o pipeline já sabe extrair) e mandar pro projeto
