@@ -47,8 +47,8 @@ jobs:
             ~/.cache/huggingface
             ~/.cache/pip
           key: whisper-small-${{ runner.os }}
-      - name: faster-whisper
-        run: pip install --quiet faster-whisper
+      - name: faster-whisper + yt-dlp
+        run: pip install --quiet faster-whisper yt-dlp
 
       - name: dependências (só runtime — sem playwright/browsers)
         run: pnpm install --prod --frozen-lockfile

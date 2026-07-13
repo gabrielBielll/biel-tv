@@ -82,7 +82,15 @@ admin.post('/jobs', async (c) => {
   const id = String(b.id ?? '')
   if (!/^[a-z0-9_]{3,40}$/.test(id)) return c.json({ error: 'id inválido (minúsculas/dígitos/_, 3–40)' }, 400)
   if (!TIPOS.includes(String(b.tipo))) return c.json({ error: 'tipo inválido' }, 400)
-  if (!b.title || !b.staging_key) return c.json({ error: 'title e staging_key são obrigatórios' }, 400)
+  // origem: um upload (staging_key) OU um link da web (source_url — YouTube,
+  // archive.org etc.; a fábrica baixa com yt-dlp e segue o pipeline normal)
+  const sourceUrl = String(b.source_url ?? '').trim()
+  if (sourceUrl && !/^https?:\/\/.{4,500}$/.test(sourceUrl)) {
+    return c.json({ error: 'link inválido (precisa começar com http/https)' }, 400)
+  }
+  if (!b.title || (!b.staging_key && !sourceUrl)) {
+    return c.json({ error: 'title e (staging_key OU source_url) são obrigatórios' }, 400)
+  }
 
   const canais = String(b.canais ?? '').split(',').map((s) => s.trim()).filter(Boolean)
   if (canais.length === 0) return c.json({ error: 'escolha pelo menos um canal' }, 400)
@@ -97,17 +105,37 @@ admin.post('/jobs', async (c) => {
   if (dup) return c.json({ error: `id "${id}" já existe` }, 409)
 
   await c.env.DB.prepare(
-    `INSERT INTO ingest_jobs (id, staging_key, original_name, tipo, title, series_id, episode, tags, canais)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
+    `INSERT INTO ingest_jobs (id, staging_key, original_name, tipo, title, series_id, episode, tags, canais, source_url)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
   ).bind(
-    id, String(b.staging_key), String(b.original_name ?? ''), String(b.tipo), String(b.title),
+    id, String(b.staging_key ?? ''), String(b.original_name ?? ''), String(b.tipo), String(b.title),
     b.series_id ? String(b.series_id) : null,
     b.episode ? Number(b.episode) : null,
     String(b.tags ?? ''),
     canais.join(','),
+    sourceUrl || null,
   ).run()
   c.executionCtx.waitUntil(dispatchFabrica(c.env))
   return c.json({ ok: true, id }, 201)
+})
+
+// Título/autor de um link do YouTube via oEmbed (server-side: o navegador
+// não consegue por CORS) — pré-preenche o formulário do painel. Melhor
+// esforço: link de outro site só devolve title null e o operador digita.
+admin.get('/yt-info', async (c) => {
+  const url = c.req.query('url') ?? ''
+  if (!/^https?:\/\//.test(url)) return c.json({ error: 'url inválida' }, 400)
+  try {
+    const res = await fetch(
+      `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(url)}`,
+      { headers: { 'user-agent': 'biel-tv-admin' } },
+    )
+    if (!res.ok) return c.json({ title: null })
+    const data = await res.json<{ title?: string; author_name?: string }>()
+    return c.json({ title: data.title ?? null, autor: data.author_name ?? null })
+  } catch {
+    return c.json({ title: null })
+  }
 })
 
 admin.get('/jobs', async (c) => {
@@ -153,7 +181,7 @@ admin.post('/jobs/:id/done', async (c) => {
   await c.env.DB.prepare('UPDATE ingest_jobs SET status = ?2, error = ?3, progress = ?4, updated_at = unixepoch() WHERE id = ?1')
     .bind(id, ok ? 'done' : 'error', error ?? null, ok ? 100 : 0).run()
   if (ok) {
-    await c.env.MEDIA.delete(job.staging_key)
+    if (job.staging_key) await c.env.MEDIA.delete(job.staging_key) // job de link não tem staging
     // comercial/vinheta recém-ingerido com transcrição → o LLM propõe a
     // promessa em background (fase 12); com promessa detectada, a peça fica
     // fora do rodízio até o operador confirmar no painel

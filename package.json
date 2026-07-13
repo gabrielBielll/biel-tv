@@ -24,7 +24,8 @@
     "verify:promessas": "node scripts/verify-promessas.mjs",
     "verify:editorial": "node scripts/verify-editorial.mjs",
     "verify:votaton": "node scripts/verify-votaton.mjs",
-    "verify:nomear": "node scripts/verify-nomear.mjs"
+    "verify:nomear": "node scripts/verify-nomear.mjs",
+    "verify:link": "node scripts/verify-link.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

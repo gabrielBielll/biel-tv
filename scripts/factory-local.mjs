@@ -47,11 +47,31 @@ async function processJob(job) {
   log(`processando "${job.id}" (${job.title})`)
   const dir = join(ROOT, '.ingest-work', '_staging')
   mkdirSync(dir, { recursive: true })
-  const src = join(dir, `${job.id}__${job.original_name || 'video.bin'}`)
+  const src = join(dir, `${job.id}__${job.original_name || 'video.mp4'}`)
 
-  const res = await fetch(`${BASE}/admin/staging/${encodeURIComponent(job.staging_key)}`, { headers: HDR })
-  if (!res.ok) throw new Error(`staging download HTTP ${res.status}`)
-  await streamPipeline(Readable.fromWeb(res.body), createWriteStream(src))
+  if (job.source_url) {
+    // job de LINK (YouTube/acervos): o yt-dlp baixa aqui no runner —
+    // 720p no máximo (perfil do canal é 720p, mais que isso é bit jogado
+    // fora), sempre mp4, nunca playlist inteira por engano.
+    log(`baixando de ${job.source_url.slice(0, 80)}…`)
+    const { spawnSync: run } = await import('node:child_process')
+    const r = run('yt-dlp', [
+      '--no-playlist', '--force-overwrites',
+      '-f', 'bv*[height<=720]+ba/b[height<=720]/b',
+      '--merge-output-format', 'mp4',
+      '-o', src,
+      job.source_url,
+    ], { encoding: 'utf8' })
+    if (r.error?.code === 'ENOENT') throw new Error('yt-dlp não instalado nesta máquina (pip install yt-dlp)')
+    if (r.status !== 0) {
+      const tail = (r.stderr || r.stdout || '').trim().split('\n').filter((l) => l.trim()).at(-1) ?? 'yt-dlp falhou'
+      throw new Error(`download falhou: ${tail.slice(0, 300)}`)
+    }
+  } else {
+    const res = await fetch(`${BASE}/admin/staging/${encodeURIComponent(job.staging_key)}`, { headers: HDR })
+    if (!res.ok) throw new Error(`staging download HTTP ${res.status}`)
+    await streamPipeline(Readable.fromWeb(res.body), createWriteStream(src))
+  }
 
   const args = [
     // --dns-result-order=ipv4first: o endpoint S3 do R2 resolve IPv6 e o

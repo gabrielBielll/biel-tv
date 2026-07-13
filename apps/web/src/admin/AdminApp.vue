@@ -210,7 +210,72 @@ function suggest(f: File, m: { duration: number }) {
   }
 }
 
+// ── ingestão por link (YouTube/acervos) ────────────────────────────────────
+const ytUrl = ref('')
+const ytBusy = ref(false)
+async function buscarLink() {
+  const url = ytUrl.value.trim()
+  if (!url || ytBusy.value) return
+  ytBusy.value = true
+  msg.value = ''
+  try {
+    const info = await (await api(`/yt-info?url=${encodeURIComponent(url)}`)).json()
+    const titulo = info.title ?? ''
+    file.value = null
+    meta.value = null
+    lote.value = []
+    // reusa a heurística de sugestão com o TÍTULO do vídeo como "nome do arquivo"
+    const fakeName = `${titulo || 'video do link'}.mp4`
+    const lower = fakeName.toLowerCase()
+    let tipo = 'episodio'
+    if (/vinheta|a[ ._-]?seguir|\bid\b/i.test(lower)) tipo = 'vinheta'
+    else if (/comercial|promo|an[uú]ncio|intervalo|propaganda/i.test(lower)) tipo = 'comercial'
+    const title = cleanTitle(fakeName) || 'Vídeo do link'
+    const prefix = { episodio: 'ep', filme: 'flm', comercial: 'com', vinheta: 'vin' }[tipo]
+    form.value = {
+      id: `${prefix}_${slug(title).slice(0, 28)}`,
+      tipo, title, series_id: '', episode: '', tags: '',
+      canais: suggestCanais(lower),
+    }
+    linkPronto.value = true
+    msg.value = titulo ? `🔗 "${titulo}" — confira as sugestões e envie` : '🔗 link ok — preencha título/tipo e envie'
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  } finally {
+    ytBusy.value = false
+  }
+}
+
+const linkPronto = ref(false)
+async function enviarLink() {
+  if (form.value.canais.length === 0) {
+    msg.value = '✖ escolha pelo menos um canal'
+    return
+  }
+  sending.value = true
+  try {
+    const res = await postJson('/jobs', {
+      ...form.value,
+      canais: form.value.canais.join(','),
+      episode: form.value.episode ? Number(form.value.episode) : null,
+      source_url: ytUrl.value.trim(),
+      original_name: `${form.value.id}.mp4`,
+    })
+    const body = await res.json()
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    msg.value = `✔ "${form.value.title}" entrou na fila — a fábrica baixa e processa sozinha`
+    ytUrl.value = ''
+    linkPronto.value = false
+    refresh()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  } finally {
+    sending.value = false
+  }
+}
+
 async function onPick(ev: Event) {
+  linkPronto.value = false
   msg.value = ''
   const files = [...((ev.target as HTMLInputElement).files ?? [])].filter((f) => f.size > 0)
   if (files.length > 1) {
@@ -829,6 +894,42 @@ onBeforeUnmount(() => clearInterval(poll))
         📁 ou enviar uma pasta inteira (ex.: "pwr rangers/001.mp4, 002.mp4…")
         <input type="file" webkitdirectory multiple class="oculto" @change="onPick" />
       </label>
+      <div class="row link-row">
+        <input
+          v-model="ytUrl"
+          placeholder="🔗 ou cole um link (YouTube, archive.org…) e a fábrica baixa sozinha"
+          @keyup.enter="buscarLink"
+        />
+        <button class="ghost" :disabled="ytBusy" @click="buscarLink">{{ ytBusy ? '…' : 'buscar' }}</button>
+      </div>
+
+      <template v-if="linkPronto">
+        <div class="form">
+          <label>Título <input v-model="form.title" /></label>
+          <label>Tipo
+            <select v-model="form.tipo">
+              <option value="episodio">episódio</option>
+              <option value="filme">filme</option>
+              <option value="comercial">comercial</option>
+              <option value="vinheta">vinheta</option>
+            </select>
+          </label>
+          <label>ID <input v-model="form.id" /></label>
+          <div class="row">
+            <label>Série <input v-model="form.series_id" placeholder="opcional" /></label>
+            <label>Ep nº <input v-model="form.episode" placeholder="opcional" /></label>
+          </div>
+          <div class="canais-check">
+            <span class="dim small">Canais:</span>
+            <label v-for="c in channels" :key="c.id" class="check">
+              <input type="checkbox" :value="c.id" v-model="form.canais" /> {{ c.nome }}
+            </label>
+          </div>
+          <button class="primary" :disabled="sending" @click="enviarLink">
+            {{ sending ? 'enviando…' : 'baixar e colocar na fila' }}
+          </button>
+        </div>
+      </template>
 
       <template v-if="file && meta">
         <p class="dim">
@@ -1243,6 +1344,9 @@ button.ghost:hover { color: var(--text); }
 .ident { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
 .ident h3 { font-size: 14px; }
 .ident button { align-self: start; }
+
+.link-row { margin-top: 8px; }
+.link-row input { font-size: 13px; }
 
 .pasta-btn { display: block; margin-top: 8px; font-size: 12px; color: var(--text-dim);
   border: 1px dashed var(--line); border-radius: 8px; padding: 8px 10px; cursor: pointer; }
