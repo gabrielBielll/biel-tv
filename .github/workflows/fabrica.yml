@@ -47,8 +47,14 @@ jobs:
             ~/.cache/huggingface
             ~/.cache/pip
           key: whisper-small-${{ runner.os }}
-      - name: faster-whisper + yt-dlp
-        run: pip install --quiet faster-whisper yt-dlp
+      # Deno: runtime JS que o yt-dlp usa pra resolver o "n challenge" do
+      # YouTube (2026) — sem ele os formatos somem ("Only images available")
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: faster-whisper + yt-dlp (com resolvedor de desafios)
+        run: pip install --quiet faster-whisper "yt-dlp[default]" yt-dlp-ejs
 
       # cookies do YouTube (opcional): se o secret YT_COOKIES existir, vira
       # arquivo e o yt-dlp passa a se apresentar como o navegador do Gabriel —

@@ -181,6 +181,15 @@ ordem — as duas primeiras já implementadas, a terceira pronta pra ativar:
    fechou o cerco em IP de datacenter). Fica no código porque não custa
    nada e pode voltar a funcionar, mas NÃO re-teste esperando resultado
    diferente: pra YouTube no runner, vá direto pra camada 3.
+**⚠️ SÃO DUAS MURALHAS INDEPENDENTES (descoberto 2026-07-13, testado em
+isolamento):** (a) o bot-check "Sign in to confirm" barra ANTES de tudo em
+IP de datacenter → só cookies resolvem; (b) o "n challenge" (JS) esconde os
+formatos DEPOIS ("Only images are available" / "n challenge solving
+failed") → precisa de runtime JS + resolvedor: **Deno + `pip install
+"yt-dlp[default]" yt-dlp-ejs`** (no runner: action `denoland/setup-deno@v2`;
+na EC2: `curl -fsSL https://deno.land/install.sh | sh` e ~/.deno/bin no
+PATH). A receita completa que FUNCIONA = cookies + Deno + yt-dlp-ejs.
+
 3. **Cookies do Gabriel** (plano definitivo, ativar só se a camada 2 falhar):
    o yt-dlp se apresenta como o navegador logado dele — o YouTube não barra.
    Passo a passo:

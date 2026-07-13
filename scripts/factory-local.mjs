@@ -66,7 +66,12 @@ async function processJob(job) {
       ...(process.env.YT_COOKIES_FILE ? ['--cookies', process.env.YT_COOKIES_FILE] : []),
       '-o', src,
       job.source_url,
-    ], { encoding: 'utf8' })
+    ], {
+      encoding: 'utf8',
+      // Deno no PATH (EC2 instala em ~/.deno/bin): runtime do resolvedor de
+      // desafios JS do YouTube — no runner o setup-deno já cuida disso
+      env: { ...process.env, PATH: `${process.env.HOME}/.deno/bin:${process.env.PATH}` },
+    })
     if (r.error?.code === 'ENOENT') throw new Error('yt-dlp não instalado nesta máquina (pip install yt-dlp)')
     if (r.status !== 0) {
       const tail = (r.stderr || r.stdout || '').trim().split('\n').filter((l) => l.trim()).at(-1) ?? 'yt-dlp falhou'
