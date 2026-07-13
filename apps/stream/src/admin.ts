@@ -427,6 +427,26 @@ admin.post('/media/:id/series', async (c) => {
   return c.json({ ok: true })
 })
 
+// Reclassificação: "compilado de comerciais" que entrou como episódio vira
+// comercial (sai da rotação de programas e entra no pool de intervalos) —
+// e vice-versa. A grade se corrige na hora: blocos futuros somem e os
+// canais são replanejados.
+admin.post('/media/:id/tipo', async (c) => {
+  const { tipo } = await c.req.json<{ tipo?: string }>().catch(() => ({ tipo: '' }))
+  if (!TIPOS.includes(String(tipo))) return c.json({ error: 'tipo inválido' }, 400)
+  const id = c.req.param('id')
+  const r = await c.env.DB.prepare('UPDATE media_items SET tipo = ?2 WHERE id = ?1').bind(id, tipo).run()
+  if ((r.meta.changes ?? 0) === 0) return c.json({ error: 'mídia não encontrada' }, 404)
+  const agora = Math.floor(Date.now() / 1000)
+  await c.env.DB.prepare('DELETE FROM epg_virtual WHERE media_id = ?1 AND start_time_virtual > ?2')
+    .bind(id, agora).run()
+  const { results: chs } = await c.env.DB.prepare(
+    'SELECT DISTINCT channel_id ch FROM media_channels WHERE media_id = ?1',
+  ).bind(id).all<{ ch: string }>()
+  for (const r2 of chs) await scheduleChannel(c.env, r2.ch, 48, true)
+  return c.json({ ok: true, canais_replanejados: chs.map((x) => x.ch) })
+})
+
 admin.post('/media/:id/status', async (c) => {
   const { status } = await c.req.json<{ status: string }>().catch(() => ({ status: '' }))
   if (!['ready', 'disabled'].includes(status)) return c.json({ error: 'status inválido' }, 400)
@@ -687,7 +707,7 @@ admin.post('/diretor/evento/:id/cancelar', async (c) => {
 
 // ── config (inclui a flag do Modo God) ─────────────────────────────────────
 
-const CONFIG_KEYS = ['god_mode', 'last_reconcile']
+const CONFIG_KEYS = ['god_mode', 'last_reconcile', 'comerciais_fieis']
 
 admin.get('/config', async (c) => {
   const { results } = await c.env.DB.prepare('SELECT k, v FROM config').all<{ k: string; v: string }>()

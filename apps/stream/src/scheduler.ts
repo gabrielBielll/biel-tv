@@ -105,9 +105,18 @@ export async function scheduleChannel(
   //    antes de um bloco da série alvo (fecha o pod, no lugar da vinheta);
   //  - confirmada bloco_horario/evento → retida até a fase 10a garantir blocos;
   //  - generico / sem registro → rodízio normal de sempre.
-  const { results: promRows } = await env.DB.prepare(
-    `SELECT media_id, status, proposta, condicao FROM media_promises`,
-  ).all<{ media_id: string; status: string; proposta: string | null; condicao: string | null }>()
+  // Interruptor "comerciais fiéis" (config): no modo LIVRE ('0'), o sistema
+  // de promessas é ignorado por inteiro — tudo que está ready roda no rodízio
+  // cego, como antes da fase 12. Pra época de acervo ainda não editado; o
+  // padrão é fiel ('1' ou ausente).
+  const cfgFieis = await env.DB.prepare("SELECT v FROM config WHERE k = 'comerciais_fieis'")
+    .first<{ v: string }>()
+  const modoFiel = cfgFieis?.v !== '0'
+  const { results: promRows } = modoFiel
+    ? await env.DB.prepare(
+      `SELECT media_id, status, proposta, condicao FROM media_promises`,
+    ).all<{ media_id: string; status: string; proposta: string | null; condicao: string | null }>()
+    : { results: [] as Array<{ media_id: string; status: string; proposta: string | null; condicao: string | null }> }
   const foraDoRodizio = new Set<string>()
   const aSeguirDe = new Map<string, string[]>() // series_id alvo → promo ids
   const promosEvento: Array<{ id: string; ate: number }> = [] // janela: agora → start do evento

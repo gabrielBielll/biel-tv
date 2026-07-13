@@ -12,6 +12,7 @@ const jobs = ref<any[]>([])
 const media = ref<any[]>([])
 const channels = ref<any[]>([])
 const god = ref(false)
+const fieis = ref(true)
 let poll: ReturnType<typeof setInterval> | undefined
 
 // formulário de upload
@@ -86,6 +87,7 @@ async function enter() {
     channels.value = await (await api('/channels')).json()
     const cfg = await (await api('/config')).json()
     god.value = cfg.god_mode === '1'
+    fieis.value = cfg.comerciais_fieis !== '0'
     if (!chatCanal.value) chatCanal.value = channels.value[0]?.id ?? ''
     carregaChat()
     refresh()
@@ -117,6 +119,37 @@ const condicaoDe = (p: any) => { try { return JSON.parse(p.condicao) } catch { r
 const tituloPromessa = (p: any) => { try { return JSON.parse(p.metadata).title ?? p.media_id } catch { return p.media_id } }
 const promPendentes = computed(() => promessas.value.filter((p) => p.status === 'pendente'))
 const promDecididas = computed(() => promessas.value.filter((p) => p.status === 'confirmada' || p.status === 'ignorar'))
+
+// interruptor global: fiéis (fase 12 manda) ⇄ livres (rodízio cego, pra
+// época de acervo ainda não editado) — troca replaneja tudo na hora
+const trocandoFieis = ref(false)
+async function toggleFieis() {
+  if (trocandoFieis.value) return
+  trocandoFieis.value = true
+  try {
+    fieis.value = !fieis.value
+    await postJson('/config', { k: 'comerciais_fieis', v: fieis.value ? '1' : '0' })
+    msg.value = fieis.value
+      ? '… modo FIEL ligado — replanejando (promessas voltam a valer)'
+      : '… modo LIVRE ligado — replanejando (tudo que está ativo entra no rodízio)'
+    await postJson('/schedule/run', { rebuild: true })
+    msg.value = fieis.value
+      ? '🎯 comerciais FIÉIS: só toca o que cumpre a promessa'
+      : '🎲 comerciais LIVRES: rodízio cego (lembre de voltar pro fiel depois de editar o acervo)'
+    refresh()
+  } finally {
+    trocandoFieis.value = false
+  }
+}
+
+async function mudarTipo(m: any, tipo: string) {
+  const res = await postJson(`/media/${m.id}/tipo`, { tipo })
+  const body = await res.json()
+  msg.value = res.ok
+    ? `✔ ${m.id} agora é ${tipo} — grade reajustada`
+    : `✖ ${body.error ?? res.status}`
+  refresh()
+}
 
 async function decidePromessa(p: any, status: string) {
   let condicao
@@ -1060,6 +1093,15 @@ onBeforeUnmount(() => clearInterval(poll))
         <span v-if="j.error" class="err small">{{ j.error }}</span>
       </div>
 
+      <div class="fieis-row">
+        <button class="fieis-btn" :class="{ livre: !fieis }" :disabled="trocandoFieis" @click="toggleFieis">
+          {{ trocandoFieis ? 'replanejando…' : fieis ? '🎯 comerciais fiéis: LIGADO' : '🎲 comerciais livres (acervo cru no ar)' }}
+        </button>
+        <span class="dim small">
+          {{ fieis ? 'promo só toca quando cumpre a promessa' : 'rodízio cego temporário — volte ao fiel quando editar o acervo' }}
+        </span>
+      </div>
+
       <template v-if="promPendentes.length || promDecididas.length">
         <h2 class="mt">Promessas de comerciais</h2>
         <p class="dim">
@@ -1149,7 +1191,13 @@ onBeforeUnmount(() => clearInterval(poll))
       <template v-for="m in media" :key="m.id">
         <div class="job-row wrapy">
           <span class="mono">{{ m.id }}</span>
-          <span class="dim grow">{{ titleOf(m) }} · {{ m.tipo }} · {{ fmtDur(m.duracao_seg) }}</span>
+          <span class="dim grow">{{ titleOf(m) }} · {{ fmtDur(m.duracao_seg) }}</span>
+          <select class="tipo-select" :value="m.tipo" @change="mudarTipo(m, ($event.target as HTMLSelectElement).value)">
+            <option value="episodio">episódio</option>
+            <option value="filme">filme</option>
+            <option value="comercial">comercial</option>
+            <option value="vinheta">vinheta</option>
+          </select>
           <span class="canal-chips">
             <button
               v-for="c in channels"
@@ -1359,6 +1407,12 @@ button.ghost:hover { color: var(--text); }
 .fila-head { display: flex; align-items: center; justify-content: space-between;
   gap: 10px; margin-bottom: 12px; }
 .fila-head h2 { margin-bottom: 0; }
+
+.fieis-row { display: flex; align-items: center; gap: 10px; margin: 14px 0 4px; flex-wrap: wrap; }
+.fieis-btn { background: transparent; border: 1px solid var(--ok); color: var(--ok);
+  border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 700; cursor: pointer; }
+.fieis-btn.livre { border-color: #ffb020; color: #ffb020; }
+.tipo-select { width: auto; flex: none; padding: 4px 6px; font-size: 11px; }
 
 .nomear-row { display: flex; align-items: center; gap: 6px; padding: 6px 0;
   border-bottom: 1px solid var(--line); flex-wrap: wrap; }

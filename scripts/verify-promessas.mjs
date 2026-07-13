@@ -104,6 +104,21 @@ await post(`/admin/promessas/${PROMO}/decidir`, { status: 'generico' })
 const generico = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${PROMO}' AND start_time_virtual > ${now}`)[0].c
 check('como genérico, volta ao rodízio comum dos intervalos', generico > 0, `${generico} blocos`)
 
+// ── 5. interruptor "comerciais fiéis" ⇄ "livres" ──────────────────────────
+await post(`/admin/promessas/${PROMO}/decidir`, { status: 'ignorar' })
+const foraFiel = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${PROMO}' AND start_time_virtual > ${now}`)[0].c
+check('modo FIEL: "não usar" tira do ar', foraFiel === 0)
+
+await post('/admin/config', { k: 'comerciais_fieis', v: '0' })
+await post('/admin/schedule/run', { canal: CANAL, rebuild: true })
+const livre = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${PROMO}' AND start_time_virtual > ${now}`)[0].c
+check('modo LIVRE: até o "não usar" volta pro rodízio cego', livre > 0, `${livre} blocos`)
+
+await post('/admin/config', { k: 'comerciais_fieis', v: '1' })
+await post('/admin/schedule/run', { canal: CANAL, rebuild: true })
+const fielDeNovo = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${PROMO}' AND start_time_virtual > ${now}`)[0].c
+check('religou o FIEL: promessas voltam a mandar', fielDeNovo === 0)
+
 // ── limpeza ────────────────────────────────────────────────────────────────
 cleanup()
 await post(`/admin/media/${ALVO_MEDIA}/series`, { series_id: '' })

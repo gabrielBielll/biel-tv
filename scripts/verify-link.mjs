@@ -90,6 +90,15 @@ check('job done sem erro', job?.status === 'done', job?.error ?? '')
 const m = d1(`SELECT status, segment_count, duracao_seg FROM media_items WHERE id='${ID}'`)[0]
 check('mídia pronta no catálogo (15s → 2 segmentos de 10s)', m?.status === 'ready' && m.segment_count === 2)
 
+// ── 3. reclassificar tipo (comercial ⇄ episódio) ───────────────────────────
+r = await post(`/admin/media/${ID}/tipo`, { tipo: 'episodio' })
+const t1 = d1(`SELECT tipo FROM media_items WHERE id='${ID}'`)[0].tipo
+r = await post(`/admin/media/${ID}/tipo`, { tipo: 'comercial' })
+const t2 = d1(`SELECT tipo FROM media_items WHERE id='${ID}'`)[0].tipo
+check('reclassificar tipo funciona nos dois sentidos (grade reajustada)', t1 === 'episodio' && t2 === 'comercial')
+r = await post(`/admin/media/${ID}/tipo`, { tipo: 'novela' })
+check('tipo inválido é recusado', r.status === 400)
+
 // ── limpeza ────────────────────────────────────────────────────────────────
 await post(`/admin/media/${ID}/status`, { status: 'disabled' })
 cleanup()
