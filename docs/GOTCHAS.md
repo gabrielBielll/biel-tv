@@ -175,10 +175,12 @@ ordem — as duas primeiras já implementadas, a terceira pronta pra ativar:
    de primeira; o erro, quando vem, aparece legível na fila
    (`download falhou: ... Sign in to confirm ...`).
 2. **Cliente de TV** (já no código): a fábrica chama o yt-dlp com
-   `--extractor-args "youtube:player_client=default,tv_simply,tv"` — o app
-   de TV historicamente passa sem o bot-check. Se um job falhar com "Sign
-   in", basta reenfileirar (o painel/botão ou `UPDATE ingest_jobs SET
-   status='queued' ...`) que a próxima run já tenta pelos três clientes.
+   `--extractor-args "youtube:player_client=default,tv_simply,tv"`.
+   **VEREDITO 2026-07-13: INSUFICIENTE** — testado com 9 vídeos reais no
+   runner e TODOS tomaram "Sign in" mesmo pelos clientes de TV (o YouTube
+   fechou o cerco em IP de datacenter). Fica no código porque não custa
+   nada e pode voltar a funcionar, mas NÃO re-teste esperando resultado
+   diferente: pra YouTube no runner, vá direto pra camada 3.
 3. **Cookies do Gabriel** (plano definitivo, ativar só se a camada 2 falhar):
    o yt-dlp se apresenta como o navegador logado dele — o YouTube não barra.
    Passo a passo:
