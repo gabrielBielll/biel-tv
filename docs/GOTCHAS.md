@@ -164,6 +164,39 @@ MESMO estado que o wrangler dev em execução lê** (`.wrangler/state/v3`) — �
 jeito de plantar fixtures de R2 em testes e2e sem rota de upload (usado em
 `verify-uploads.mjs` pros testes de deleção).
 
+## YouTube / yt-dlp no runner (ingestão por link)
+
+**O YouTube barra IP de datacenter com "Sign in to confirm you're not a
+bot"** — o runner do GitHub (e qualquer nuvem) toma isso do cliente web.
+Visto no primeiro smoke real (2026-07-13). A defesa tem TRÊS camadas, em
+ordem — as duas primeiras já implementadas, a terceira pronta pra ativar:
+
+1. **Tentativa normal** (nada a fazer): vídeos comuns muitas vezes baixam
+   de primeira; o erro, quando vem, aparece legível na fila
+   (`download falhou: ... Sign in to confirm ...`).
+2. **Cliente de TV** (já no código): a fábrica chama o yt-dlp com
+   `--extractor-args "youtube:player_client=default,tv_simply,tv"` — o app
+   de TV historicamente passa sem o bot-check. Se um job falhar com "Sign
+   in", basta reenfileirar (o painel/botão ou `UPDATE ingest_jobs SET
+   status='queued' ...`) que a próxima run já tenta pelos três clientes.
+3. **Cookies do Gabriel** (plano definitivo, ativar só se a camada 2 falhar):
+   o yt-dlp se apresenta como o navegador logado dele — o YouTube não barra.
+   Passo a passo:
+   - Gabriel instala a extensão **"Get cookies.txt LOCALLY"** (Chrome/Firefox),
+     abre youtube.com LOGADO e exporta o `cookies.txt` (formato Netscape);
+   - `gh secret set YT_COOKIES --repo gabrielBielll/biel-tv < cookies.txt`;
+   - pronto — o workflow detecta o secret sozinho, escreve `/tmp/yt-cookies.txt`
+     e exporta `YT_COOKIES_FILE`; a fábrica adiciona `--cookies` quando a var
+     existe. Sem o secret, nada muda.
+   - Manutenção: cookies expiram (semanas/meses) — se voltar o "Sign in",
+     re-exportar e rodar o `gh secret set` de novo. CUIDADO: cookies dão
+     acesso à conta Google dele — só como secret do repo, nunca em arquivo
+     commitado/log.
+
+Bônus: o mesmo campo de link aceita **archive.org e URLs diretas de .mp4**
+(extractor genérico do yt-dlp) — acervos fora do YouTube não têm bot-check
+nenhum, costumam ser o caminho mais tranquilo.
+
 ## ffmpeg / pipeline
 
 **Nem todo vídeo-fonte segmenta no número exato de segmentos esperado, mesmo
