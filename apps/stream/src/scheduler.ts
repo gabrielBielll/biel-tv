@@ -58,7 +58,7 @@ export async function scheduleChannel(
   rebuild = false,
 ): Promise<ScheduleReport> {
   const chan = await env.DB.prepare('SELECT * FROM channels WHERE id = ?1')
-    .bind(canal).first<{ break_target_seg: number }>()
+    .bind(canal).first<{ break_target_seg: number; comerciais_fieis: number | null }>()
   if (!chan) return { canal, added: 0, skipped: 'canal não existe' }
 
   const { results: mediaTodas } = await env.DB.prepare(
@@ -105,13 +105,10 @@ export async function scheduleChannel(
   //    antes de um bloco da série alvo (fecha o pod, no lugar da vinheta);
   //  - confirmada bloco_horario/evento → retida até a fase 10a garantir blocos;
   //  - generico / sem registro → rodízio normal de sempre.
-  // Interruptor "comerciais fiéis" (config): no modo LIVRE ('0'), o sistema
-  // de promessas é ignorado por inteiro — tudo que está ready roda no rodízio
-  // cego, como antes da fase 12. Pra época de acervo ainda não editado; o
-  // padrão é fiel ('1' ou ausente).
-  const cfgFieis = await env.DB.prepare("SELECT v FROM config WHERE k = 'comerciais_fieis'")
-    .first<{ v: string }>()
-  const modoFiel = cfgFieis?.v !== '0'
+  // Interruptor "comerciais fiéis" POR CANAL: no modo LIVRE (0), o sistema
+  // de promessas é ignorado por inteiro NESTE canal — rodízio cego, como
+  // antes da fase 12 (época de acervo cru). O padrão é fiel (1).
+  const modoFiel = (chan.comerciais_fieis ?? 1) !== 0
   const { results: promRows } = modoFiel
     ? await env.DB.prepare(
       `SELECT media_id, status, proposta, condicao FROM media_promises`,

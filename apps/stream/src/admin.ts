@@ -633,10 +633,13 @@ admin.post('/channels/:id', async (c) => {
   if (typeof b.cor === 'string') campos.push(['cor', b.cor])
   if (typeof b.identidade === 'string') campos.push(['identidade', b.identidade])
   if (typeof b.break_target_seg === 'number') campos.push(['break_target_seg', b.break_target_seg])
+  if (typeof b.comerciais_fieis === 'number') campos.push(['comerciais_fieis', b.comerciais_fieis ? 1 : 0])
   if (campos.length === 0) return c.json({ error: 'nada pra atualizar' }, 400)
   const sets = campos.map(([k], i) => `${k} = ?${i + 2}`).join(', ')
   await c.env.DB.prepare(`UPDATE channels SET ${sets} WHERE id = ?1`)
     .bind(id, ...campos.map(([, v]) => v)).run()
+  // trocar o modo fiel/livre muda o pool de comerciais — replaneja o canal já
+  if (campos.some(([k]) => k === 'comerciais_fieis')) await scheduleChannel(c.env, id, 48, true)
   return c.json({ ok: true })
 })
 
@@ -707,7 +710,7 @@ admin.post('/diretor/evento/:id/cancelar', async (c) => {
 
 // ── config (inclui a flag do Modo God) ─────────────────────────────────────
 
-const CONFIG_KEYS = ['god_mode', 'last_reconcile', 'comerciais_fieis']
+const CONFIG_KEYS = ['god_mode', 'last_reconcile']
 
 admin.get('/config', async (c) => {
   const { results } = await c.env.DB.prepare('SELECT k, v FROM config').all<{ k: string; v: string }>()

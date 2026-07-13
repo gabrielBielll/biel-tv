@@ -12,7 +12,6 @@ const jobs = ref<any[]>([])
 const media = ref<any[]>([])
 const channels = ref<any[]>([])
 const god = ref(false)
-const fieis = ref(true)
 let poll: ReturnType<typeof setInterval> | undefined
 
 // formulário de upload
@@ -87,7 +86,6 @@ async function enter() {
     channels.value = await (await api('/channels')).json()
     const cfg = await (await api('/config')).json()
     god.value = cfg.god_mode === '1'
-    fieis.value = cfg.comerciais_fieis !== '0'
     if (!chatCanal.value) chatCanal.value = channels.value[0]?.id ?? ''
     carregaChat()
     refresh()
@@ -120,25 +118,25 @@ const tituloPromessa = (p: any) => { try { return JSON.parse(p.metadata).title ?
 const promPendentes = computed(() => promessas.value.filter((p) => p.status === 'pendente'))
 const promDecididas = computed(() => promessas.value.filter((p) => p.status === 'confirmada' || p.status === 'ignorar'))
 
-// interruptor global: fiéis (fase 12 manda) ⇄ livres (rodízio cego, pra
-// época de acervo ainda não editado) — troca replaneja tudo na hora
-const trocandoFieis = ref(false)
-async function toggleFieis() {
+// interruptor POR CANAL: fiel (fase 12 manda) ⇄ livre (rodízio cego, pra
+// época de acervo ainda não editado) — o servidor replaneja o canal na hora
+const trocandoFieis = ref('')
+async function toggleFieisCanal(ch: any) {
   if (trocandoFieis.value) return
-  trocandoFieis.value = true
+  trocandoFieis.value = ch.id
   try {
-    fieis.value = !fieis.value
-    await postJson('/config', { k: 'comerciais_fieis', v: fieis.value ? '1' : '0' })
-    msg.value = fieis.value
-      ? '… modo FIEL ligado — replanejando (promessas voltam a valer)'
-      : '… modo LIVRE ligado — replanejando (tudo que está ativo entra no rodízio)'
-    await postJson('/schedule/run', { rebuild: true })
-    msg.value = fieis.value
-      ? '🎯 comerciais FIÉIS: só toca o que cumpre a promessa'
-      : '🎲 comerciais LIVRES: rodízio cego (lembre de voltar pro fiel depois de editar o acervo)'
+    const novo = ch.comerciais_fieis === 0 ? 1 : 0
+    const res = await postJson(`/channels/${ch.id}`, { comerciais_fieis: novo })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    ch.comerciais_fieis = novo
+    msg.value = novo === 1
+      ? `🎯 ${ch.nome}: comerciais FIÉIS — só toca o que cumpre a promessa`
+      : `🎲 ${ch.nome}: comerciais LIVRES — acervo cru no ar (volte ao fiel depois de editar)`
     refresh()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
   } finally {
-    trocandoFieis.value = false
+    trocandoFieis.value = ''
   }
 }
 
@@ -1094,12 +1092,19 @@ onBeforeUnmount(() => clearInterval(poll))
       </div>
 
       <div class="fieis-row">
-        <button class="fieis-btn" :class="{ livre: !fieis }" :disabled="trocandoFieis" @click="toggleFieis">
-          {{ trocandoFieis ? 'replanejando…' : fieis ? '🎯 comerciais fiéis: LIGADO' : '🎲 comerciais livres (acervo cru no ar)' }}
+        <span class="dim small">comerciais por canal:</span>
+        <button
+          v-for="ch in channels"
+          :key="ch.id"
+          class="fieis-btn"
+          :class="{ livre: ch.comerciais_fieis === 0 }"
+          :disabled="trocandoFieis === ch.id"
+          :title="ch.comerciais_fieis === 0 ? 'LIVRE: rodízio cego (acervo cru) — clique pra voltar ao fiel' : 'FIEL: promessa manda — clique pra liberar o acervo cru'"
+          @click="toggleFieisCanal(ch)"
+        >
+          {{ trocandoFieis === ch.id ? '…' : ch.comerciais_fieis === 0 ? '🎲' : '🎯' }} {{ ch.nome }}
         </button>
-        <span class="dim small">
-          {{ fieis ? 'promo só toca quando cumpre a promessa' : 'rodízio cego temporário — volte ao fiel quando editar o acervo' }}
-        </span>
+        <span class="dim small">🎯 fiel · 🎲 livre</span>
       </div>
 
       <template v-if="promPendentes.length || promDecididas.length">

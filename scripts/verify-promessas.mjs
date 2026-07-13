@@ -109,13 +109,14 @@ await post(`/admin/promessas/${PROMO}/decidir`, { status: 'ignorar' })
 const foraFiel = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${PROMO}' AND start_time_virtual > ${now}`)[0].c
 check('modo FIEL: "não usar" tira do ar', foraFiel === 0)
 
-await post('/admin/config', { k: 'comerciais_fieis', v: '0' })
-await post('/admin/schedule/run', { canal: CANAL, rebuild: true })
+// o interruptor é POR CANAL (e o servidor já replaneja o canal na troca)
+await post(`/admin/channels/${CANAL}`, { comerciais_fieis: 0 })
 const livre = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${PROMO}' AND start_time_virtual > ${now}`)[0].c
-check('modo LIVRE: até o "não usar" volta pro rodízio cego', livre > 0, `${livre} blocos`)
+check('modo LIVRE no canal: até o "não usar" volta pro rodízio cego', livre > 0, `${livre} blocos`)
+const outroCanal = d1(`SELECT comerciais_fieis f FROM channels WHERE id='cartoon_network'`)[0].f
+check('o outro canal continua FIEL (interruptor é por canal)', outroCanal === 1)
 
-await post('/admin/config', { k: 'comerciais_fieis', v: '1' })
-await post('/admin/schedule/run', { canal: CANAL, rebuild: true })
+await post(`/admin/channels/${CANAL}`, { comerciais_fieis: 1 })
 const fielDeNovo = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${PROMO}' AND start_time_virtual > ${now}`)[0].c
 check('religou o FIEL: promessas voltam a mandar', fielDeNovo === 0)
 
