@@ -149,6 +149,13 @@ async function mudarTipo(m: any, tipo: string) {
   refresh()
 }
 
+async function reanalisar(p: any) {
+  msg.value = '… pedindo outra análise da IA'
+  await postJson(`/promessas/${p.media_id}/extrair`, {})
+  msg.value = '✔ reanalisado'
+  refresh()
+}
+
 async function decidePromessa(p: any, status: string) {
   let condicao
   if (status === 'confirmada') {
@@ -1131,6 +1138,7 @@ onBeforeUnmount(() => clearInterval(poll))
             <button class="primary" @click="decidePromessa(p, 'confirmada')">✔ confirmar</button>
             <button class="ghost" @click="decidePromessa(p, 'generico')">é genérico</button>
             <button class="ghost perigo" @click="decidePromessa(p, 'ignorar')">não usar</button>
+            <button class="ghost" title="pede outra análise da IA (útil quando a proposta veio vazia)" @click="reanalisar(p)">🔄</button>
           </div>
         </div>
         <div v-for="p in promDecididas" :key="p.media_id" class="job-row">
