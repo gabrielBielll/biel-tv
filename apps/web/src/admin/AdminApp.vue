@@ -643,6 +643,13 @@ async function submit() {
   }
 }
 
+async function retryJob(j: any) {
+  const res = await postJson(`/jobs/${j.id}/retry`, {})
+  const body = await res.json().catch(() => ({} as { error?: string }))
+  msg.value = res.ok ? `↻ "${j.id}" de volta na fila — a fábrica acorda sozinha` : `✖ ${body.error ?? res.status}`
+  refresh()
+}
+
 async function toggle(m: any) {
   await postJson(`/media/${m.id}/status`, { status: m.status === 'ready' ? 'disabled' : 'ready' })
   refresh()
@@ -1096,6 +1103,7 @@ onBeforeUnmount(() => clearInterval(poll))
         <span class="chip" :class="`st-${j.status}`">
           {{ j.status === 'processing' && j.progress > 0 ? `processando ${j.progress}%` : (STATUS_PT[j.status] ?? j.status) }}
         </span>
+        <button v-if="j.status === 'error'" class="ghost" title="tentar de novo (volta pra fila)" @click="retryJob(j)">↻</button>
         <span v-if="j.error" class="err small">{{ j.error }}</span>
       </div>
 

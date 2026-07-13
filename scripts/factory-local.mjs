@@ -75,6 +75,10 @@ async function processJob(job) {
     if (r.error?.code === 'ENOENT') throw new Error('yt-dlp não instalado nesta máquina (pip install yt-dlp)')
     if (r.status !== 0) {
       const tail = (r.stderr || r.stdout || '').trim().split('\n').filter((l) => l.trim()).at(-1) ?? 'yt-dlp falhou'
+      // o caso recorrente merece uma mensagem que diz O QUE FAZER
+      if (/Sign in to confirm/i.test(tail)) {
+        throw new Error('🍪 cookies do YouTube expiraram — reexporte em JANELA ANÔNIMA (senão o Google rotaciona e mata em horas), atualize o secret YT_COOKIES e clique ↻ no job. Receita: docs/GOTCHAS.md')
+      }
       throw new Error(`download falhou: ${tail.slice(0, 300)}`)
     }
   } else {

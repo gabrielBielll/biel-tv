@@ -199,10 +199,22 @@ PATH). A receita completa que FUNCIONA = cookies + Deno + yt-dlp-ejs.
    - pronto — o workflow detecta o secret sozinho, escreve `/tmp/yt-cookies.txt`
      e exporta `YT_COOKIES_FILE`; a fábrica adiciona `--cookies` quando a var
      existe. Sem o secret, nada muda.
-   - Manutenção: cookies expiram (semanas/meses) — se voltar o "Sign in",
-     re-exportar e rodar o `gh secret set` de novo. CUIDADO: cookies dão
-     acesso à conta Google dele — só como secret do repo, nunca em arquivo
-     commitado/log.
+   - **EXPORTE DE UMA JANELA ANÔNIMA — regra de ouro aprendida na prática
+     (2026-07-13):** cookies exportados do navegador NORMAL morreram em ~20h
+     ("cookies configurados" no log da run + "Sign in" na mesma run = prova).
+     Causa: o Google ROTACIONA os tokens de sessão (SIDCC/__Secure-*PSIDTS)
+     enquanto o navegador continua usando o YouTube — o snapshot exportado
+     fica órfão. O jeito documentado pelo próprio yt-dlp: abrir janela
+     anônima → logar no YouTube → exportar → FECHAR a janela sem navegar
+     mais. Esses cookies nunca rotacionam e duram meses.
+   - Manutenção: quando voltar o "Sign in" (a fila mostra a mensagem 🍪 com
+     a instrução), re-exportar (anônima!) e rodar o `gh secret set` de novo;
+     depois é só clicar ↻ nos jobs. CUIDADO: cookies dão acesso à conta
+     Google dele — só como secret do repo, nunca em arquivo commitado/log.
+   - **Re-login automático NÃO existe por design**: automatizar exigiria
+     guardar a senha do Google ou manter um navegador logado rodando — troca
+     péssima. O caminho é tornar a renovação rara (janela anônima) e barata
+     (mensagem 🍪 na fila + botão ↻).
 
 Bônus: o mesmo campo de link aceita **archive.org e URLs diretas de .mp4**
 (extractor genérico do yt-dlp) — acervos fora do YouTube não têm bot-check

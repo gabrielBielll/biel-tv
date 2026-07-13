@@ -160,6 +160,18 @@ admin.post('/jobs/claim', async (c) => {
   return row ? c.json(row) : c.body(null, 204)
 })
 
+// Job que falhou volta pra fila com um clique (↻ no painel) — o caso típico
+// é link do YouTube após renovar os cookies. Acorda a fábrica na sequência.
+admin.post('/jobs/:id/retry', async (c) => {
+  const r = await c.env.DB.prepare(
+    `UPDATE ingest_jobs SET status = 'queued', error = NULL, progress = 0, updated_at = unixepoch()
+     WHERE id = ?1 AND status = 'error'`,
+  ).bind(c.req.param('id')).run()
+  if ((r.meta.changes ?? 0) === 0) return c.json({ error: 'job não está em erro' }, 404)
+  c.executionCtx.waitUntil(dispatchFabrica(c.env))
+  return c.json({ ok: true })
+})
+
 // A fábrica reporta o avanço da transcodificação (0–99) — o painel mostra
 // "processando 37%" no chip da fila. 100 é reservado pro done.
 admin.post('/jobs/:id/progress', async (c) => {
