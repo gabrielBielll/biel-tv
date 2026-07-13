@@ -547,6 +547,7 @@ admin.delete('/media/:id', async (c) => {
     c.env.DB.prepare('DELETE FROM ingest_jobs WHERE id = ?1').bind(id),
     c.env.DB.prepare('DELETE FROM upload_parts WHERE session_id IN (SELECT id FROM upload_sessions WHERE media_id = ?1)').bind(id),
     c.env.DB.prepare('DELETE FROM upload_sessions WHERE media_id = ?1').bind(id),
+    c.env.DB.prepare('DELETE FROM media_promises WHERE media_id = ?1').bind(id), // FK: fase 12
     c.env.DB.prepare('DELETE FROM media_items WHERE id = ?1').bind(id),
   ])
 

@@ -227,6 +227,9 @@ for (const id of ['ep_del_teste', 'ep_del_teste2']) {
   r2PutLocal(`media/${id}/seg_00000.ts`, segFile)
   r2PutLocal(`media/${id}/seg_00001.ts`, segFile)
 }
+// regressão do 500 real de produção: mídia com registro de promessa (FK da
+// fase 12) precisa ser deletável — a limpeza tem que levar a promessa junto
+d1(`INSERT INTO media_promises (media_id, transcript, status) VALUES ('ep_del_teste', 'compre já', 'generico')`)
 
 const delReq = (id, confirmacao) => fetch(`${BASE}/admin/media/${id}`, {
   method: 'DELETE', headers: authJson, body: JSON.stringify({ confirmacao }),
