@@ -591,6 +591,94 @@ async function toggleCanal(m: any, canalId: string) {
   refresh()
 }
 
+// ── área "A nomear" (fase 11c) ─────────────────────────────────────────────
+const aNomear = computed(() => media.value.filter((m: any) => m.nome_ruim))
+const nomeEdit = ref<Record<string, { title: string; series: string; ep: string; conf: number | null }>>({})
+const nomearContexto = ref('')
+const sugerindo = ref(false)
+
+watch(media, () => {
+  for (const m of media.value) {
+    if (m.nome_ruim && !nomeEdit.value[m.id]) {
+      let meta: any = {}
+      try { meta = JSON.parse(m.metadata) } catch { /* segue */ }
+      nomeEdit.value[m.id] = {
+        title: meta.title ?? m.id,
+        series: meta.series_id ?? '',
+        ep: meta.episode ? String(meta.episode) : '',
+        conf: null,
+      }
+    }
+  }
+})
+
+async function sugerirNomes() {
+  if (sugerindo.value || aNomear.value.length === 0) return
+  sugerindo.value = true
+  try {
+    const res = await postJson('/media/nomear-sugestoes', {
+      ids: aNomear.value.map((m: any) => m.id),
+      contexto: nomearContexto.value,
+    })
+    const body = await res.json()
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    for (const s of body.sugestoes ?? []) {
+      nomeEdit.value[s.id] = {
+        title: s.title,
+        series: s.series_id ?? '',
+        ep: s.episode ? String(s.episode) : '',
+        conf: s.confianca,
+      }
+    }
+    msg.value = `✨ ${body.sugestoes?.length ?? 0} sugestões preenchidas — revise e salve cada uma`
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  } finally {
+    sugerindo.value = false
+  }
+}
+
+async function salvarNome(m: any) {
+  const e = nomeEdit.value[m.id]
+  if (!e?.title.trim()) return
+  const res = await postJson(`/media/${m.id}/renomear`, {
+    title: e.title, series_id: e.series.trim() || null, episode: e.ep ? Number(e.ep) : null,
+  })
+  const body = await res.json()
+  msg.value = res.ok ? `✔ "${e.title}" renomeado` : `✖ ${body.error ?? res.status}`
+  refresh()
+}
+
+async function nomeOk(m: any) {
+  await postJson(`/media/${m.id}/nome-ok`, {})
+  refresh()
+}
+
+// ── séries: canais em lote (correção "coloquei no canal errado") ──────────
+const seriesCatalogo = computed(() => {
+  const map = new Map<string, { sid: string; titulo: string; n: number; canais: Set<string> }>()
+  for (const m of media.value) {
+    const sid = seriesOf(m)
+    if (!sid) continue
+    const e = map.get(sid) ?? { sid, titulo: titleOf(m), n: 0, canais: new Set<string>() }
+    e.n++
+    for (const c of canaisDe(m)) e.canais.add(c)
+    map.set(sid, e)
+  }
+  return [...map.values()]
+})
+
+async function toggleCanalSerie(s: { sid: string; canais: Set<string> }, canalId: string) {
+  const atual = [...s.canais]
+  const novos = atual.includes(canalId) ? atual.filter((c) => c !== canalId) : [...atual, canalId]
+  const res = await postJson(`/series/${s.sid}/channels`, { channels: novos })
+  const body = await res.json()
+  msg.value = res.ok
+    ? `✔ série ${s.sid}: canais aplicados a ${body.midias} episódio(s), grade reajustada`
+    : `✖ ${body.error ?? res.status}`
+  refresh()
+}
+
 // ── Modo God (flag discreta no rodapé) ─────────────────────────────────────
 async function toggleGod() {
   god.value = !god.value
@@ -898,6 +986,52 @@ onBeforeUnmount(() => clearInterval(poll))
         </div>
       </template>
 
+      <template v-if="aNomear.length">
+        <h2 class="mt">✏️ A nomear ({{ aNomear.length }})</h2>
+        <p class="dim">
+          Estes arquivos chegaram com nome ruim. Conta pra IA do que se trata o lote (ou
+          renomeie na mão) — título, série e episódio de uma vez.
+        </p>
+        <div class="row">
+          <input
+            v-model="nomearContexto"
+            placeholder='contexto pro lote, ex.: "são episódios dos Padrinhos Mágicos T3"'
+          />
+          <button class="primary" :disabled="sugerindo" @click="sugerirNomes">
+            {{ sugerindo ? 'pensando…' : '✨ sugerir com IA' }}
+          </button>
+        </div>
+        <div v-for="m in aNomear" :key="m.id" class="nomear-row">
+          <span class="mono">{{ m.id }}</span>
+          <template v-if="nomeEdit[m.id]">
+            <input v-model="nomeEdit[m.id].title" class="nomear-titulo" placeholder="título bonito" />
+            <input v-model="nomeEdit[m.id].series" class="nomear-serie" placeholder="série (slug)" />
+            <input v-model="nomeEdit[m.id].ep" class="nomear-ep" placeholder="ep" />
+            <span v-if="nomeEdit[m.id].conf !== null" class="chip st-queued">IA {{ Math.round((nomeEdit[m.id].conf ?? 0) * 100) }}%</span>
+            <button class="ghost" @click="salvarNome(m)">salvar</button>
+            <button class="ghost" title="o nome atual está bom — tira da fila" @click="nomeOk(m)">está bom</button>
+          </template>
+        </div>
+      </template>
+
+      <template v-if="seriesCatalogo.length">
+        <h2 class="mt">Séries — canais em lote</h2>
+        <p class="dim">Clique num canal pra colocar/tirar a série INTEIRA dele (a grade se reajusta na hora).</p>
+        <div v-for="s in seriesCatalogo" :key="s.sid" class="job-row">
+          <span class="mono">{{ s.sid }}</span>
+          <span class="dim grow">{{ s.titulo }} · {{ s.n }} ep(s)</span>
+          <span class="canal-chips">
+            <button
+              v-for="c in channels"
+              :key="c.id"
+              class="chip chip-btn"
+              :class="{ 'chip-on': s.canais.has(c.id) }"
+              @click="toggleCanalSerie(s, c.id)"
+            >{{ c.nome }}</button>
+          </span>
+        </div>
+      </template>
+
       <h2 class="mt">Catálogo</h2>
       <template v-for="m in media" :key="m.id">
         <div class="job-row wrapy">
@@ -1109,6 +1243,12 @@ button.ghost:hover { color: var(--text); }
 .fila-head { display: flex; align-items: center; justify-content: space-between;
   gap: 10px; margin-bottom: 12px; }
 .fila-head h2 { margin-bottom: 0; }
+
+.nomear-row { display: flex; align-items: center; gap: 6px; padding: 6px 0;
+  border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.nomear-titulo { flex: 2; min-width: 180px; padding: 6px 8px; font-size: 13px; }
+.nomear-serie { width: 150px; flex: none; padding: 6px 8px; font-size: 12px; }
+.nomear-ep { width: 52px; flex: none; padding: 6px 8px; font-size: 12px; }
 
 .promessa { border-bottom: 1px solid var(--line); padding: 8px 0; display: flex;
   flex-direction: column; gap: 6px; }

@@ -76,29 +76,24 @@ tem só a `pucca`; agrupar Power Rangers/Hey Arnold no catálogo abre a urna.
 guiada por promo" (etapa 3 da fase 12); Modo God ajustar probabilidade do
 votaton (previsto na spec).
 
-### Fase 11 — Admin v2 (ingestão inteligente) — 11a (lote/pasta) e 11b (retomáveis + deleção) ✅ FEITAS; falta o resto
+### Fase 11 — Admin v2 — 11a, 11b e 11c ✅ FEITAS; faltam TMDB e presign
 **Objetivo:** upar qualquer coisa e o sistema entender sozinho.
-**11b entregue** (spec e decisões: [features/uploads-resumiveis.md](features/uploads-resumiveis.md)):
-sessões multipart retomáveis substituíram o upload monolítico — reload não perde
-mais nada e arquivo grande não esbarra no limite de request. O POST /admin/upload
-antigo ficou só como compatibilidade temporária.
+**11c entregue (2026-07-13, no desenho do Gabriel):** área **"A nomear"** no
+admin — heurística determinística detecta nome ruim (só números, consoantes
+emendadas, sem espaços) e lista pra renomear na mão (título + série + episódio
+de uma vez); botão **"✨ sugerir com IA"** manda o lote inteiro pro Gemini NUMA
+chamada com o **contexto livre** do operador ("são episódios de Padrinhos
+Mágicos T3") e preenche as propostas com confiança — quem salva é o operador;
+"está bom" dispensa falso positivo. Junto veio a **correção por canal**: chip
+de canal agora LIMPA a grade futura e replaneja na hora (antes a mídia
+removida continuava passando até o próximo replanejo — bug real), e
+`POST /admin/series/:sid/channels` + UI "Séries — canais em lote" move a
+temporada inteira de canal num clique. O Modo God já cobria o caso com prazo
+("tira a série X deste canal por 2 meses").
 **Entregáveis restantes:**
-- **11c — Classificação por LLM com "contexto do lote" (campo de texto livre)** —
-  pedido do Gabriel (2026-07-12): ao subir arquivos de nome obscuro
-  ("julyperli 01.mp4"), um campo livre no upload deixa explicar do que se trata
-  ("subi 5 episódios da série X, sem especificação nos nomes"). O Gemini recebe
-  nomes + caminhos + durações + esse contexto e devolve, POR ARQUIVO, título
-  limpo/série/episódio/tipo/canais + grau de confiança (JSON garantido via
-  responseSchema, mesmo padrão do chat do Diretor, com fallback DeepSeek).
-  Confiança baixa → fila `needs_review` pro operador confirmar antes de ir ao ar.
-  Campo opcional: sem texto, a heurística atual continua valendo. O contexto
-  fica guardado na sessão de upload (a 11b já criou o lugar natural pra isso).
 - TMDB (título oficial, sinopse, **poster** → EPG rico).
-- URL pré-assinada pro navegador enviar cada parte DIRETO ao R2 (hoje as partes
-  passam pelo Worker via binding — funciona e é retomável, mas gasta invocações;
-  presign entra junto com o **domínio próprio**, com CORS restrito ao painel).
-  Gabriel vai providenciar o domínio nos próximos dias — quando chegar, o mesmo
-  domínio destrava TAMBÉM o bucket público (segmentos fora do Worker, ver fase 7).
+- URL pré-assinada pro navegador enviar cada parte DIRETO ao R2 — junto com o
+  **domínio próprio** (que também destrava o bucket público, ver fase 7).
 
 ### Fase 12 — Comerciais condicionais ("promessas") — etapas 1+2 ✅ FEITAS em 2026-07-12
 **Objetivo:** promos de sequência/horário/maratona só irem ao ar quando a grade cumpre.
@@ -114,6 +109,13 @@ promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o 
 
 ## 📦 Backlog (sem fase definida)
 
+- **"A nomear" → transcrever um trecho no projeto externo do Gabriel** — ideia
+  dele (2026-07-13): pra arquivo de nome irrecuperável, exportar um trecho
+  (ex.: 60s de áudio, que o pipeline já sabe extrair) e mandar pro projeto
+  de transcrição de arquivos grandes que ele mantém; com um pedaço da
+  transcrição dá pra deduzir série/temporada/episódio. Por ora a fila manual
+  resolve; quando ele quiser, o gancho natural é um botão "baixar trecho"
+  na área A nomear (ou uma API do projeto dele pra enviar direto).
 - **Normalização de volume (loudness) na ingestão** — pedido do Gabriel
   (2026-07-12): comerciais/episódios com áudio MUITO mais alto que outros.
   Desenho: filtro `loudnorm` do ffmpeg (EBU R128) no passo de normalização do

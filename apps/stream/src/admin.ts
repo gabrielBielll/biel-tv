@@ -6,6 +6,7 @@ import { uploads } from './uploads'
 import { dispatchFabrica } from './fabrica'
 import { extraiPromessa, salvaTranscript, type Proposta } from './promessas'
 import { planejaEditorial } from './editorial'
+import { pedeJson } from './llm'
 
 // API do painel admin. Tudo aqui exige `Authorization: Bearer <ADMIN_TOKEN>`.
 // Upload oficial: sessões multipart retomáveis em ./uploads.ts (/admin/uploads).
@@ -229,13 +230,147 @@ admin.post('/promessas/:id/decidir', async (c) => {
 
 // ── catálogo ───────────────────────────────────────────────────────────────
 
+// Nome ruim = candidato à área "A nomear" do painel: título só numérico,
+// curto demais, ou aquele amasso de consoantes sem espaço dos rips antigos
+// ("AVDAEASAVNTSDJNPRLET03EP14"). metadata.nome_ok=true dispensa (falso
+// positivo confirmado pelo operador); renomear de verdade sai da fila sozinho.
+export function nomeRuim(title: string): boolean {
+  const t = (title ?? '').trim()
+  if (t.length < 4) return true
+  if (/^[\d\s._-]+$/.test(t)) return true                 // "34", "12-1"
+  const letras = t.replace(/[^a-zA-ZÀ-ÿ]/g, '')
+  if (letras.length === 0) return true
+  const vogais = (letras.match(/[aeiouáéíóúâêôãõAEIOUÁÉÍÓÚÂÊÔÃÕ]/g) ?? []).length
+  if (letras.length >= 10 && vogais / letras.length < 0.28) return true // consoantes emendadas
+  if (t.length >= 14 && !t.includes(' ')) return true      // palavrão colado sem espaços
+  return false
+}
+
 admin.get('/media', async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT m.id, m.tipo, m.status, m.duracao_seg, m.segment_count, m.metadata, m.created_at,
             (SELECT GROUP_CONCAT(channel_id) FROM media_channels mc WHERE mc.media_id = m.id) AS canais
      FROM media_items m ORDER BY m.created_at DESC LIMIT 200`,
-  ).all()
-  return c.json(results)
+  ).all<{ metadata: string } & Record<string, unknown>>()
+  return c.json(results.map((m) => {
+    let meta: Record<string, unknown> = {}
+    try { meta = JSON.parse(m.metadata) } catch { /* segue */ }
+    const title = String(meta.title ?? m.id)
+    return { ...m, nome_ruim: !meta.nome_ok && nomeRuim(title) }
+  }))
+})
+
+// renomear manual (área "A nomear"): título/série/episódio de uma vez —
+// título muda na grade na hora (o EPG lê por join), nada a replanejar
+admin.post('/media/:id/renomear', async (c) => {
+  const b = await c.req.json<{ title?: string; series_id?: string; episode?: number | string }>().catch(() => null)
+  if (!b?.title?.trim()) return c.json({ error: 'title é obrigatório' }, 400)
+  const id = c.req.param('id')
+  const row = await c.env.DB.prepare('SELECT metadata FROM media_items WHERE id = ?1').bind(id).first<{ metadata: string }>()
+  if (!row) return c.json({ error: 'mídia não encontrada' }, 404)
+  let meta: Record<string, unknown> = {}
+  try { meta = JSON.parse(row.metadata) } catch { /* recomeça limpo */ }
+  meta.title = b.title.trim().slice(0, 140)
+  const slug = String(b.series_id ?? '').trim()
+  if (slug) {
+    if (!SLUG.test(slug)) return c.json({ error: 'series_id inválido (minúsculas/dígitos/_, 2–40)' }, 400)
+    meta.series_id = slug
+  } else {
+    delete meta.series_id
+  }
+  const ep = Number(b.episode)
+  if (Number.isFinite(ep) && ep > 0) meta.episode = ep
+  else delete meta.episode
+  delete meta.nome_ok // nome novo se defende sozinho na heurística
+  await c.env.DB.prepare('UPDATE media_items SET metadata = ?2 WHERE id = ?1').bind(id, JSON.stringify(meta)).run()
+  return c.json({ ok: true })
+})
+
+// 11c: o Gemini propõe nomes pro LOTE inteiro numa chamada só, guiado pelo
+// contexto livre do operador ("são episódios de Padrinhos Mágicos T3, da
+// Record"). Devolve propostas — quem grava é o operador, campo a campo.
+admin.post('/media/nomear-sugestoes', async (c) => {
+  const b = await c.req.json<{ ids?: string[]; contexto?: string }>().catch(() => null)
+  const ids = (b?.ids ?? []).filter((i) => /^[a-z0-9_]{3,40}$/.test(String(i))).slice(0, 40)
+  if (ids.length === 0) return c.json({ error: 'informe os ids' }, 400)
+
+  const inList = ids.map((i) => `'${i}'`).join(',')
+  const { results: itens } = await c.env.DB.prepare(
+    `SELECT id, tipo, duracao_seg, metadata FROM media_items WHERE id IN (${inList})`,
+  ).all<{ id: string; tipo: string; duracao_seg: number; metadata: string }>()
+  const { results: series } = await c.env.DB.prepare(
+    `SELECT DISTINCT json_extract(metadata,'$.series_id') sid, MIN(json_extract(metadata,'$.title')) t
+     FROM media_items WHERE json_extract(metadata,'$.series_id') IS NOT NULL GROUP BY sid`,
+  ).all<{ sid: string; t: string }>()
+
+  const linhas = itens.map((m) => {
+    let t = m.id
+    try { t = JSON.parse(m.metadata).title ?? m.id } catch { /* segue */ }
+    return `${m.id} | título atual: "${t}" | ${m.tipo} | ${Math.round(m.duracao_seg / 60)}min`
+  })
+  const system = `Você organiza o catálogo de uma TV nostálgica pessoal. Para CADA item da lista, proponha:
+- "title": título limpo e bonito em português, como apareceria num guia de TV (ex.: "Padrinhos Mágicos — T3 Ep 14"). Deduza do id/título atual + contexto do operador. Números no fim do id geralmente são temporada/episódio.
+- "series_id": slug minúsculo/underscore da série (use um da lista de séries EXISTENTES se for a mesma série; senão crie um slug novo coerente, ex.: "padrinhos_magicos").
+- "episode": número do episódio (ou null).
+- "confianca": 0 a 1.
+Responda APENAS o JSON {"itens":[{"id","title","series_id","episode","confianca"}]}.
+
+CONTEXTO DO OPERADOR (a fonte da verdade sobre o que é este lote):
+"""${(b?.contexto ?? '').slice(0, 1000) || '(nenhum — deduza dos nomes)'}"""
+
+SÉRIES EXISTENTES: ${series.filter((s) => s.sid).map((s) => `${s.sid} (${s.t})`).join(', ') || '(nenhuma)'}`
+
+  const schema = {
+    type: 'OBJECT',
+    properties: {
+      itens: {
+        type: 'ARRAY',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            id: { type: 'STRING' }, title: { type: 'STRING' },
+            series_id: { type: 'STRING' }, episode: { type: 'NUMBER' }, confianca: { type: 'NUMBER' },
+          },
+          required: ['id', 'title'],
+        },
+      },
+    },
+    required: ['itens'],
+  }
+  const out = await pedeJson(c.env, system, `ITENS:\n${linhas.join('\n')}`, schema)
+  if (!out) return c.json({ error: 'IA indisponível agora — renomeie na mão ou tente de novo' }, 503)
+  const validos = new Set(itens.map((m) => m.id))
+  const sugestoes = (out.json?.itens ?? [])
+    .filter((s: any) => validos.has(s?.id) && s?.title)
+    .map((s: any) => {
+      let episode = Number.isFinite(Number(s.episode)) && Number(s.episode) > 0 ? Number(s.episode) : null
+      // retaguarda: o LLM às vezes escreve "Ep 34" no título e deixa o campo
+      // vazio — o número está ali, é só pescar (título primeiro, depois o id)
+      if (!episode) {
+        const m = String(s.title).match(/ep\.?\s*0*(\d{1,4})\b/i) ?? String(s.id).match(/ep0*(\d{1,4})$/i)
+        if (m) episode = Number(m[1])
+      }
+      return {
+        id: s.id,
+        title: String(s.title).slice(0, 140),
+        series_id: SLUG.test(String(s.series_id ?? '')) ? s.series_id : null,
+        episode,
+        confianca: Math.max(0, Math.min(1, Number(s.confianca ?? 0))),
+      }
+    })
+  return c.json({ sugestoes, provedor: out.provedor })
+})
+
+// "esse nome está bom sim" — dispensa o falso positivo da fila
+admin.post('/media/:id/nome-ok', async (c) => {
+  const id = c.req.param('id')
+  const row = await c.env.DB.prepare('SELECT metadata FROM media_items WHERE id = ?1').bind(id).first<{ metadata: string }>()
+  if (!row) return c.json({ error: 'mídia não encontrada' }, 404)
+  let meta: Record<string, unknown> = {}
+  try { meta = JSON.parse(row.metadata) } catch { /* recomeça limpo */ }
+  meta.nome_ok = true
+  await c.env.DB.prepare('UPDATE media_items SET metadata = ?2 WHERE id = ?1').bind(id, JSON.stringify(meta)).run()
+  return c.json({ ok: true })
 })
 
 // Agrupa (ou desagrupa) retroativamente uma mídia numa série/temporada —
@@ -368,6 +503,36 @@ admin.delete('/media/:id', async (c) => {
   return c.json({ ok: true, segmentos_apagados: segmentosApagados, canais_replanejados: canais.map((r) => r.ch) })
 })
 
+// Troca os canais de UMA mídia — e conserta a grade na hora: canal REMOVIDO
+// tem os blocos futuros da mídia apagados e é replanejado (antes, a mídia
+// "removida" continuava passando até o próximo replanejo — errado).
+async function aplicaCanais(env: { DB: D1Database; MEDIA: R2Bucket }, mediaIds: string[], channels: string[]) {
+  const agora = Math.floor(Date.now() / 1000)
+  const afetados = new Set<string>()
+  for (const id of mediaIds) {
+    const { results: antes } = await env.DB.prepare(
+      'SELECT channel_id ch FROM media_channels WHERE media_id = ?1',
+    ).bind(id).all<{ ch: string }>()
+    const velhos = antes.map((r) => r.ch)
+    const removidos = velhos.filter((ch) => !channels.includes(ch))
+
+    await env.DB.prepare('DELETE FROM media_channels WHERE media_id = ?1').bind(id).run()
+    for (const canal of channels) {
+      await env.DB.prepare('INSERT OR IGNORE INTO media_channels (media_id, channel_id) VALUES (?1, ?2)')
+        .bind(id, canal).run()
+    }
+    for (const ch of removidos) {
+      await env.DB.prepare(
+        'DELETE FROM epg_virtual WHERE canal = ?1 AND media_id = ?2 AND start_time_virtual > ?3',
+      ).bind(ch, id, agora).run()
+      afetados.add(ch)
+    }
+    for (const ch of channels.filter((x) => !velhos.includes(x))) afetados.add(ch)
+  }
+  for (const ch of afetados) await scheduleChannel(env, ch, 48, true)
+  return [...afetados]
+}
+
 admin.post('/media/:id/channels', async (c) => {
   const { channels } = await c.req.json<{ channels: string[] }>().catch(() => ({ channels: null as unknown as string[] }))
   if (!Array.isArray(channels)) return c.json({ error: 'channels deve ser uma lista' }, 400)
@@ -375,13 +540,27 @@ admin.post('/media/:id/channels', async (c) => {
   for (const canal of channels) {
     if (!validos.includes(canal)) return c.json({ error: `canal desconhecido: ${canal}` }, 400)
   }
-  const id = c.req.param('id')
-  await c.env.DB.prepare('DELETE FROM media_channels WHERE media_id = ?1').bind(id).run()
+  const replanejados = await aplicaCanais(c.env, [c.req.param('id')], channels)
+  return c.json({ ok: true, canais_replanejados: replanejados })
+})
+
+// Correção em LOTE: aplica os canais a TODOS os episódios de uma série de
+// uma vez ("adicionei a temporada no canal errado" → um clique conserta).
+admin.post('/series/:sid/channels', async (c) => {
+  const sid = c.req.param('sid')
+  if (!SLUG.test(sid)) return c.json({ error: 'série inválida' }, 400)
+  const { channels } = await c.req.json<{ channels: string[] }>().catch(() => ({ channels: null as unknown as string[] }))
+  if (!Array.isArray(channels)) return c.json({ error: 'channels deve ser uma lista' }, 400)
+  const validos = await channelIds(c.env.DB)
   for (const canal of channels) {
-    await c.env.DB.prepare('INSERT OR IGNORE INTO media_channels (media_id, channel_id) VALUES (?1, ?2)')
-      .bind(id, canal).run()
+    if (!validos.includes(canal)) return c.json({ error: `canal desconhecido: ${canal}` }, 400)
   }
-  return c.json({ ok: true })
+  const { results } = await c.env.DB.prepare(
+    `SELECT id FROM media_items WHERE json_extract(metadata,'$.series_id') = ?1`,
+  ).bind(sid).all<{ id: string }>()
+  if (results.length === 0) return c.json({ error: 'nenhuma mídia com essa série' }, 404)
+  const replanejados = await aplicaCanais(c.env, results.map((r) => r.id), channels)
+  return c.json({ ok: true, midias: results.length, canais_replanejados: replanejados })
 })
 
 // ── canais ─────────────────────────────────────────────────────────────────
