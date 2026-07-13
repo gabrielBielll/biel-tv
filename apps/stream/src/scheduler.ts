@@ -116,6 +116,7 @@ export async function scheduleChannel(
     : { results: [] as Array<{ media_id: string; status: string; proposta: string | null; condicao: string | null }> }
   const foraDoRodizio = new Set<string>()
   const aSeguirDe = new Map<string, string[]>() // series_id alvo → promo ids
+  const duranteDe = new Map<string, string[]>() // bumper "você está vendo X" → só dentro do universo de X
   const promosEvento: Array<{ id: string; ate: number }> = [] // janela: agora → start do evento
   for (const p of promRows) {
     try {
@@ -135,6 +136,13 @@ export async function scheduleChannel(
           const lista = aSeguirDe.get(cond.series_id) ?? []
           lista.push(p.media_id)
           aSeguirDe.set(cond.series_id, lista) // …e entra no pool condicional
+        }
+        // "durante": vale nos intervalos DO programa e entre dois episódios
+        // seguidos dele — nunca fora do universo da série (pedido do Gabriel)
+        if (cond.tipo === 'durante' && cond.series_id) {
+          const lista = duranteDe.get(cond.series_id) ?? []
+          lista.push(p.media_id)
+          duranteDe.set(cond.series_id, lista)
         }
         // promo de EVENTO destrava na janela de promoção: só enquanto houver
         // uma maratona AGENDADA da série correspondente ainda por começar —
@@ -214,9 +222,21 @@ export async function scheduleChannel(
   const MIN_ENTRE_PODS = 300
   let ultimoPodFim = -Infinity
   let peIdx = 0
-  const breakPod = () => {
+  let duIdx = 0
+  // serieCtx: série "dona" deste intervalo — no meio de um episódio dela, ou
+  // entre dois episódios seguidos dela. O bumper "você está vendo X" ABRE o
+  // pod nesse contexto (como na TV real) e não existe em nenhum outro lugar.
+  const breakPod = (serieCtx?: string | null) => {
     if (t - ultimoPodFim < MIN_ENTRE_PODS) return
     const alvo = chan.break_target_seg ?? 120
+    const bumpers = serieCtx ? duranteDe.get(serieCtx) ?? [] : []
+    if (bumpers.length > 0) {
+      const bp = porId.get(bumpers[duIdx++ % bumpers.length])
+      if (bp) {
+        push(bp.id, t, t + bp.duracao_seg, 0)
+        t += bp.duracao_seg
+      }
+    }
     // tolerância de 25%: estourar um pouco o alvo é ritmo normal de TV
     // (2×70s num alvo de 120 ✓); o que não pode é UM comercial de 200s
     // entrar sozinho num intervalo de 120 tendo alternativa que caiba
@@ -252,7 +272,7 @@ export async function scheduleChannel(
         lastAd = pr.id
       }
     }
-    if (sum > 0) ultimoPodFim = t
+    if (sum > 0 || bumpers.length > 0) ultimoPodFim = t
   }
 
   // agenda um conteúdo com seus breaks nos cue points (pods do MEIO do
@@ -265,7 +285,7 @@ export async function scheduleChannel(
       push(c.id, t, t + (cue - pos), pos / SEGMENT_DURATION)
       t += cue - pos
       pos = cue
-      breakPod()
+      breakPod(c.series_id) // pod no MEIO do programa: o bumper dele pode abrir
     }
     push(c.id, t, t + (c.duracao_seg - pos), pos / SEGMENT_DURATION)
     t += c.duracao_seg - pos
@@ -276,8 +296,12 @@ export async function scheduleChannel(
   // no programa prometido, como TV de verdade). Quando fecha com a promo,
   // ela faz o papel da vinheta de abertura.
   let asIdx = 0
+  let ultimaSerie: string | null = null
   const podEntrePrograma = (proxima: MediaRow): boolean => {
-    breakPod()
+    // entre dois episódios SEGUIDOS da mesma série, o intervalo continua
+    // "dentro do universo" dela — o bumper de permanência pode abrir
+    const mesmaSerie = ultimaSerie && proxima.series_id === ultimaSerie ? ultimaSerie : null
+    breakPod(mesmaSerie)
     const promoIds = proxima.series_id ? aSeguirDe.get(proxima.series_id) ?? [] : []
     const promo = promoIds.length > 0 ? porId.get(promoIds[asIdx++ % promoIds.length]) : undefined
     if (!promo) return false
@@ -324,6 +348,7 @@ export async function scheduleChannel(
       t += v.duracao_seg
     }
     agendaConteudo(prox)
+    ultimaSerie = prox.series_id
   }
 
   // grava em lotes (ids são slugs internos validados — interpolação segura)

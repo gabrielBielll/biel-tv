@@ -110,7 +110,8 @@ async function refresh() {
 const promessas = ref<any[]>([])
 const serieAlvo = ref<Record<string, string>>({})
 const TIPO_PROM: Record<string, string> = {
-  a_seguir: '“a seguir”', bloco_horario: 'horário fixo', evento: 'evento', generico: 'sem promessa',
+  a_seguir: '“a seguir”', durante: '“você está vendo”', bloco_horario: 'horário fixo',
+  evento: 'evento', generico: 'sem promessa',
 }
 const propostaDe = (p: any) => { try { return JSON.parse(p.proposta) } catch { return null } }
 const condicaoDe = (p: any) => { try { return JSON.parse(p.condicao) } catch { return null } }
@@ -1130,7 +1131,7 @@ onBeforeUnmount(() => clearInterval(poll))
           <p v-if="propostaDe(p)?.descricao" class="small">🤖 {{ propostaDe(p).descricao }}</p>
           <div class="row">
             <input
-              v-if="propostaDe(p)?.tipo === 'a_seguir'"
+              v-if="propostaDe(p)?.tipo === 'a_seguir' || propostaDe(p)?.tipo === 'durante'"
               v-model="serieAlvo[p.media_id]"
               class="series-input"
               :placeholder="propostaDe(p)?.series_id || 'série alvo (obrigatória)'"

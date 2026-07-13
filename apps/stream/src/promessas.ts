@@ -15,7 +15,7 @@ type Env = {
 }
 
 export interface Proposta {
-  tipo: 'a_seguir' | 'bloco_horario' | 'evento' | 'generico'
+  tipo: 'a_seguir' | 'durante' | 'bloco_horario' | 'evento' | 'generico'
   series_id?: string | null
   descricao?: string
   confianca?: number
@@ -24,7 +24,7 @@ export interface Proposta {
 const SCHEMA_GEMINI = {
   type: 'OBJECT',
   properties: {
-    tipo: { type: 'STRING', enum: ['a_seguir', 'bloco_horario', 'evento', 'generico'] },
+    tipo: { type: 'STRING', enum: ['a_seguir', 'durante', 'bloco_horario', 'evento', 'generico'] },
     series_id: { type: 'STRING' },
     descricao: { type: 'STRING' },
     confianca: { type: 'NUMBER' },
@@ -60,6 +60,7 @@ export async function extraiPromessa(env: Env, mediaId: string): Promise<void> {
 
 TIPOS:
 - "a_seguir": anuncia o PRÓXIMO programa ("a seguir...", "não perca daqui a pouco...", "é o que vem aí"). Se citar um programa, escolha o series_id EXATO da lista de séries conhecidas (campo series_id). Se o programa citado NÃO estiver na lista, deixe series_id vazio.
+- "durante": bumper de permanência — afirma o que está NO AR AGORA ("você está vendo X", "estamos de volta com X", "continue com X"). Só vale nos intervalos do próprio programa (ou entre dois episódios seguidos dele). Preencha series_id igual ao caso acima.
 - "bloco_horario": promete dia/horário fixo de programação ("de segunda a sexta às 17h", "todo sábado", "nas manhãs do canal").
 - "evento": promete um evento único/maratona com data ("nesta sexta, maratona...").
 - "generico": não promete programação nenhuma (comercial comum de produto, vinheta institucional sem citação de grade).
@@ -84,7 +85,7 @@ ${row.transcript.slice(0, 4000)}
   if (!out) return // sem provedor agora — o botão "reanalisar" tenta de novo
 
   const p: Proposta = {
-    tipo: (['a_seguir', 'bloco_horario', 'evento', 'generico'] as const).includes(out.json?.tipo)
+    tipo: (['a_seguir', 'durante', 'bloco_horario', 'evento', 'generico'] as const).includes(out.json?.tipo)
       ? out.json.tipo
       : 'generico',
     series_id: null,
@@ -99,7 +100,7 @@ ${row.transcript.slice(0, 4000)}
   // vazia por excesso de cautela. Caso o começo do título de UMA única série
   // apareça literalmente no texto falado, casamos aqui — ambiguidade (duas
   // "Power Rangers…") fica nula de propósito: o operador decide no painel.
-  if (p.tipo === 'a_seguir' && !p.series_id) {
+  if ((p.tipo === 'a_seguir' || p.tipo === 'durante') && !p.series_id) {
     const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
     const falado = norm(`${row.transcript} ${p.descricao ?? ''}`)
     const hits = series.filter((s) => {

@@ -104,20 +104,70 @@ await post(`/admin/promessas/${PROMO}/decidir`, { status: 'generico' })
 const generico = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${PROMO}' AND start_time_virtual > ${now}`)[0].c
 check('como genérico, volta ao rodízio comum dos intervalos', generico > 0, `${generico} blocos`)
 
+// ── 4.5 bumper "durante" ("você está vendo X") ─────────────────────────────
+// vale no meio de um episódio de X e entre dois episódios seguidos de X —
+// nunca fora do universo da série (asserção nos DOIS vizinhos de conteúdo)
+await post(`/admin/promessas/${PROMO}/transcript`, {
+  transcript: 'Você está vendo Seu Madruga e sua turma! Já, já estamos de volta!',
+})
+const listaDu = await fetch(`${BASE}/admin/promessas`, { headers: auth }).then((r) => r.json())
+const propDu = JSON.parse(listaDu.find((p) => p.media_id === PROMO)?.proposta ?? '{}')
+console.log(`   🤖 proposta durante: ${JSON.stringify(propDu)}`)
+check('LLM reconheceu o bumper de permanência ("durante")', propDu?.tipo === 'durante')
+
+await post(`/admin/promessas/${PROMO}/decidir`, {
+  status: 'confirmada',
+  condicao: { tipo: 'durante', series_id: SERIE, descricao: 'você está vendo Seu Madruga' },
+})
+// o palco natural do bumper: MARATONA da série (episódios seguidos dela)
+const agoraDu = Math.floor(Date.now() / 1000)
+d1(`INSERT INTO channel_events (canal, tipo, media_id, series_id, start_at, end_at, criado_por)
+    VALUES ('${CANAL}', 'maratona', '${ALVO_MEDIA}', '${SERIE}', ${agoraDu + 600}, ${agoraDu + 6000}, 'chat')`)
+await post('/admin/schedule/run', { canal: CANAL, rebuild: true })
+
+const gradeDu = d1(`
+  SELECT e.media_id, m.tipo, json_extract(m.metadata,'$.series_id') sid
+  FROM epg_virtual e JOIN media_items m ON m.id = e.media_id
+  WHERE e.canal='${CANAL}' AND e.start_time_virtual > ${agoraDu}
+  ORDER BY e.start_time_virtual`)
+let usosDu = 0
+let forasDu = 0
+for (let i = 0; i < gradeDu.length; i++) {
+  if (gradeDu[i].media_id !== PROMO) continue
+  usosDu++
+  const cont = (j, passo) => {
+    for (let k = j + passo; k >= 0 && k < gradeDu.length; k += passo) {
+      if (gradeDu[k].tipo === 'episodio' || gradeDu[k].tipo === 'filme') return gradeDu[k]
+    }
+    return null
+  }
+  const antes = cont(i, -1)
+  const depois = cont(i, +1)
+  if (!(antes?.sid === SERIE && (depois === null || depois.sid === SERIE))) forasDu++
+}
+check('bumper toca na maratona da série (e SÓ dentro do universo dela)', usosDu > 0 && forasDu === 0,
+  `${usosDu} usos, ${forasDu} fora`)
+d1(`UPDATE channel_events SET status='cancelado' WHERE canal='${CANAL}' AND series_id='${SERIE}' AND status='agendado'`)
+
 // ── 5. interruptor "comerciais fiéis" ⇄ "livres" ──────────────────────────
+// timestamps FRESCOS (+120s de margem): o bloco do "durante" acima gasta
+// minutos de LLM e o now do topo envelhece — GOTCHAS.md, pela terceira vez
 await post(`/admin/promessas/${PROMO}/decidir`, { status: 'ignorar' })
-const foraFiel = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${PROMO}' AND start_time_virtual > ${now}`)[0].c
+let nowF = Math.floor(Date.now() / 1000)
+const foraFiel = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${PROMO}' AND start_time_virtual > ${nowF} + 120`)[0].c
 check('modo FIEL: "não usar" tira do ar', foraFiel === 0)
 
 // o interruptor é POR CANAL (e o servidor já replaneja o canal na troca)
 await post(`/admin/channels/${CANAL}`, { comerciais_fieis: 0 })
-const livre = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${PROMO}' AND start_time_virtual > ${now}`)[0].c
+nowF = Math.floor(Date.now() / 1000)
+const livre = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${PROMO}' AND start_time_virtual > ${nowF} + 120`)[0].c
 check('modo LIVRE no canal: até o "não usar" volta pro rodízio cego', livre > 0, `${livre} blocos`)
 const outroCanal = d1(`SELECT comerciais_fieis f FROM channels WHERE id='cartoon_network'`)[0].f
 check('o outro canal continua FIEL (interruptor é por canal)', outroCanal === 1)
 
 await post(`/admin/channels/${CANAL}`, { comerciais_fieis: 1 })
-const fielDeNovo = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${PROMO}' AND start_time_virtual > ${now}`)[0].c
+nowF = Math.floor(Date.now() / 1000)
+const fielDeNovo = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='${CANAL}' AND media_id='${PROMO}' AND start_time_virtual > ${nowF} + 120`)[0].c
 check('religou o FIEL: promessas voltam a mandar', fielDeNovo === 0)
 
 // ── limpeza ────────────────────────────────────────────────────────────────

@@ -229,13 +229,13 @@ admin.post('/promessas/:id/decidir', async (c) => {
   let condicao: string | null = null
   if (status === 'confirmada') {
     const cd = b.condicao
-    if (!cd || !['a_seguir', 'bloco_horario', 'evento'].includes(cd.tipo)) {
+    if (!cd || !['a_seguir', 'durante', 'bloco_horario', 'evento'].includes(cd.tipo)) {
       return c.json({ error: 'confirmar exige a condição (tipo da promessa)' }, 400)
     }
-    if (cd.tipo === 'a_seguir') {
+    if (cd.tipo === 'a_seguir' || cd.tipo === 'durante') {
       // sem série alvo não há como cumprir — melhor "ignorar" que prometer no escuro
       if (!cd.series_id || !SLUG.test(cd.series_id)) {
-        return c.json({ error: 'promessa "a seguir" precisa de uma série alvo válida' }, 400)
+        return c.json({ error: `promessa "${cd.tipo === 'durante' ? 'você está vendo' : 'a seguir'}" precisa de uma série alvo válida` }, 400)
       }
       // o alvo precisa ser série de CONTEÚDO — "a seguir" toca colado num
       // episódio/filme; série de comerciais nunca aparece como programa
