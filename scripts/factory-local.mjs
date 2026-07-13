@@ -59,6 +59,11 @@ async function processJob(job) {
       '--no-playlist', '--force-overwrites',
       '-f', 'bv*[height<=720]+ba/b[height<=720]/b',
       '--merge-output-format', 'mp4',
+      // IP de datacenter (runner) toma "Sign in to confirm you're not a bot"
+      // do cliente web — o cliente de TV costuma passar sem token; cookies
+      // (secret opcional YT_COOKIES → arquivo) são o plano B definitivo.
+      '--extractor-args', 'youtube:player_client=default,tv_simply,tv',
+      ...(process.env.YT_COOKIES_FILE ? ['--cookies', process.env.YT_COOKIES_FILE] : []),
       '-o', src,
       job.source_url,
     ], { encoding: 'utf8' })

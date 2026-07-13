@@ -50,6 +50,21 @@ jobs:
       - name: faster-whisper + yt-dlp
         run: pip install --quiet faster-whisper yt-dlp
 
+      # cookies do YouTube (opcional): se o secret YT_COOKIES existir, vira
+      # arquivo e o yt-dlp passa a se apresentar como o navegador do Gabriel —
+      # é o plano B definitivo contra o "Sign in to confirm you're not a bot"
+      - name: cookies do youtube (se configurados)
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        run: |
+          if [ -n "$YT_COOKIES" ]; then
+            printf '%s' "$YT_COOKIES" > /tmp/yt-cookies.txt
+            echo "YT_COOKIES_FILE=/tmp/yt-cookies.txt" >> "$GITHUB_ENV"
+            echo "cookies configurados"
+          else
+            echo "sem cookies (ok — só precisa se o YouTube barrar o runner)"
+          fi
+
       - name: dependências (só runtime — sem playwright/browsers)
         run: pnpm install --prod --frozen-lockfile
 
