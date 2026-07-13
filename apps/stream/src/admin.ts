@@ -28,6 +28,13 @@ export const admin = new Hono<{ Bindings: Bindings }>()
 const TIPOS = ['episodio', 'filme', 'comercial', 'vinheta']
 const SLUG = /^[a-z0-9_]{2,40}$/
 
+// Aceita série digitada "como gente" ("Power Rangers Galáxia Perdida") e
+// converte pro slug do sistema — recusar formato era atrito puro no painel.
+export function slugify(s: string): string {
+  return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40)
+}
+
 // Em produção o painel (Pages) chama esta API cross-origin — o cors() também
 // responde os preflights OPTIONS antes da checagem de token.
 admin.use('*', cors())
@@ -271,13 +278,12 @@ admin.post('/media/:id/renomear', async (c) => {
   let meta: Record<string, unknown> = {}
   try { meta = JSON.parse(row.metadata) } catch { /* recomeça limpo */ }
   meta.title = b.title.trim().slice(0, 140)
-  const slug = String(b.series_id ?? '').trim()
-  if (slug) {
-    if (!SLUG.test(slug)) return c.json({ error: 'series_id inválido (minúsculas/dígitos/_, 2–40)' }, 400)
-    meta.series_id = slug
-  } else {
-    delete meta.series_id
+  const slug = slugify(String(b.series_id ?? ''))
+  if (String(b.series_id ?? '').trim() && !SLUG.test(slug)) {
+    return c.json({ error: 'série inválida — use pelo menos 2 letras/números' }, 400)
   }
+  if (slug) meta.series_id = slug
+  else delete meta.series_id
   const ep = Number(b.episode)
   if (Number.isFinite(ep) && ep > 0) meta.episode = ep
   else delete meta.episode
@@ -383,13 +389,12 @@ admin.post('/media/:id/series', async (c) => {
   if (!row) return c.json({ error: 'mídia não encontrada' }, 404)
   let meta: Record<string, unknown> = {}
   try { meta = JSON.parse(row.metadata) } catch { /* metadata inválido — recomeça limpo */ }
-  const slug = (series_id ?? '').trim()
-  if (slug) {
-    if (!SLUG.test(slug)) return c.json({ error: 'series_id inválido (minúsculas/dígitos/_, 2–40)' }, 400)
-    meta.series_id = slug
-  } else {
-    delete meta.series_id
+  const slug = slugify(series_id ?? '')
+  if ((series_id ?? '').trim() && !SLUG.test(slug)) {
+    return c.json({ error: 'série inválida — use pelo menos 2 letras/números' }, 400)
   }
+  if (slug) meta.series_id = slug
+  else delete meta.series_id
   await c.env.DB.prepare('UPDATE media_items SET metadata = ?2 WHERE id = ?1').bind(id, JSON.stringify(meta)).run()
   return c.json({ ok: true })
 })

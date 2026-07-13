@@ -593,7 +593,7 @@ async function toggleCanal(m: any, canalId: string) {
 
 // ── área "A nomear" (fase 11c) ─────────────────────────────────────────────
 const aNomear = computed(() => media.value.filter((m: any) => m.nome_ruim))
-const nomeEdit = ref<Record<string, { title: string; series: string; ep: string; conf: number | null }>>({})
+const nomeEdit = ref<Record<string, { title: string; series: string; ep: string; conf: number | null; msg?: string }>>({})
 const nomearContexto = ref('')
 const sugerindo = ref(false)
 
@@ -640,13 +640,24 @@ async function sugerirNomes() {
 
 async function salvarNome(m: any) {
   const e = nomeEdit.value[m.id]
-  if (!e?.title.trim()) return
+  if (!e) return
+  if (!e.title.trim()) {
+    e.msg = '✖ título não pode ficar vazio'
+    return
+  }
+  e.msg = 'salvando…'
+  // série digitada "como gente" vira slug aqui mesmo (o servidor também aceita)
   const res = await postJson(`/media/${m.id}/renomear`, {
-    title: e.title, series_id: e.series.trim() || null, episode: e.ep ? Number(e.ep) : null,
+    title: e.title, series_id: e.series.trim() ? slug(e.series) : null, episode: e.ep ? Number(e.ep) : null,
   })
-  const body = await res.json()
-  msg.value = res.ok ? `✔ "${e.title}" renomeado` : `✖ ${body.error ?? res.status}`
-  refresh()
+  const body = await res.json().catch(() => ({} as { error?: string }))
+  if (res.ok) {
+    e.msg = ''
+    msg.value = `✔ "${e.title}" renomeado`
+    refresh()
+  } else {
+    e.msg = `✖ ${body.error ?? `HTTP ${res.status}`}`
+  }
 }
 
 async function nomeOk(m: any) {
@@ -1010,6 +1021,7 @@ onBeforeUnmount(() => clearInterval(poll))
             <span v-if="nomeEdit[m.id].conf !== null" class="chip st-queued">IA {{ Math.round((nomeEdit[m.id].conf ?? 0) * 100) }}%</span>
             <button class="ghost" @click="salvarNome(m)">salvar</button>
             <button class="ghost" title="o nome atual está bom — tira da fila" @click="nomeOk(m)">está bom</button>
+            <span v-if="nomeEdit[m.id].msg" class="small" :class="nomeEdit[m.id].msg!.startsWith('✖') ? 'err' : 'dim'">{{ nomeEdit[m.id].msg }}</span>
           </template>
         </div>
       </template>
