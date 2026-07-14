@@ -140,14 +140,42 @@ e reprodutível), LLM só no que sobreviveu.
 3. **Portão de borda técnica** — depois de cortar, checa se o clipe **começa e
    termina com conteúdo** (não com preto/silêncio). Se abre com preto, o corte
    vazou → descarta. É o detector conferindo o próprio resultado.
-4. **Portão visual (Gemini)** — manda os **dois frames de borda** (último antes do
-   corte, primeiro depois) e pergunta *"são dois anúncios diferentes ou o mesmo
-   cortado no meio?"*. É a conferência que um humano faria com o olho, automática.
-   Precisa de multimodal: **Gemini 3.5 Flash** (a chave já está no projeto).
-   ⚠️ `llm.ts:pedeJson` é **texto puro** (`parts: [{ text }]`) — precisa de uma
-   variante que aceite `inline_data`. **Não se sabe se `deepseek-v4-flash` é
-   multimodal** (o helper nunca mandou imagem pra ele): se não for, **não há
-   fallback visual** — sem Gemini, o duvidoso é **descartado** em vez de aprovado.
+4. **Portão visual (Gemini)** — a conferência que um humano faria com o olho,
+   automática. **Implementado** (`apps/stream/src/portoes.ts`), e o desenho dele
+   mudou duas vezes por causa de teste contra o Gemini real (2026-07-14):
+
+   **⚠️ Lição 1 — não peça veredito, peça fato.** A 1ª versão mandava os dois
+   frames juntos e perguntava *"são o mesmo anúncio?"*. Com dois anúncios
+   **claramente diferentes** (cartelas "KAISER" e "FUSCA 0KM"), o Gemini
+   respondeu **"mesmo anúncio, confiança ALTA"** e inventou a justificativa:
+   *"famosa promoção da Kaiser que sorteava Fuscas zero quilômetro"* — que não
+   existe. Dois frames lado a lado **convidam o modelo a achar coerência**, e ele
+   acha, com confiança alta, exatamente onde o prompt mandava dizer "baixa".
+   Descrevendo cada frame **isolado**, acertou de primeira:
+   `{"marca":"Kaiser","produto":"Cerveja"}`. Desenho final: o LLM **extrai fatos
+   por frame** (marca/produto/cores/texto) e o **código compara as marcas** —
+   a regra da casa (`diretor.ts:2`) aqui não é estilo, é o que separa funcionar
+   de alucinar. Bônus: a comparação vira **auditável**, que é o que deixa o
+   Gabriel entender meses depois por que algo foi descartado.
+
+   **⚠️ Lição 2 — indisponível ≠ reprovado.** Medido na chave real: **503**
+   ("high demand") depois de 32s, **429** ("exceeded your quota") na chamada
+   seguinte, **200** em 3.5s depois de 20s de pausa. **A chave é free tier.** A
+   versão anterior desta spec mandava descartar quando o Gemini falhasse
+   ("falha segura") — com essa cota, um compilado de 8 limites seria descartado
+   quase inteiro **por cota, não por qualidade**, e o Gabriel veria "não
+   funciona" sem nunca saber por quê. Por isso `Veredito.indisponivel` é
+   distinto de `ok:false`: **a fábrica faz retry com backoff e no fim se
+   abstém**. Os portões 1–3 seguram o grosso — um fantasma teria que ter
+   preto ∩ silêncio dos dois lados **E** cair exatamente na grade de 15/30/60s
+   pra chegar até aqui.
+
+   Sem fallback por construção: `deepseek-v4-flash` não aceita imagem (decisão
+   do Gabriel). `llm.ts:pedeJsonComImagem()` é só-Gemini.
+
+   > **Consequência operacional:** o pacing/retry é responsabilidade da
+   > **fábrica**, não do Worker — um request de Worker não pode esperar 20s
+   > entre N chamadas. Um endpoint por candidato, e a fábrica espaça.
 5. **Portão semântico (DeepSeek/Gemini)** — o whisper já transcreve na ingestão
    (fase 12, de graça). Um anúncio inteiro **tem fecho**: slogan, marca, "vá até
    uma revenda". Cortado no meio, a transcrição morre no meio da frase. `pedeJson`
@@ -283,13 +311,20 @@ platô e é rejeitado sozinho. A falha é segura.
 ## Decisões abertas
 
 1. ~~Noise floor do `silencedetect`~~ → **resolvida**: platô, medido por compilado.
-2. **Tolerância da grade** de 15/30/60s: ±1s? ±2s? (Comercial de época pode ter
-   sido cortado fora do padrão; conservador demais descarta acervo bom — mas
-   descartar é barato.)
-3. **Largura mínima de platô** pra aceitar um compilado: 5dB? 8dB? (No sintético
-   deu 13dB, mas ele é limpo demais.)
+2. **Tolerância da grade** de 15/30/60s: hoje ±1.5s (`GRADE_TOL`). Comercial de
+   época pode ter sido cortado fora do padrão; conservador demais descarta
+   acervo bom — mas descartar é barato.
+3. **Largura mínima de platô** pra aceitar um compilado: hoje 4dB (`PLATO_MIN`).
+   No sintético com hiss deu 11dB, mas ele é mais limpo que a realidade.
 4. Chat do editor: **aba própria vs. ações no Diretor** (ver acima).
-5. Janela de fusão `W` (0.5s?) e `d` do silêncio (0.3s?).
+5. **Cota do Gemini** (nova, e a mais urgente na prática): a chave é free tier e
+   dá 429/503 sob carga — medido. O portão visual gasta **2 chamadas por
+   limite** (uma descrição por frame). Num compilado de 8 anúncios são ~16
+   chamadas, e a cota não aguenta em rajada. Opções: (a) espaçar na fábrica
+   (lento, mas o Actions tem tempo de sobra); (b) descrever **1 frame por
+   candidato** e comparar vizinhos — cai pra N chamadas em vez de 2N, e o frame
+   do meio é até mais representativo que o de borda (que pode pegar fade);
+   (c) pagar o tier. **Inclinação: (b) + (a).**
 
 ## Reaproveita (quase tudo já existe)
 
