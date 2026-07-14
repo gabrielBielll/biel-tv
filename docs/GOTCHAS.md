@@ -217,16 +217,27 @@ PATH). A receita completa que FUNCIONA = cookies + Deno + yt-dlp-ejs.
      barata (self-service no painel, abaixo).
 
 **Renovação self-service dos cookies (2026-07-14):** o painel tem a caixa
-"🍪 cookies do YouTube" (no card Enviar mídia). O Gabriel cola o cookies.txt
-novo → `POST /admin/yt-cookies` normaliza (espaços→TAB), guarda no D1
-(`config.yt_cookies`) e reenfileira todos os jobs de link em erro. A fábrica
-busca via `GET /admin/yt-cookies` (primário) e só cai no secret YT_COOKIES do
-GitHub se o painel não tiver nada. Ou seja: renovar cookie deixou de precisar
-do `gh secret set`/de mim — é colar no painel e salvar. `GET /admin/config`
-exclui `yt_cookies` de propósito (grande + sensível; o painel usa
-`/yt-cookies/status`). Trade-off consciente: cookies no D1 (atrás do token de
-admin) em vez do secret encriptado — ok num projeto pessoal; o secret do
-GitHub continua como fallback.
+"🍪 cookies do YouTube" (no card Enviar mídia). O Gabriel cola os cookies →
+`POST /admin/yt-cookies` guarda no D1 (`config.yt_cookies`) e reenfileira os
+jobs de link em erro. A fábrica busca via `GET /admin/yt-cookies` (primário),
+fallback pro secret YT_COOKIES do GitHub. `GET /admin/config` exclui
+`yt_cookies` (grande+sensível; o painel usa `/yt-cookies/status`).
+
+**Aceita DOIS formatos de export** (`cookiesParaNetscape`): o `.txt` Netscape
+(extensão "Get cookies.txt LOCALLY") E o JSON (Cookie-Editor / EditThisCookie).
+Pegadinha real: quando o Gabriel colou o JSON, a validação antiga passava (o
+JSON contém ".youtube.com"/"SID" como texto) mas guardava o JSON cru e o
+yt-dlp não lia → "Sign in" em silêncio. Agora detecta `[`/`{` e converte
+(domain/flag/path/secure/exp/name/value).
+
+**Auto-renovação (PUT /admin/yt-cookies):** o Google gira o `__Secure-3PSIDTS`
+a cada uso; cookie exportado de navegador EM USO morre em horas (visto: 18
+downloads OK, o 19º pegou "cookies no longer valid, rotated in browser"). O
+yt-dlp reescreve o `--cookies` com os cookies rotacionados a cada download OK
+→ a fábrica devolve esse arquivo pro D1 (PUT silencioso), mantendo-os vivos
+entre lotes. **Mas a cura de verdade continua sendo o fresh-export**: perfil
+NOVO (não anônimo — login trava lá) → logar → exportar → FECHAR sem navegar.
+Aí só o yt-dlp rotaciona (e a gente devolve), e os cookies duram.
 
 **Fingerprint do cookie que FUNCIONA (validado 2026-07-14):** exportar do
 navegador NORMAL logado também serve — o que mata os cookies em ~20h é
