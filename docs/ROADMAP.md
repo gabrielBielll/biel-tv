@@ -28,6 +28,7 @@
 | **11b — Uploads persistentes/retomáveis + deleção definitiva** | Sessão no D1 ANTES do 1º byte (lote inteiro reservado antes de transmitir); multipart pro R2 em partes fixas com timeout/retry/backoff e cancelamento por item; painel lista uploads interrompidos pós-reload e retoma só as partes ausentes ao reanexar (fingerprint: caminho relativo+nome+tamanho+mtime); `complete` idempotente (repetir nunca duplica job). Zona de perigo: deleção física exige disabled + confirmação digitada `EXCLUIR <id>` + fora da janela do player; apaga só o prefixo exato no R2 e replaneja os canais | 2026-07-12 | 25/25 (`pnpm verify:uploads`, com retomada real no Chromium) + 12/12 (`verify:admin` já no fluxo novo) + smoke em produção (uploads de 1 e 3 partes processados + deleção com todas as recusas) |
 | **11c — Área "A nomear" + correção por canal** | Heurística detecta nome ruim (só números/consoantes emendadas/sem espaço) e lista pra renomear na mão; "✨ sugerir com IA" manda o lote pro Gemini com contexto livre; série digitada "como gente" vira slug sozinha. Remover mídia de um canal LIMPA a grade futura na hora; "Séries — canais em lote" move a temporada inteira | 2026-07-13 | 11/11 (`pnpm verify:nomear`, LLM real) |
 | **11d — Ingestão por LINK (YouTube/acervos)** | Cola o link no admin → job com `source_url` → a fábrica baixa com yt-dlp (720p mp4, Deno resolve o desafio JS) e segue o pipeline (comercial baixado já sai transcrito+promessa). Cookies self-service no painel (🍪), botão ↻ retry por job | 2026-07-13/14 | 9/9 (`pnpm verify:link`) + 15 vídeos reais do YouTube processados |
+| **Ingestão de PLAYLIST (episódios em partes)** | Cola o link da playlist → a fábrica lista (`yt-dlp --flat-playlist`) → o Worker classifica cada título em (série, episódio, parte) por LLM+regex (a ORDEM vem do TÍTULO, nunca da playlist) → o operador revisa o agrupamento (avisos de parte faltando/duplicada) e escolhe quantos baixar (primeiros 5/10/temporada toda) → 1 job por episódio com as partes ordenadas (`source_urls`) → a fábrica baixa em ordem, junta CRU (`concatParts`: `-c copy` + validação, fallback concat filter) e o pipeline normaliza o TODO uma vez só. Aba 🎬 Playlist no admin | 2026-07-14 | 19/19 (`pnpm verify:playlist`, LLM real + regex backstop) + smoke da UI no Chromium |
 | **12 — Comerciais como promessa (fase inteira)** | whisper transcreve na ingestão → LLM propõe a promessa → operador revisa → o agendador cumpre. Tipos: `a_seguir` (colado no programa prometido), `durante`/"você está vendo X" (bumper de permanência — meio do episódio e emenda de maratona), `bloco_horario`/`evento` (retidos até a 10a). Modo **comerciais fiéis/livres POR CANAL** (🎯/🎲); reclassificar tipo no catálogo | 2026-07-12/14 | 16/16 (`pnpm verify:promessas`, LLM real) + backfill real + Disney no ar com as vinhetas dos Padrinhos |
 
 ## ▶ Fases restantes
@@ -124,12 +125,10 @@ promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o 
      confirmada (sequência = a da grade real) — e no limite o agendador
      encomenda a vinheta certa pro intervalo certo (a "programação guiada
      por promo" da fase 12, invertida).
-- **Ingestão de playlist do YouTube (episódios em partes)** — pedido do Gabriel
-  (2026-07-14): colar o link de uma playlist onde episódios vêm partidos em
-  pedaços de ~4min, baixar tudo, juntar as partes NA ORDEM CERTA (parseada do
-  título, NUNCA da ordem da playlist — ver a pegadinha real do Jake Long) e
-  salvar como episódios inteiros agrupados em série. Spec completa em
-  [features/playlist-youtube.md](features/playlist-youtube.md).
+- ~~**Ingestão de playlist do YouTube (episódios em partes)**~~ ✅ FEITO
+  (2026-07-14, ver tabela acima) — colar o link, agrupar as partes pela ordem do
+  TÍTULO, escolher quantos episódios baixar, juntar cru e normalizar uma vez.
+  Spec/implementação em [features/playlist-youtube.md](features/playlist-youtube.md).
 - **"A nomear" → transcrever um trecho no projeto externo do Gabriel** — ideia
   dele (2026-07-13): pra arquivo de nome irrecuperável, exportar um trecho
   (ex.: 60s de áudio, que o pipeline já sabe extrair) e mandar pro projeto

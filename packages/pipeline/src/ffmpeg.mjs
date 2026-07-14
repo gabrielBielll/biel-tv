@@ -4,8 +4,9 @@
 // duração total padded para múltiplo de 10.
 import { execFileSync, execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
+import { writeFileSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 const execFileAsync = promisify(execFile)
 
@@ -127,6 +128,77 @@ export async function segment(normalized, outDir) {
     '-hls_segment_filename', join(outDir, 'seg%05d.ts'),
     join(outDir, '_index.m3u8'),
   ], BUF)
+}
+
+/**
+ * Junta as partes de um episódio (playlist "episódios em partes") num arquivo
+ * só, ANTES do pipeline — que normaliza o TODO uma vez (keyframes na grade
+ * global de 10s). Ver a regra de ouro dos 10s em docs/ARQUITETURA.md: se cada
+ * parte fosse normalizada separada, os keyframes reiniciariam a cada pedaço e
+ * a segmentação quebraria.
+ *
+ * Caminho feliz: concat demuxer com `-c copy` (0 re-encode) — partes do mesmo
+ * uploader quase sempre têm codec/resolução iguais. Validação: a duração do
+ * juntado ≈ soma das partes? Se divergir (encodings diferentes quebram o
+ * `-c copy`), cai pro concat filter (re-encoda, aguenta qualquer entrada).
+ * As partes DEVEM chegar já na ordem certa (ordenadas pelo nº parseado do
+ * título — nunca pela posição na playlist).
+ */
+export async function concatParts(partFiles, outFile, { forcarFiltro = false } = {}) {
+  if (partFiles.length === 0) throw new Error('concat sem partes')
+  if (partFiles.length === 1) { execFileSync('cp', [partFiles[0], outFile]); return { metodo: 'unica', partes: 1 } }
+  const ff = FFMPEG()
+
+  // duração esperada = soma das partes (a régua da validação)
+  let soma = 0
+  const infos = []
+  for (const f of partFiles) {
+    const info = await probe(f)
+    infos.push(info)
+    soma += info.duration
+  }
+
+  // caminho feliz: junção CRUA sem re-encode (forcarFiltro pula direto pro
+  // plano B — só usado nos testes, pra exercitar o re-encode sem depender de
+  // um arquivo patológico que faça o -c copy divergir)
+  if (!forcarFiltro) {
+    const listPath = `${outFile}.concat.txt`
+    const listBody = partFiles.map((f) => `file '${resolve(f).replace(/'/g, "'\\''")}'`).join('\n') + '\n'
+    writeFileSync(listPath, listBody)
+    let copiaOk = false
+    try {
+      await execFileAsync(ff, ['-y', '-hide_banner', '-loglevel', 'error',
+        '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', outFile], BUF)
+      const out = await probe(outFile)
+      const tol = Math.max(2, soma * 0.02)
+      if (Math.abs(out.duration - soma) <= tol) copiaOk = true
+    } catch {
+      /* o -c copy falhou de vez → plano B abaixo */
+    } finally {
+      rmSync(listPath, { force: true })
+    }
+    if (copiaOk) return { metodo: 'copy', partes: partFiles.length, soma }
+  }
+
+  // plano B: concat filter (re-encoda). Escala cada parte pro perfil do canal
+  // (1280x720) — resolve resolução/codec/SAR diferentes; o pipeline normaliza
+  // de novo depois, mas isto garante um arquivo contínuo e válido primeiro.
+  if (infos.some((i) => !i.hasAudio)) {
+    throw new Error('parte sem áudio na junção por filtro — revise as partes (todas precisam ter áudio pro plano B)')
+  }
+  const inputs = partFiles.flatMap((f) => ['-i', f])
+  const cadeia = partFiles.map((_, i) =>
+    `[${i}:v:0]scale=1280:720:force_original_aspect_ratio=decrease,` +
+    `pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${i}];` +
+    `[${i}:a:0]aresample=48000[a${i}]`,
+  ).join(';')
+  const mapa = partFiles.map((_, i) => `[v${i}][a${i}]`).join('')
+  const fc = `${cadeia};${mapa}concat=n=${partFiles.length}:v=1:a=1[v][a]`
+  await execFileAsync(ff, ['-y', '-hide_banner', '-loglevel', 'error',
+    ...inputs, '-filter_complex', fc, '-map', '[v]', '-map', '[a]',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+    '-c:a', 'aac', '-b:a', '128k', '-ac', '2', outFile], BUF)
+  return { metodo: 'filter', partes: partFiles.length, soma }
 }
 
 /**

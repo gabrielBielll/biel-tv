@@ -9,6 +9,7 @@ import { pipeline as streamPipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { concatParts } from '../packages/pipeline/src/ffmpeg.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8787'
@@ -69,57 +70,131 @@ async function cookieFile() {
   return cookiePathCache
 }
 
+// Baixa UMA URL com yt-dlp (720p mp4). Mesma receita da fase 11d: cliente de
+// TV + cookies do painel + Deno no PATH (resolvedor do "n challenge" do YouTube).
+async function baixarUrl(url, dest, cookies) {
+  const { spawnSync: run } = await import('node:child_process')
+  const r = run('yt-dlp', [
+    '--no-playlist', '--force-overwrites',
+    '-f', 'bv*[height<=720]+ba/b[height<=720]/b',
+    '--merge-output-format', 'mp4',
+    '--extractor-args', 'youtube:player_client=default,tv_simply,tv',
+    ...(cookies ? ['--cookies', cookies] : []),
+    '-o', dest,
+    url,
+  ], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: `${process.env.HOME}/.deno/bin:${process.env.PATH}` },
+  })
+  if (r.error?.code === 'ENOENT') throw new Error('yt-dlp não instalado nesta máquina (pip install yt-dlp)')
+  if (r.status !== 0) {
+    const tail = (r.stderr || r.stdout || '').trim().split('\n').filter((l) => l.trim()).at(-1) ?? 'yt-dlp falhou'
+    if (/Sign in to confirm/i.test(tail)) {
+      throw new Error('🍪 cookies do YouTube venceram — exporte de novo (perfil/janela nova, feche sem navegar) e cole no painel em "🍪 cookies do YouTube" (aceita .txt ou JSON); os vídeos voltam pra fila sozinhos.')
+    }
+    throw new Error(`download falhou: ${tail.slice(0, 300)}`)
+  }
+}
+
+// download OK: o yt-dlp reescreveu o --cookies com os cookies ROTACIONADOS
+// (o Google gira o __Secure-3PSIDTS a cada uso) — devolve pro D1 pra eles se
+// manterem frescos entre lotes. Silencioso e best-effort.
+async function devolveCookies(cookies) {
+  if (cookies !== cookiePathCache || !cookiePathCache) return
+  try {
+    const atualizados = readFileSync(cookiePathCache, 'utf8')
+    await fetch(`${BASE}/admin/yt-cookies`, {
+      method: 'PUT',
+      headers: { ...HDR, 'content-type': 'application/json' },
+      body: JSON.stringify({ cookies: atualizados }),
+    })
+  } catch { /* melhor esforço — não atrapalha o ingest */ }
+}
+
+// Lista uma playlist SEM baixar (yt-dlp --flat-playlist) — devolve os títulos
+// crus pro Worker classificar. A ordem da parte vem do TÍTULO, não daqui.
+async function listaPlaylist(pl) {
+  log(`listando playlist ${pl.id} (${String(pl.url).slice(0, 70)}…)`)
+  const cookies = await cookieFile()
+  const { spawnSync: run } = await import('node:child_process')
+  const r = run('yt-dlp', [
+    '--flat-playlist', '--dump-single-json', '--no-warnings',
+    ...(cookies ? ['--cookies', cookies] : []),
+    pl.url,
+  ], {
+    encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, PATH: `${process.env.HOME}/.deno/bin:${process.env.PATH}` },
+  })
+  if (r.error?.code === 'ENOENT') throw new Error('yt-dlp não instalado nesta máquina (pip install yt-dlp)')
+  if (r.status !== 0) {
+    const tail = (r.stderr || r.stdout || '').trim().split('\n').filter((l) => l.trim()).at(-1) ?? 'yt-dlp falhou'
+    if (/Sign in to confirm/i.test(tail)) {
+      throw new Error('🍪 cookies do YouTube venceram — renove no painel e reanalise a playlist.')
+    }
+    throw new Error(`listagem falhou: ${tail.slice(0, 300)}`)
+  }
+  const data = JSON.parse(r.stdout)
+  return (data.entries ?? [])
+    .filter(Boolean)
+    .map((e, i) => ({
+      video_id: String(e.id ?? ''),
+      url: e.url && /^https?:/.test(e.url) ? e.url : `https://www.youtube.com/watch?v=${e.id}`,
+      title: String(e.title ?? ''),
+      playlist_index: Number.isFinite(e.playlist_index) ? e.playlist_index : i,
+    }))
+    .filter((e) => e.video_id)
+}
+
+async function tickPlaylist() {
+  const res = await fetch(`${BASE}/admin/playlist/claim`, { method: 'POST', headers: HDR })
+  if (res.status === 204) return false
+  if (!res.ok) throw new Error(`playlist claim HTTP ${res.status}`)
+  const pl = await res.json()
+  try {
+    const entries = await listaPlaylist(pl)
+    await post(`/admin/playlist/${pl.id}/entries`, { entries })
+    log(`✔ playlist ${pl.id} listada (${entries.length} vídeos) — Worker classificando`)
+    await devolveCookies(await cookieFile())
+  } catch (e) {
+    await post(`/admin/playlist/${pl.id}/error`, { error: String(e.message ?? e).slice(0, 500) })
+      .catch(() => log('não consegui nem marcar o erro da playlist — worker fora do ar?'))
+    log(`✖ playlist ${pl.id} falhou: ${e.message}`)
+  }
+  return true
+}
+
 async function processJob(job) {
   log(`processando "${job.id}" (${job.title})`)
   const dir = join(ROOT, '.ingest-work', '_staging')
   mkdirSync(dir, { recursive: true })
   const src = join(dir, `${job.id}__${job.original_name || 'video.mp4'}`)
 
-  if (job.source_url) {
-    // job de LINK (YouTube/acervos): o yt-dlp baixa aqui no runner —
-    // 720p no máximo (perfil do canal é 720p, mais que isso é bit jogado
-    // fora), sempre mp4, nunca playlist inteira por engano.
+  const partDir = join(dir, `${job.id}__parts`)
+  // partes ordenadas (playlist "episódios em partes"): baixa CADA parte em
+  // ordem e junta CRU (concatParts) — o pipeline normaliza o TODO uma vez só,
+  // pondo os keyframes na grade global de 10s. Normalizar cada parte antes
+  // quebraria a segmentação (ver regra de ouro dos 10s em ARQUITETURA.md).
+  const sourceUrls = (() => { try { return JSON.parse(job.source_urls ?? 'null') } catch { return null } })()
+  if (Array.isArray(sourceUrls) && sourceUrls.length > 0) {
+    const cookies = await cookieFile()
+    mkdirSync(partDir, { recursive: true })
+    const partFiles = []
+    for (const [i, url] of sourceUrls.entries()) {
+      const pf = join(partDir, `part${String(i).padStart(3, '0')}.mp4`)
+      log(`baixando parte ${i + 1}/${sourceUrls.length} de ${String(url).slice(0, 60)}…`)
+      await baixarUrl(url, pf, cookies)
+      partFiles.push(pf)
+    }
+    log(`juntando ${partFiles.length} partes…`)
+    const jr = await concatParts(partFiles, src)
+    log(`partes juntadas (${jr.metodo}${jr.metodo === 'filter' ? ' — re-encode: partes com encoding diferente' : ' — sem re-encode'})`)
+    await devolveCookies(cookies)
+  } else if (job.source_url) {
+    // job de LINK (YouTube/acervos): baixa 1 vídeo (perfil do canal é 720p).
     log(`baixando de ${job.source_url.slice(0, 80)}…`)
     const cookies = await cookieFile()
-    const { spawnSync: run } = await import('node:child_process')
-    const r = run('yt-dlp', [
-      '--no-playlist', '--force-overwrites',
-      '-f', 'bv*[height<=720]+ba/b[height<=720]/b',
-      '--merge-output-format', 'mp4',
-      // IP de datacenter (runner) toma "Sign in to confirm you're not a bot"
-      // do cliente web — o cliente de TV ajuda, cookies são o definitivo.
-      '--extractor-args', 'youtube:player_client=default,tv_simply,tv',
-      ...(cookies ? ['--cookies', cookies] : []),
-      '-o', src,
-      job.source_url,
-    ], {
-      encoding: 'utf8',
-      // Deno no PATH (EC2 instala em ~/.deno/bin): runtime do resolvedor de
-      // desafios JS do YouTube — no runner o setup-deno já cuida disso
-      env: { ...process.env, PATH: `${process.env.HOME}/.deno/bin:${process.env.PATH}` },
-    })
-    if (r.error?.code === 'ENOENT') throw new Error('yt-dlp não instalado nesta máquina (pip install yt-dlp)')
-    if (r.status !== 0) {
-      const tail = (r.stderr || r.stdout || '').trim().split('\n').filter((l) => l.trim()).at(-1) ?? 'yt-dlp falhou'
-      // o caso recorrente merece uma mensagem que diz O QUE FAZER
-      if (/Sign in to confirm/i.test(tail)) {
-        throw new Error('🍪 cookies do YouTube venceram — exporte de novo (perfil/janela nova, feche sem navegar) e cole no painel em "🍪 cookies do YouTube" (aceita .txt ou JSON); os vídeos voltam pra fila sozinhos.')
-      }
-      throw new Error(`download falhou: ${tail.slice(0, 300)}`)
-    }
-    // download OK: o yt-dlp reescreveu o arquivo com os cookies ROTACIONADOS
-    // (o Google gira o __Secure-3PSIDTS a cada uso) — devolve pro D1 pra eles
-    // se manterem frescos entre lotes, em vez de morrer. Silencioso e best-effort.
-    if (cookies === cookiePathCache && cookiePathCache) {
-      try {
-        const atualizados = readFileSync(cookiePathCache, 'utf8')
-        await fetch(`${BASE}/admin/yt-cookies`, {
-          method: 'PUT',
-          headers: { ...HDR, 'content-type': 'application/json' },
-          body: JSON.stringify({ cookies: atualizados }),
-        })
-      } catch { /* melhor esforço — não atrapalha o ingest */ }
-    }
+    await baixarUrl(job.source_url, src, cookies)
+    await devolveCookies(cookies)
   } else {
     const res = await fetch(`${BASE}/admin/staging/${encodeURIComponent(job.staging_key)}`, { headers: HDR })
     if (!res.ok) throw new Error(`staging download HTTP ${res.status}`)
@@ -186,12 +261,16 @@ async function processJob(job) {
   } finally {
     clearInterval(reporter)
     rmSync(src, { force: true })
+    rmSync(partDir, { recursive: true, force: true })
   }
   log(`"${job.id}" ingerido — replanejando a grade dos canais (bloco no ar preservado)`)
   await post('/admin/schedule/run', { rebuild: true })
 }
 
 async function tick() {
+  // análise de playlist tem prioridade: é rápida (só lista os títulos) e
+  // destrava a revisão no painel antes dos downloads pesados
+  if (await tickPlaylist()) return true
   const res = await fetch(`${BASE}/admin/jobs/claim`, { method: 'POST', headers: HDR })
   if (res.status === 204) return false
   if (!res.ok) throw new Error(`claim HTTP ${res.status}`)

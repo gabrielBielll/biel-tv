@@ -21,6 +21,9 @@ export async function pedeJson(
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
+          // timeout: um LLM travado NUNCA pode pendurar quem chamou (ex.: a
+          // classificação de playlist roda síncrona no request da fábrica)
+          signal: AbortSignal.timeout(30_000),
           body: JSON.stringify({
             system_instruction: { parts: [{ text: system }] },
             contents: [{ role: 'user', parts: [{ text: user }] }],
@@ -46,6 +49,7 @@ export async function pedeJson(
       const res = await fetch('https://api.deepseek.com/chat/completions', {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${env.DEEPSEEK_API_KEY}` },
+        signal: AbortSignal.timeout(30_000),
         body: JSON.stringify({
           model: 'deepseek-v4-flash',
           response_format: { type: 'json_object' },

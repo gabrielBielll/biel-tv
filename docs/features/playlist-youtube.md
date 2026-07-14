@@ -1,9 +1,30 @@
 # Feature: ingestão de playlist do YouTube (episódios em partes)
 
 > Especificado em 2026-07-14 a partir de um caso real do Gabriel.
-> Estado: DESENHO (não implementado). Para o próximo chat pegar e construir.
-> É bem factível e reaproveita quase tudo que já existe (yt-dlp, pipeline,
-> classificador LLM da fase 11c, agrupamento por série).
+> Estado: ✅ FEITO (2026-07-14). Verificação e2e `pnpm verify:playlist` (19/19)
+> + smoke da UI no Chromium. Reaproveitou yt-dlp/cookies (11d), o pipeline
+> intacto, o classificador LLM (`pedeJson`, 11c) e o agrupamento por série.
+>
+> **Como ficou (resumo da implementação):**
+> - Migration `0014_playlist_ingest.sql`: tabela `playlist_ingests` (ciclo da
+>   análise) + coluna `ingest_jobs.source_urls` (partes ordenadas de 1 job).
+> - Parser `apps/stream/src/serie-partes.ts`: `montaGrupos()` (LLM+regex →
+>   agrupa/ordena por parte, valida 1..N, avisa buraco/duplicata). A ORDEM sai
+>   do TÍTULO, nunca da playlist.
+> - Endpoints em `admin.ts`: `POST /playlist` (analisar) · `/playlist/claim`
+>   (fábrica) · `/playlist/:id/entries` (classifica na hora) · `.../error` ·
+>   `GET /playlist` · `/playlist/:id/confirmar` (1 job por episódio escolhido).
+> - Fábrica (`factory-local.mjs`): `tickPlaylist()` lista via
+>   `yt-dlp --flat-playlist`; job com `source_urls` baixa cada parte em ordem e
+>   `concatParts()` (em `ffmpeg.mjs`) junta CRU (`-c copy` + validação de
+>   duração; fallback concat filter). O pipeline normaliza o TODO uma vez só.
+> - UI: aba 🎬 Playlist (colar link → revisar agrupamento → escolher quantos
+>   baixar: primeiros 5 / 10 / temporada toda, ou por episódio).
+>
+> **Fronteira do teste:** o `yt-dlp --flat-playlist` real não roda no e2e (usa
+> fixtures servidos pelo Worker, mesma fronteira do verify-link). O resto —
+> classificação, ordenação, detecção de buraco, criação dos jobs, download
+> múltiplo e concat — é exercitado de ponta a ponta.
 
 ## O problema
 

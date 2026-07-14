@@ -47,6 +47,7 @@ Três cérebros, um contrato:
 | `apps/stream/src/promessas.ts` | Extração da promessa do comercial (transcript → LLM → `media_promises`) | idem |
 | `apps/stream/src/votaton.ts` | Votaton público (10c): rodadas, apuração simulada determinística, pity, vitória → maratona real | idem |
 | `apps/stream/src/uploads.ts` | Sessões multipart retomáveis (11b) | idem |
+| `apps/stream/src/serie-partes.ts` | Ingestão de playlist "episódios em partes": classifica títulos (LLM+regex) → agrupa/ordena por parte → valida 1..N. A ordem vem do TÍTULO, nunca da playlist | idem |
 | `apps/stream/src/fabrica.ts` | Dispara a fábrica no GitHub via `repository_dispatch` | idem |
 | `apps/stream/src/llm.ts` | Helper genérico Gemini→DeepSeek com schema (usado por promessas/nomear) | idem |
 | `apps/web` | Vue 3 + hls.js: player multi-canal + **Votaton** na página da TV; `/admin.html`: upload (arquivo/lote/pasta/**link**), fila (%, ↻), catálogo (tipo editável, séries em lote), "A nomear", promessas, cookies 🍪, Modo God | Cloudflare Pages (produção) |
@@ -76,7 +77,10 @@ Três cérebros, um contrato:
 - `votaton_rounds` (fase 10c) — rodadas do Votaton (voto do usuário, vencedora oculta, pity, evento gerado).
 - `channel_master_grid` — regras fixas por canal/horário (insumo da etapa 3 da fase 12; ainda vazia).
 - `ingest_jobs` — fila do admin (queued → processing → done/error), com `canais`, `series_id`,
-  `progress` (0–100), `source_url` (link YouTube/acervo em vez de upload).
+  `progress` (0–100), `source_url` (link YouTube/acervo em vez de upload), `source_urls`
+  (JSON com várias partes ordenadas → 1 episódio; a fábrica baixa em ordem e concatena cru).
+- `playlist_ingests` — ciclo de análise de playlist "episódios em partes" (listando → analisando →
+  revisar → confirmado/error): guarda os títulos crus e o agrupamento proposto até o operador confirmar.
 - `config` — chave-valor: `god_mode`, `planos_editoriais` (histórico do editorial),
   `yt_cookies` (self-service), `last_reconcile`.
 
@@ -140,7 +144,8 @@ diário re-dispara se sobrar fila; ver GOTCHAS.md pro fallback manual). Deploy:
   `canais` (18, pureza + reconciliação real com R2), `diretor` (16, LLM real),
   `promessas` (16, LLM real — inclui `durante` e fiel/livre por canal),
   `editorial` (10, LLM real), `votaton` (14, determinístico), `nomear` (11, LLM real),
-  `link` (9, download real via yt-dlp), `uploads` (25, retomada real no Chromium +
+  `link` (9, download real via yt-dlp), `playlist` (19, classificação/agrupamento/concat de
+  partes — LLM real, com backstop regex), `uploads` (25, retomada real no Chromium +
   deleção). Os que chamam LLM gastam cota do Gemini/DeepSeek.
 - ffmpeg estático (BtbN) em `~/.local/bin`. Debug de tempo: `?at=<unix>` (`ALLOW_TIME_TRAVEL`,
   `"0"` em produção).

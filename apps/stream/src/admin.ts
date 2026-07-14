@@ -7,6 +7,7 @@ import { dispatchFabrica } from './fabrica'
 import { extraiPromessa, salvaTranscript, type Proposta } from './promessas'
 import { planejaEditorial } from './editorial'
 import { pedeJson } from './llm'
+import { montaGrupos, mediaIdDe, slugSerie, type Entry, type Grupos } from './serie-partes'
 
 // API do painel admin. Tudo aqui exige `Authorization: Bearer <ADMIN_TOKEN>`.
 // Upload oficial: sessões multipart retomáveis em ./uploads.ts (/admin/uploads).
@@ -278,6 +279,183 @@ admin.post('/jobs/:id/done', async (c) => {
     c.executionCtx.waitUntil(extraiPromessa(c.env, id))
   }
   return c.json({ ok: true })
+})
+
+// ── ingestão de playlist (episódios em partes) ──────────────────────────────
+// Playlist do YouTube onde cada episódio vem partido em pedaços de ~4min. O
+// fluxo: analisar (a fábrica lista os títulos) → o Worker classifica por TÍTULO
+// (nunca pela posição!) e propõe o agrupamento → o operador revisa e confirma →
+// nasce 1 job por episódio, cada um com as partes ordenadas (source_urls). A
+// fábrica baixa em ordem, concatena cru e o pipeline normaliza uma vez só.
+
+// classifica os títulos crus (LLM+regex) e grava o agrupamento — roda em
+// waitUntil (o LLM demora), igual à extração de promessas; erro cai em 'error'
+async function analisaPlaylist(env: Bindings, id: string): Promise<void> {
+  const row = await env.DB.prepare(
+    'SELECT entries, series_id, temporada FROM playlist_ingests WHERE id = ?1',
+  ).bind(id).first<{ entries: string; series_id: string | null; temporada: number | null }>()
+  if (!row) return
+  try {
+    const entries = JSON.parse(row.entries ?? '[]') as Entry[]
+    if (!Array.isArray(entries) || entries.length === 0) {
+      await env.DB.prepare("UPDATE playlist_ingests SET status='error', error='playlist vazia ou não listada', updated_at=unixepoch() WHERE id = ?1").bind(id).run()
+      return
+    }
+    const grupos = await montaGrupos(env, entries, {
+      series_id: row.series_id ?? undefined,
+      temporada: row.temporada,
+    })
+    await env.DB.prepare(
+      "UPDATE playlist_ingests SET status='revisar', grupos=?2, error=NULL, updated_at=unixepoch() WHERE id = ?1",
+    ).bind(id, JSON.stringify(grupos)).run()
+  } catch (e) {
+    await env.DB.prepare("UPDATE playlist_ingests SET status='error', error=?2, updated_at=unixepoch() WHERE id = ?1")
+      .bind(id, `classificação falhou: ${String((e as Error)?.message ?? e).slice(0, 300)}`).run()
+  }
+}
+
+// operador cola o link da playlist → cria a análise (a fábrica lista depois)
+admin.post('/playlist', async (c) => {
+  const b = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!b) return c.json({ error: 'JSON inválido' }, 400)
+  const url = String(b.url ?? '').trim()
+  if (!/^https?:\/\//.test(url)) return c.json({ error: 'link inválido (precisa começar com http/https)' }, 400)
+  if (!/[?&]list=/.test(url)) return c.json({ error: 'esse link não é de playlist (falta o "list=" na URL)' }, 400)
+  const tipo = String(b.tipo ?? 'episodio')
+  if (!TIPOS.includes(tipo)) return c.json({ error: 'tipo inválido' }, 400)
+
+  const canais = String(b.canais ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+  if (canais.length === 0) return c.json({ error: 'escolha pelo menos um canal' }, 400)
+  const validos = await channelIds(c.env.DB)
+  for (const canal of canais) {
+    if (!validos.includes(canal)) return c.json({ error: `canal desconhecido: ${canal}` }, 400)
+  }
+
+  const serieSlug = b.series_id ? slugSerie(String(b.series_id)) : ''
+  if (String(b.series_id ?? '').trim() && !SLUG.test(serieSlug)) {
+    return c.json({ error: 'série inválida — use pelo menos 2 letras/números' }, 400)
+  }
+  const temporada = Number(b.temporada)
+  const temp = Number.isFinite(temporada) && temporada > 0 ? Math.floor(temporada) : null
+
+  const id = `pl_${crypto.randomUUID().replace(/-/g, '').slice(0, 10)}`
+  await c.env.DB.prepare(
+    `INSERT INTO playlist_ingests (id, url, tipo, canais, series_id, temporada)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+  ).bind(id, url, tipo, canais.join(','), serieSlug || null, temp).run()
+  c.executionCtx.waitUntil(dispatchFabrica(c.env))
+  return c.json({ ok: true, id }, 201)
+})
+
+// a fábrica reivindica uma análise pra listar (self-heal: análise presa em
+// 'analisando' por >10min volta pra fila — listagem é rápida)
+admin.post('/playlist/claim', async (c) => {
+  await c.env.DB.prepare(
+    "UPDATE playlist_ingests SET status='listando', updated_at=unixepoch() WHERE status='analisando' AND updated_at < unixepoch() - 600",
+  ).run()
+  const row = await c.env.DB.prepare(
+    `UPDATE playlist_ingests SET status='analisando', updated_at=unixepoch()
+     WHERE id = (SELECT id FROM playlist_ingests WHERE status='listando' ORDER BY created_at LIMIT 1)
+     RETURNING id, url, tipo, canais, series_id, temporada`,
+  ).first()
+  return row ? c.json(row) : c.body(null, 204)
+})
+
+// a fábrica devolve os títulos crus → responde rápido e classifica em background
+admin.post('/playlist/:id/entries', async (c) => {
+  const id = c.req.param('id')
+  const b = await c.req.json<{ entries?: Entry[] }>().catch(() => ({ entries: [] as Entry[] }))
+  const raw = Array.isArray(b.entries) ? b.entries : []
+  const entries: Entry[] = raw
+    .filter((e) => e && e.video_id && e.url)
+    .map((e, i) => ({
+      video_id: String(e.video_id).slice(0, 40),
+      url: String(e.url).slice(0, 500),
+      title: String(e.title ?? '').slice(0, 300),
+      playlist_index: Number.isFinite(Number(e.playlist_index)) ? Number(e.playlist_index) : i,
+    }))
+  const exists = await c.env.DB.prepare('SELECT id FROM playlist_ingests WHERE id = ?1').bind(id).first()
+  if (!exists) return c.json({ error: 'análise não encontrada' }, 404)
+  await c.env.DB.prepare(
+    "UPDATE playlist_ingests SET entries=?2, status='analisando', updated_at=unixepoch() WHERE id = ?1",
+  ).bind(id, JSON.stringify(entries)).run()
+  // classifica na hora (a fábrica não tem pressa e o waitUntil não é confiável
+  // pra trabalho longo no dev/miniflare) — analisaPlaylist trata o próprio erro
+  await analisaPlaylist(c.env, id)
+  return c.json({ ok: true, recebidos: entries.length })
+})
+
+// a fábrica reporta falha de listagem (yt-dlp barrado, playlist privada etc.)
+admin.post('/playlist/:id/error', async (c) => {
+  const { error } = await c.req.json<{ error?: string }>().catch(() => ({ error: '' }))
+  const r = await c.env.DB.prepare(
+    "UPDATE playlist_ingests SET status='error', error=?2, updated_at=unixepoch() WHERE id = ?1",
+  ).bind(c.req.param('id'), String(error ?? 'falha na listagem').slice(0, 500)).run()
+  if ((r.meta.changes ?? 0) === 0) return c.json({ error: 'análise não encontrada' }, 404)
+  return c.json({ ok: true })
+})
+
+// lista as análises pro painel (sem o `entries` cru, que é grande)
+admin.get('/playlist', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, url, tipo, canais, series_id, temporada, status, grupos, error, created_at, updated_at
+     FROM playlist_ingests ORDER BY created_at DESC LIMIT 20`,
+  ).all()
+  return c.json(results)
+})
+
+// operador confirma → cria 1 job por episódio ESCOLHIDO, cada um com as partes
+// ordenadas. Só episódios OK (partes 1..N completas) viram job — episódio com
+// buraco/duplicata é PULADO e reportado (nunca junta errado em silêncio).
+admin.post('/playlist/:id/confirmar', async (c) => {
+  const id = c.req.param('id')
+  const b = await c.req.json<{ episodios?: number[]; series_id?: string; temporada?: number }>()
+    .catch(() => ({} as { episodios?: number[]; series_id?: string; temporada?: number }))
+  const row = await c.env.DB.prepare(
+    "SELECT tipo, canais, series_id, temporada, grupos, status FROM playlist_ingests WHERE id = ?1",
+  ).bind(id).first<{ tipo: string; canais: string; series_id: string | null; temporada: number | null; grupos: string | null; status: string }>()
+  if (!row) return c.json({ error: 'análise não encontrada' }, 404)
+  if (!row.grupos) return c.json({ error: 'análise ainda não terminou — aguarde a revisão' }, 409)
+
+  let grupos: Grupos
+  try { grupos = JSON.parse(row.grupos) } catch { return c.json({ error: 'agrupamento corrompido — reanalise' }, 500) }
+
+  // série/temporada podem ter sido ajustadas na revisão → recalculam os ids
+  const serieSlug = b.series_id ? slugSerie(String(b.series_id)) : (grupos.series_id ?? '')
+  if (!serieSlug || !SLUG.test(serieSlug)) return c.json({ error: 'informe a série (slug válido) antes de confirmar' }, 400)
+  const temp = b.temporada != null
+    ? (Number(b.temporada) > 0 ? Math.floor(Number(b.temporada)) : null)
+    : grupos.temporada
+
+  const canais = row.canais.split(',').map((s) => s.trim()).filter(Boolean)
+  const escolhidos = Array.isArray(b.episodios) && b.episodios.length
+    ? new Set(b.episodios.map(Number))
+    : null // null = todos os OK
+
+  const criados: string[] = []
+  const pulados: { episodio: number; motivo: string }[] = []
+  for (const ep of grupos.episodios) {
+    if (escolhidos && !escolhidos.has(ep.episodio)) continue
+    if (!ep.ok) { pulados.push({ episodio: ep.episodio, motivo: ep.aviso ?? 'partes incompletas' }); continue }
+    const mediaId = mediaIdDe(serieSlug, temp, ep.episodio)
+    const dup = await c.env.DB.prepare(
+      'SELECT id FROM media_items WHERE id = ?1 UNION SELECT id FROM ingest_jobs WHERE id = ?1',
+    ).bind(mediaId).first()
+    if (dup) { pulados.push({ episodio: ep.episodio, motivo: `id "${mediaId}" já existe` }); continue }
+    const urls = ep.partes.map((p) => p.url)
+    await c.env.DB.prepare(
+      `INSERT INTO ingest_jobs (id, staging_key, original_name, tipo, title, series_id, episode, tags, canais, source_url, source_urls)
+       VALUES (?1, '', ?2, ?3, ?4, ?5, ?6, '', ?7, NULL, ?8)`,
+    ).bind(
+      mediaId, `${mediaId}.mp4`, row.tipo, ep.titulo, serieSlug, ep.episodio,
+      canais.join(','), JSON.stringify(urls),
+    ).run()
+    criados.push(mediaId)
+  }
+
+  await c.env.DB.prepare("UPDATE playlist_ingests SET status='confirmado', updated_at=unixepoch() WHERE id = ?1").bind(id).run()
+  if (criados.length) c.executionCtx.waitUntil(dispatchFabrica(c.env))
+  return c.json({ ok: true, criados, pulados })
 })
 
 // ── promessas de comerciais (fase 12) ──────────────────────────────────────

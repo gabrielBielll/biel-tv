@@ -102,6 +102,7 @@ async function refresh() {
     media.value = await (await api('/media')).json()
     pendentes.value = await (await api('/uploads')).json()
     promessas.value = await (await api('/promessas')).json()
+    await carregaAnalises()
   } catch {
     /* sem pânico em polling */
   }
@@ -121,7 +122,7 @@ const promPendentes = computed(() => promessas.value.filter((p) => p.status === 
 const promDecididas = computed(() => promessas.value.filter((p) => p.status === 'confirmada' || p.status === 'ignorar'))
 
 // ── navegação por seções (painel = menu lateral, uma seção por vez) ─────────
-type Aba = 'enviar' | 'fila' | 'catalogo' | 'promessas' | 'diretor'
+type Aba = 'enviar' | 'playlist' | 'fila' | 'catalogo' | 'promessas' | 'diretor'
 const ABA_KEY = 'bieltv_admin_aba'
 const aba = ref<Aba>((localStorage.getItem(ABA_KEY) as Aba) || 'enviar')
 watch(aba, (v) => localStorage.setItem(ABA_KEY, v))
@@ -948,6 +949,91 @@ const titleOf = (m: any) => {
 const fmtDur = (s: number) => `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
 const nomeCanal = (id: string) => channels.value.find((c) => c.id === id)?.nome ?? id
 
+// ── ingestão de playlist (episódios em partes) ──────────────────────────────
+const plUrl = ref('')
+const plSerie = ref('')
+const plTemporada = ref('')
+const plCanais = ref<string[]>([])
+const plBusy = ref(false)
+const analises = ref<any[]>([])
+const plSel = ref<Record<string, number[]>>({})
+const PL_STATUS: Record<string, string> = {
+  listando: 'listando', analisando: 'classificando', revisar: 'revisar', confirmado: 'na fila', error: 'erro',
+}
+const ehPlaylist = computed(() => /[?&]list=/.test(plUrl.value))
+const analisesRevisar = computed(() => analises.value.filter((a) => a.status === 'revisar').length)
+const gruposDe = (pl: any) => { try { return JSON.parse(pl.grupos) } catch { return null } }
+const epsOk = (pl: any) => (gruposDe(pl)?.episodios ?? []).filter((e: any) => e.ok).map((e: any) => e.episodio)
+
+async function carregaAnalises() {
+  try {
+    analises.value = await (await api('/playlist')).json()
+    // default: pré-seleciona todos os episódios OK das análises recém-prontas
+    for (const pl of analises.value) {
+      if (pl.status === 'revisar' && !plSel.value[pl.id]) plSel.value[pl.id] = epsOk(pl)
+    }
+  } catch { /* poll cobre */ }
+}
+
+async function analisarPlaylist() {
+  if (!ehPlaylist.value) { msg.value = '✖ o link precisa ser de playlist (ter "list=")'; return }
+  if (plCanais.value.length === 0) { msg.value = '✖ escolha pelo menos um canal'; return }
+  plBusy.value = true
+  msg.value = ''
+  try {
+    const res = await postJson('/playlist', {
+      url: plUrl.value.trim(),
+      canais: plCanais.value.join(','),
+      series_id: plSerie.value.trim() || undefined,
+      temporada: plTemporada.value ? Number(plTemporada.value) : undefined,
+    })
+    const body = await res.json()
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    msg.value = '🎬 analisando — a fábrica lista os vídeos e a IA agrupa as partes (a revisão aparece abaixo em instantes)'
+    plUrl.value = ''
+    carregaAnalises()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  } finally {
+    plBusy.value = false
+  }
+}
+
+const plSelDe = (id: string) => plSel.value[id] ?? []
+function plToggle(id: string, ep: number) {
+  const cur = plSelDe(id)
+  plSel.value[id] = cur.includes(ep) ? cur.filter((n) => n !== ep) : [...cur, ep]
+}
+function plPrimeiros(pl: any, n: number) { plSel.value[pl.id] = epsOk(pl).slice(0, n) }
+function plTodos(pl: any) { plSel.value[pl.id] = epsOk(pl) }
+function plLimpar(id: string) { plSel.value[id] = [] }
+
+function plEstimativa(pl: any): string {
+  const g = gruposDe(pl)
+  if (!g) return ''
+  const sel = new Set(plSelDe(pl.id))
+  const eps = (g.episodios ?? []).filter((e: any) => sel.has(e.episodio))
+  const partes = eps.reduce((s: number, e: any) => s + e.partes.length, 0)
+  const conteudoMin = Math.round(partes * 4)          // ~4min por parte
+  const runnerMin = Math.max(1, Math.round(conteudoMin * 0.4)) // ~22min ep ≈ 8min runner
+  return `${eps.length} episódio(s) · ${partes} partes · ~${conteudoMin}min de vídeo · ~${runnerMin}min de fábrica`
+}
+
+async function confirmarPlaylist(pl: any) {
+  const episodios = plSelDe(pl.id)
+  if (episodios.length === 0) { msg.value = '✖ escolha ao menos um episódio'; return }
+  try {
+    const res = await postJson(`/playlist/${pl.id}/confirmar`, { episodios })
+    const body = await res.json()
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    msg.value = `✔ ${body.criados.length} episódio(s) na fila${body.pulados?.length ? ` · ${body.pulados.length} pulado(s) (partes incompletas)` : ''} — a fábrica baixa e junta as partes`
+    carregaAnalises()
+    refresh()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  }
+}
+
 watch(chatCanal, carregaChat)
 
 onMounted(() => {
@@ -980,6 +1066,10 @@ onBeforeUnmount(() => clearInterval(poll))
       <button class="nav-item" :class="{ on: aba === 'enviar' }" @click="aba = 'enviar'">
         <span class="nav-ico">📤</span> Enviar
         <span v-if="pendentesVisiveis.length" class="nav-badge" title="uploads interrompidos">{{ pendentesVisiveis.length }}</span>
+      </button>
+      <button class="nav-item" :class="{ on: aba === 'playlist' }" @click="aba = 'playlist'">
+        <span class="nav-ico">🎬</span> Playlist
+        <span v-if="analisesRevisar" class="nav-badge" title="playlists aguardando revisão">{{ analisesRevisar }}</span>
       </button>
       <button class="nav-item" :class="{ on: aba === 'fila' }" @click="aba = 'fila'">
         <span class="nav-ico">⚙️</span> Fila
@@ -1169,6 +1259,74 @@ onBeforeUnmount(() => clearInterval(poll))
           >✕</button>
         </div>
       </template>
+      </section>
+
+      <section v-show="aba === 'playlist'" class="card">
+        <h2>🎬 Séries em partes (playlist)</h2>
+        <p class="dim small">
+          Cole o link de uma playlist do YouTube onde cada episódio vem <b>partido em vários pedaços</b>.
+          A fábrica lista tudo, a IA agrupa as partes de cada episódio <b>na ordem certa</b> (pelo número no
+          título, nunca pela posição na lista) e você escolhe quantos episódios baixar.
+        </p>
+        <div class="form">
+          <label>Link da playlist
+            <input v-model="plUrl" placeholder="https://youtube.com/playlist?list=…" @keyup.enter="analisarPlaylist" />
+          </label>
+          <div class="row">
+            <label>Série <input v-model="plSerie" placeholder="ex.: jake_long (opcional)" /></label>
+            <label>Temporada <input v-model="plTemporada" placeholder="opcional" /></label>
+          </div>
+          <div class="canais-check">
+            <span class="dim small">Canais:</span>
+            <label v-for="c in channels" :key="c.id" class="check">
+              <input type="checkbox" :value="c.id" v-model="plCanais" /> {{ c.nome }}
+            </label>
+          </div>
+          <p v-if="plUrl && !ehPlaylist" class="err small">esse link não tem "list=" — não parece uma playlist</p>
+          <button class="primary" :disabled="plBusy || !ehPlaylist" @click="analisarPlaylist">
+            {{ plBusy ? 'analisando…' : 'analisar playlist' }}
+          </button>
+        </div>
+
+        <p v-if="analises.length === 0" class="dim">nenhuma playlist analisada ainda</p>
+        <div v-for="pl in analises" :key="pl.id" class="pl-analise">
+          <div class="pl-head">
+            <span class="mono small grow">{{ pl.url }}</span>
+            <span class="chip" :class="`pl-${pl.status}`">{{ PL_STATUS[pl.status] ?? pl.status }}</span>
+          </div>
+          <p v-if="pl.status === 'listando' || pl.status === 'analisando'" class="dim small">
+            ⏳ listando os vídeos e agrupando as partes…
+          </p>
+          <p v-if="pl.status === 'error'" class="err small">{{ pl.error }}</p>
+          <p v-if="pl.status === 'confirmado'" class="ok small">✔ episódios enviados pra fila — acompanhe na aba Fila</p>
+
+          <template v-if="pl.status === 'revisar' && gruposDe(pl)">
+            <div class="pl-atalhos">
+              <span class="dim small">baixar:</span>
+              <button class="ghost small" @click="plPrimeiros(pl, 5)">primeiros 5</button>
+              <button class="ghost small" @click="plPrimeiros(pl, 10)">primeiros 10</button>
+              <button class="ghost small" @click="plTodos(pl)">temporada toda</button>
+              <button class="ghost small" @click="plLimpar(pl.id)">limpar</button>
+            </div>
+            <p v-if="gruposDe(pl).sem_classificacao?.length" class="err small">
+              ⚠️ {{ gruposDe(pl).sem_classificacao.length }} vídeo(s) sem episódio identificado — revise na origem
+            </p>
+            <div class="pl-eps">
+              <label v-for="e in gruposDe(pl).episodios" :key="e.episodio" class="pl-ep" :class="{ ruim: !e.ok }">
+                <input type="checkbox" :disabled="!e.ok" :checked="plSelDe(pl.id).includes(e.episodio)"
+                  @change="plToggle(pl.id, e.episodio)" />
+                <span class="mono small">{{ e.media_id || ('ep ' + e.episodio) }}</span>
+                <span class="dim grow">{{ e.titulo }}</span>
+                <span class="dim small">{{ e.partes.length }} partes</span>
+                <span v-if="!e.ok" class="err small">⚠️ {{ e.aviso }}</span>
+              </label>
+            </div>
+            <p class="dim small">{{ plEstimativa(pl) }}</p>
+            <button class="primary" :disabled="plSelDe(pl.id).length === 0" @click="confirmarPlaylist(pl)">
+              baixar {{ plSelDe(pl.id).length }} episódio(s)
+            </button>
+          </template>
+        </div>
       </section>
 
       <section v-show="aba === 'fila'" class="card">
@@ -1617,4 +1775,17 @@ button.ghost:hover { color: var(--text); }
   font-size: 11px; letter-spacing: 0.06em; }
 .god-toggle:hover { opacity: 0.9; }
 .god-toggle.on { opacity: 0.9; color: #ffb020; }
+
+/* playlist (episódios em partes) */
+.pl-analise { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-top: 12px; }
+.pl-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.pl-atalhos { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.pl-eps { display: flex; flex-direction: column; margin: 6px 0; }
+.pl-ep { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+.pl-ep:last-child { border-bottom: 0; }
+.pl-ep.ruim { opacity: 0.65; }
+.pl-listando, .pl-analisando { color: #4da3ff; border-color: rgba(77, 163, 255, 0.5); }
+.pl-revisar { color: #ffb020; border-color: rgba(255, 176, 32, 0.5); }
+.pl-confirmado { color: var(--ok); border-color: rgba(56, 217, 122, 0.5); }
+.pl-error { color: #ff6b6b; border-color: rgba(255, 107, 107, 0.5); }
 </style>

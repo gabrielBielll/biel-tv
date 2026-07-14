@@ -261,6 +261,32 @@ o job não resolve** (é determinístico pro arquivo) — precisa investigar o
 arquivo-fonte especificamente (normalizar frame rate antes, por exemplo).
 Deixa o job em `error` na fila; visível no admin.
 
+## Playlist / ingestão de "episódios em partes"
+
+**`waitUntil()` NÃO é confiável pra trabalho longo no dev/miniflare.** A
+classificação da playlist (chamada de LLM de ~6s) rodava em
+`c.executionCtx.waitUntil(analisaPlaylist(...))` após responder o `/entries` —
+e o status ficava preso em `analisando` pra sempre: nem o sucesso nem o `catch`
+rodavam (a promise pendurava). O Gemini respondia normal (testado direto por
+curl, 5.6s), então não era o LLM. Fix: classificar **síncrono** dentro do
+request (`await analisaPlaylist(...)`) — a fábrica não tem pressa. E blindagem
+geral em `llm.ts`: `AbortSignal.timeout(30_000)` nos dois fetches, pra um LLM
+travado nunca pendurar quem chamou. (extraiPromessa usa waitUntil e "funciona"
+porque também é chamado no caminho awaited; não confie no waitUntil pro caso
+que SÓ passa por ele.)
+
+**Validar concat por duração não pega "encoding diferente" — só arquivo
+quebrado.** `concatParts()` junta as partes cruas com `-f concat -c copy` e
+confere se a duração ≈ soma das partes. Mas o concat demuxer é tolerante: partes
+de resolução DIFERENTE (640x360 + 426x240) e até CODEC diferente (h264 + mpeg4)
+ainda somam a duração certa → passam como `copy`. Ou seja: o fallback do concat
+filter quase nunca dispara por esse check (só em arquivo patologicamente
+quebrado). Consequência prática: **não dá pra forçar o caminho `filter` com
+fixtures sintéticos** — o `verify-playlist` exercita o re-encode via a opção de
+teste `concatParts(..., { forcarFiltro: true })`. Na vida real o `-c copy` de
+partes do mesmo uploader é o caso comum e funciona; o pipeline normaliza o TODO
+depois de qualquer jeito.
+
 ## Scripts de verificação (`scripts/verify-*.mjs`)
 
 **`d1()` (spawnSync de `wrangler d1 execute`) bloqueia o event loop por
