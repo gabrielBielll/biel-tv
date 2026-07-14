@@ -251,6 +251,23 @@ admin.post('/jobs/:id/retry', async (c) => {
   return c.json({ ok: true })
 })
 
+// Cancela um job (✕ no painel): tira da fila (queued) ou descarta um em erro.
+// Num job 'processing' o runner do Actions pode já estar baixando — a linha
+// some da fila mesmo assim, e o /done dele passa a responder 404 (inofensivo;
+// ver o handler abaixo). Deletar a linha (em vez de um status 'cancelado' novo)
+// evita migração do CHECK de status. Job já 'done' virou mídia → recusa e manda
+// remover pelo catálogo. Limpa o staging no R2 se o job tinha upload.
+admin.post('/jobs/:id/cancel', async (c) => {
+  const id = c.req.param('id')
+  const job = await c.env.DB.prepare('SELECT status, staging_key FROM ingest_jobs WHERE id = ?1')
+    .bind(id).first<{ status: string; staging_key: string | null }>()
+  if (!job) return c.json({ error: 'job não existe' }, 404)
+  if (job.status === 'done') return c.json({ error: 'job já concluído — remova a mídia pelo catálogo' }, 409)
+  await c.env.DB.prepare('DELETE FROM ingest_jobs WHERE id = ?1').bind(id).run()
+  if (job.staging_key) await c.env.MEDIA.delete(job.staging_key) // libera o upload no R2
+  return c.json({ ok: true, era: job.status })
+})
+
 // A fábrica reporta o avanço da transcodificação (0–99) — o painel mostra
 // "processando 37%" no chip da fila. 100 é reservado pro done.
 admin.post('/jobs/:id/progress', async (c) => {

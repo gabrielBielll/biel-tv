@@ -694,6 +694,17 @@ async function retryJob(j: any) {
   refresh()
 }
 
+async function cancelJob(j: any) {
+  const proc = j.status === 'processing'
+  if (!confirm(proc
+    ? `Cancelar "${j.id}"? Está processando — a fábrica pode terminar o download em andamento, mas ele sai da fila.`
+    : `Cancelar "${j.id}"? Sai da fila e não será processado.`)) return
+  const res = await postJson(`/jobs/${j.id}/cancel`, {})
+  const body = await res.json().catch(() => ({} as { error?: string }))
+  msg.value = res.ok ? `✕ "${j.id}" cancelado` : `✖ ${body.error ?? res.status}`
+  refresh()
+}
+
 async function toggle(m: any) {
   await postJson(`/media/${m.id}/status`, { status: m.status === 'ready' ? 'disabled' : 'ready' })
   refresh()
@@ -1353,6 +1364,7 @@ onBeforeUnmount(() => clearInterval(poll))
           <span class="chip" :class="`st-${j.status}`">
             {{ j.status === 'processing' && j.progress > 0 ? `processando ${j.progress}%` : (STATUS_PT[j.status] ?? j.status) }}
           </span>
+          <button class="ghost" title="cancelar (tira da fila)" @click="cancelJob(j)">✕</button>
           <span v-if="j.error" class="err small">{{ j.error }}</span>
         </div>
 
@@ -1367,6 +1379,7 @@ onBeforeUnmount(() => clearInterval(poll))
             <span class="dim grow">{{ j.title }}</span>
             <span class="chip" :class="`st-${j.status}`">{{ STATUS_PT[j.status] ?? j.status }}</span>
             <button v-if="j.status === 'error'" class="ghost" title="tentar de novo (volta pra fila)" @click="retryJob(j)">↻</button>
+            <button v-if="j.status === 'error'" class="ghost" title="cancelar (remove da lista)" @click="cancelJob(j)">✕</button>
             <span v-if="j.error" class="err small">{{ j.error }}</span>
           </div>
         </div>
