@@ -200,6 +200,16 @@ admin.get('/yt-cookies', async (c) => {
   return c.json({ cookies: row?.v ?? null })
 })
 
+// a fábrica devolve os cookies rotacionados pelo yt-dlp após um download OK —
+// mantém os do D1 frescos entre lotes. Silencioso: NÃO reenfileira nem dispara.
+admin.put('/yt-cookies', async (c) => {
+  const { cookies } = await c.req.json<{ cookies?: string }>().catch(() => ({ cookies: '' }))
+  const norm = cookiesParaNetscape(String(cookies ?? ''))
+  if (!norm || !/\.youtube\.com/.test(norm)) return c.json({ error: 'cookies inválidos' }, 400)
+  await c.env.DB.prepare("INSERT OR REPLACE INTO config (k, v) VALUES ('yt_cookies', ?1)").bind(norm).run()
+  return c.json({ ok: true })
+})
+
 // status pro painel — NÃO devolve os cookies em si
 admin.get('/yt-cookies/status', async (c) => {
   const row = await c.env.DB.prepare("SELECT length(v) n FROM config WHERE k = 'yt_cookies'").first<{ n: number }>()

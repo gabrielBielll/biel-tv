@@ -4,7 +4,7 @@
 // a grade. O pipeline emite linhas "progresso: N%" que a gente repassa pro
 // Worker (POST /admin/jobs/:id/progress) — é o % que aparece na fila do painel.
 import { spawn } from 'node:child_process'
-import { createWriteStream, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { createWriteStream, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { pipeline as streamPipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import { dirname, join, resolve } from 'node:path'
@@ -103,9 +103,22 @@ async function processJob(job) {
       const tail = (r.stderr || r.stdout || '').trim().split('\n').filter((l) => l.trim()).at(-1) ?? 'yt-dlp falhou'
       // o caso recorrente merece uma mensagem que diz O QUE FAZER
       if (/Sign in to confirm/i.test(tail)) {
-        throw new Error('🍪 cookies do YouTube venceram — exporte de novo (extensão Get cookies.txt LOCALLY) e cole no painel em "🍪 cookies do YouTube"; os vídeos voltam pra fila sozinhos.')
+        throw new Error('🍪 cookies do YouTube venceram — exporte de novo (perfil/janela nova, feche sem navegar) e cole no painel em "🍪 cookies do YouTube" (aceita .txt ou JSON); os vídeos voltam pra fila sozinhos.')
       }
       throw new Error(`download falhou: ${tail.slice(0, 300)}`)
+    }
+    // download OK: o yt-dlp reescreveu o arquivo com os cookies ROTACIONADOS
+    // (o Google gira o __Secure-3PSIDTS a cada uso) — devolve pro D1 pra eles
+    // se manterem frescos entre lotes, em vez de morrer. Silencioso e best-effort.
+    if (cookies === cookiePathCache && cookiePathCache) {
+      try {
+        const atualizados = readFileSync(cookiePathCache, 'utf8')
+        await fetch(`${BASE}/admin/yt-cookies`, {
+          method: 'PUT',
+          headers: { ...HDR, 'content-type': 'application/json' },
+          body: JSON.stringify({ cookies: atualizados }),
+        })
+      } catch { /* melhor esforço — não atrapalha o ingest */ }
     }
   } else {
     const res = await fetch(`${BASE}/admin/staging/${encodeURIComponent(job.staging_key)}`, { headers: HDR })
