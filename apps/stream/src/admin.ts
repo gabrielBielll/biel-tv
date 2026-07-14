@@ -147,17 +147,42 @@ admin.get('/yt-info', async (c) => {
 // D1 atrás do token de admin (não no GitHub secret encriptado) — aceitável
 // num projeto pessoal só dele. O secret do GitHub segue como fallback.
 
-admin.post('/yt-cookies', async (c) => {
-  const { cookies } = await c.req.json<{ cookies?: string }>().catch(() => ({ cookies: '' }))
-  const raw = String(cookies ?? '')
-  if (!/\.youtube\.com/.test(raw) || !/(__Secure-3PSID|\bSID\b)/.test(raw)) {
-    return c.json({ error: 'não parece um cookies.txt do YouTube (faltam as linhas .youtube.com com o login)' }, 400)
+// Aceita os DOIS formatos de export: o cookies.txt Netscape (extensão "Get
+// cookies.txt LOCALLY") E o JSON (Cookie-Editor / EditThisCookie) — converte
+// pro Netscape que o yt-dlp exige. Assim tanto faz qual extensão o Gabriel usa.
+export function cookiesParaNetscape(raw: string): string | null {
+  const t = raw.trim()
+  if (t.startsWith('[') || t.startsWith('{')) {
+    let arr: unknown
+    try {
+      const parsed = JSON.parse(t)
+      arr = Array.isArray(parsed) ? parsed : (parsed as { cookies?: unknown[] }).cookies ?? []
+    } catch { return null }
+    if (!Array.isArray(arr)) return null
+    const linhas = ['# Netscape HTTP Cookie File']
+    for (const raw2 of arr) {
+      const ck = raw2 as Record<string, unknown>
+      if (!ck?.domain || !ck?.name) continue
+      const domain = String(ck.domain)
+      const flag = domain.startsWith('.') ? 'TRUE' : 'FALSE'
+      const secure = ck.secure ? 'TRUE' : 'FALSE'
+      const exp = ck.expirationDate ? Math.floor(Number(ck.expirationDate)) : 0
+      linhas.push([domain, flag, String(ck.path ?? '/'), secure, String(exp), String(ck.name), String(ck.value ?? '')].join('\t'))
+    }
+    return linhas.join('\n') + '\n'
   }
-  // colar no campo/chat troca TABs por espaços — normaliza de volta pro
-  // formato Netscape (o yt-dlp exige TAB entre as colunas)
-  const norm = raw.split('\n')
+  // já é Netscape: colar no campo/chat troca TABs por espaços — normaliza
+  return raw.split('\n')
     .map((l) => (l.startsWith('#') || !l.trim() ? l : l.trim().replace(/[ \t]+/g, '\t')))
     .join('\n') + '\n'
+}
+
+admin.post('/yt-cookies', async (c) => {
+  const { cookies } = await c.req.json<{ cookies?: string }>().catch(() => ({ cookies: '' }))
+  const norm = cookiesParaNetscape(String(cookies ?? ''))
+  if (!norm || !/\.youtube\.com/.test(norm) || !/(__Secure-3PSID|\bSID\b)/.test(norm)) {
+    return c.json({ error: 'não reconheci os cookies do YouTube — cole o cookies.txt (Netscape) OU o JSON (Cookie-Editor) inteiro' }, 400)
+  }
   await c.env.DB.prepare("INSERT OR REPLACE INTO config (k, v) VALUES ('yt_cookies', ?1)").bind(norm).run()
   // cookie novo → reenfileira tudo que falhou por link (não só YouTube, mas
   // é o caso que importa) e acorda a fábrica

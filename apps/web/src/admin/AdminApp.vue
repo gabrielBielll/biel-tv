@@ -1027,10 +1027,11 @@ onBeforeUnmount(() => clearInterval(poll))
         <div v-if="mostraCookies" class="cookies-panel">
           <p class="dim small">
             Se um vídeo do YouTube falhar com "faça login", os cookies venceram. Exporte de novo
-            (extensão <b>Get cookies.txt LOCALLY</b>, num perfil/janela novos, e feche sem navegar),
-            cole aqui e salve — os vídeos que falharam voltam pra fila sozinhos.
+            (extensão <b>Get cookies.txt LOCALLY</b> ou <b>Cookie-Editor</b>, num perfil/janela novos,
+            e feche sem navegar), cole aqui e salve — aceita o .txt (Netscape) OU o JSON, e os vídeos
+            que falharam voltam pra fila sozinhos.
           </p>
-          <textarea v-model="ytCookiesTexto" rows="4" placeholder="cole aqui o conteúdo do cookies.txt (começa com # Netscape HTTP Cookie File)" />
+          <textarea v-model="ytCookiesTexto" rows="4" placeholder="cole o cookies.txt (Netscape) OU o JSON (Cookie-Editor) inteiro" />
           <button class="primary" :disabled="salvandoCookies" @click="salvarCookies">
             {{ salvandoCookies ? 'salvando…' : 'salvar cookies e tentar de novo' }}
           </button>
