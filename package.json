@@ -15,6 +15,7 @@
     "verify:pipeline": "node scripts/verify-pipeline.mjs",
     "web:dev": "pnpm --filter @bieltv/web dev",
     "web:build": "pnpm --filter @bieltv/web build",
+    "web:deploy": "VITE_API_BASE=https://biel-tv-stream.biel-cesa95.workers.dev pnpm --filter @bieltv/web build && pnpm --filter @bieltv/stream pages:deploy",
     "verify:web": "node scripts/verify-web.mjs",
     "factory": "node scripts/factory-local.mjs",
     "verify:admin": "node scripts/verify-admin.mjs",

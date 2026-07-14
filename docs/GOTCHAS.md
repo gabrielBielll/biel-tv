@@ -67,6 +67,29 @@ conta certa sozinho quando ela existe no gh.
 
 ## Infra & deploy
 
+**Front buildado sem `VITE_API_BASE` = admin conversa com o Pages, não com o
+Worker (`Unexpected token '<', "<!doctype "…`).** Descoberto em 2026-07-14: ao
+tentar analisar uma playlist, o painel deu `✖ Unexpected token '<', "<!doctype
+"... is not valid JSON`. NÃO era bug da playlist. O front usa URLs relativas
+(`API = import.meta.env.VITE_API_BASE ?? ''`, `AdminApp.vue`) desenhado pra
+"produção same-origin" — mas a produção é cross-origin: site no Pages
+(`biel-tv.pages.dev`), API no Worker (`…workers.dev`). Um `vite build` pelado
+(sem a env) gera `API=''`, então todo `/admin/*` bate no PRÓPRIO Pages → o Pages
+devolve `index.html` (`<!doctype html>`, HTTP 200) pra qualquer rota → o
+`res.json()` do front tenta parsear HTML e quebra. Confirmação em 1 request:
+`curl https://biel-tv.pages.dev/admin/playlist` → `200 text/html <!doctype`. O
+Worker NUNCA devolve HTML (Hono → texto; 401 → `text/plain`), então `<!doctype`
+minúsculo = veio do Pages/SPA, não do Worker. **Fix:** buildar sempre com
+`VITE_API_BASE=https://biel-tv-stream.biel-cesa95.workers.dev` — encapsulado no
+script `pnpm web:deploy` (build com a env + `wrangler pages deploy`), pra não
+depender de lembrar a env na mão (o `README.md` documenta os 2 comandos crus).
+**Pegadinha nº 2 logo atrás:** feature nova = migration nova; o `<!doctype`
+some depois do deploy do front, mas aí aparece `500`/"no such table" porque a
+migration (ex.: `0014_playlist_ingest.sql`) só foi aplicada no D1 LOCAL. Aplicar
+no remoto: `wrangler d1 execute biel-tv-db --remote --file
+../../packages/db/migrations/00NN_*.sql` (o `ALTER ADD COLUMN` não é
+idempotente — 1x local, 1x remoto; cheque `sqlite_master` antes de reaplicar).
+
 **R2 (S3 API) falha com SSL handshake em Node — sempre usar IPv4.**
 O endpoint `https://<account>.r2.cloudflarestorage.com` resolve IPv6, e o
 `fetch()` do Node dá `SSL routines:ssl3_read_bytes:ssl/tls alert handshake
