@@ -136,14 +136,21 @@ promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o 
   transcrição dá pra deduzir série/temporada/episódio. Por ora a fila manual
   resolve; quando ele quiser, o gancho natural é um botão "baixar trecho"
   na área A nomear (ou uma API do projeto dele pra enviar direto).
-- **Normalização de volume (loudness) na ingestão** — pedido do Gabriel
-  (2026-07-12): comerciais/episódios com áudio MUITO mais alto que outros.
-  Desenho: filtro `loudnorm` do ffmpeg (EBU R128) no passo de normalização do
-  pipeline — alvo I=-16 LUFS / TP=-1.5 dB / LRA=11 no `-af` junto do
-  aresample (1 passada; 2 passadas = mais fiel, dobra o tempo de transcode).
-  Vale só pros uploads NOVOS; pro acervo existente, um job de re-normalização
-  só de áudio (vídeo em stream copy: `-c:v copy -af loudnorm -c:a aac` →
-  re-segmenta → re-sobe) é muito mais barato que re-transcodificar tudo.
+- **Polimento noturno (tarja preta + volume)** — pedido do Gabriel
+  (2026-07-12 áudio; 2026-07-14 tarja + cron noturno).
+  **Spec:** [features/polimento-noturno.md](features/polimento-noturno.md).
+  A ideia: o Gabriel sobe os vídeos e eles entram no ar mesmo "zuados"; um
+  **cron de madrugada** (o `scheduled()` já roda 03:00 SP) varre o catálogo e
+  conserta cada um sozinho. Dois consertos no `normalize()` do pipeline:
+  (a) **`cropdetect`** tira a tarja "assada" (letterbox na fonte) — e política
+  `fit`/`fill` por-item pro 4:3 de verdade; (b) **`loudnorm`** (EBU R128,
+  I=-16 LUFS) nivela o volume. **Garantia contra "perder" o que já subiu:** os
+  `.ts` no R2 são cópia completa → reprocesso reconstrói o master (`concat
+  -c copy`), re-trata e re-sobe no mesmo prefixo; duração igual → **EPG
+  intacto**. Jobs de link rebaixam a fonte (1ª geração). Modo `audio`
+  (stream-copy de vídeo) quando só falta volume = muito mais barato. Também
+  vira botão "✨ polir agora" por item. **Decisões abertas** (na spec): alvo de
+  loudness, `fit`-vs-`fill` padrão, fonte do reprocesso.
 - **Upload: consistência da UI ao anexar durante um envio** — pedido do Gabriel
   (2026-07-12): anexar mais arquivos enquanto um lote sobe SUBSTITUI a lista
   visual (os em andamento continuam subindo por baixo — chegam a aparecer como
