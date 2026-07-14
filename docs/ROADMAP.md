@@ -1,8 +1,13 @@
 # Roadmap da Biel TV
 
-> Para onde estamos indo (atualizado em 2026-07-12).
-> Pegadinhas conhecidas (bugs reais + causa + fix): [GOTCHAS.md](GOTCHAS.md) —
-> **leia antes de mexer em upload/ingestão** (risco operacional #1 lá).
+> Para onde estamos indo (atualizado em 2026-07-14).
+> Pegadinhas conhecidas (bugs reais + causa + fix): [GOTCHAS.md](GOTCHAS.md).
+>
+> **Estado em 2026-07-14:** os 3 canais NO AR (Jetix, Cartoon Network, Disney
+> Channel — o Disney com os Padrinhos Mágicos e as vinhetas de época no lugar
+> certo). ~100 mídias no catálogo. Fábrica autônoma no GitHub Actions.
+> **Fases 1–12 concluídas** — só sobram refinamentos (TMDB, presign, blocos
+> fixos semanais) e o backlog. As fases originais do projeto estão FEITAS.
 
 ## ✅ Fases concluídas
 
@@ -21,6 +26,9 @@
 | **10c — Votaton (o modo telespectador)** | Na página da TV: "Votação do canal" — o espectador vota na maratona que quer, a apuração AO VIVO simula outros telespectadores (teatro determinístico, sem LLM), o desfecho nasce decidido com recompensa variável + pity timer (derrotas seguidas garantem a próxima vitória), e o resultado vira maratona REAL na grade (vencendo o usuário OU "a torcida" — a ilusão nunca quebra). Vitória = celebração em tela cheia + selo "PEDIDO DOS TELESPECTADORES"; cooldown de 4h entre rodadas. Público de propósito (sem token) | 2026-07-12 | 14/14 (`pnpm verify:votaton`) + web 13/13 + canais 18/18 + smoke em produção |
 | **Progresso da transcodificação na fila (%)** | Pedido do Gabriel no mesmo dia, entregue no mesmo dia: o ffmpeg emite `-progress`, o pipeline converte em % do job (normalização 0–90, segmentação 92, cues 94, upload 94–99), a fábrica repassa pro Worker a cada 5s e o painel mostra "processando N%" com mini-barra. Claim zera, done fecha em 100 | 2026-07-12 | transcode local real (5%→89% fluindo) + 12/12 (`verify:admin`) |
 | **11b — Uploads persistentes/retomáveis + deleção definitiva** | Sessão no D1 ANTES do 1º byte (lote inteiro reservado antes de transmitir); multipart pro R2 em partes fixas com timeout/retry/backoff e cancelamento por item; painel lista uploads interrompidos pós-reload e retoma só as partes ausentes ao reanexar (fingerprint: caminho relativo+nome+tamanho+mtime); `complete` idempotente (repetir nunca duplica job). Zona de perigo: deleção física exige disabled + confirmação digitada `EXCLUIR <id>` + fora da janela do player; apaga só o prefixo exato no R2 e replaneja os canais | 2026-07-12 | 25/25 (`pnpm verify:uploads`, com retomada real no Chromium) + 12/12 (`verify:admin` já no fluxo novo) + smoke em produção (uploads de 1 e 3 partes processados + deleção com todas as recusas) |
+| **11c — Área "A nomear" + correção por canal** | Heurística detecta nome ruim (só números/consoantes emendadas/sem espaço) e lista pra renomear na mão; "✨ sugerir com IA" manda o lote pro Gemini com contexto livre; série digitada "como gente" vira slug sozinha. Remover mídia de um canal LIMPA a grade futura na hora; "Séries — canais em lote" move a temporada inteira | 2026-07-13 | 11/11 (`pnpm verify:nomear`, LLM real) |
+| **11d — Ingestão por LINK (YouTube/acervos)** | Cola o link no admin → job com `source_url` → a fábrica baixa com yt-dlp (720p mp4, Deno resolve o desafio JS) e segue o pipeline (comercial baixado já sai transcrito+promessa). Cookies self-service no painel (🍪), botão ↻ retry por job | 2026-07-13/14 | 9/9 (`pnpm verify:link`) + 15 vídeos reais do YouTube processados |
+| **12 — Comerciais como promessa (fase inteira)** | whisper transcreve na ingestão → LLM propõe a promessa → operador revisa → o agendador cumpre. Tipos: `a_seguir` (colado no programa prometido), `durante`/"você está vendo X" (bumper de permanência — meio do episódio e emenda de maratona), `bloco_horario`/`evento` (retidos até a 10a). Modo **comerciais fiéis/livres POR CANAL** (🎯/🎲); reclassificar tipo no catálogo | 2026-07-12/14 | 16/16 (`pnpm verify:promessas`, LLM real) + backfill real + Disney no ar com as vinhetas dos Padrinhos |
 
 ## ▶ Fases restantes
 
@@ -76,33 +84,22 @@ tem só a `pucca`; agrupar Power Rangers/Hey Arnold no catálogo abre a urna.
 guiada por promo" (etapa 3 da fase 12); Modo God ajustar probabilidade do
 votaton (previsto na spec).
 
-### Fase 11 — Admin v2 — 11a, 11b e 11c ✅ FEITAS; faltam TMDB e presign
-**Objetivo:** upar qualquer coisa e o sistema entender sozinho.
-**11c entregue (2026-07-13, no desenho do Gabriel):** área **"A nomear"** no
-admin — heurística determinística detecta nome ruim (só números, consoantes
-emendadas, sem espaços) e lista pra renomear na mão (título + série + episódio
-de uma vez); botão **"✨ sugerir com IA"** manda o lote inteiro pro Gemini NUMA
-chamada com o **contexto livre** do operador ("são episódios de Padrinhos
-Mágicos T3") e preenche as propostas com confiança — quem salva é o operador;
-"está bom" dispensa falso positivo. Junto veio a **correção por canal**: chip
-de canal agora LIMPA a grade futura e replaneja na hora (antes a mídia
-removida continuava passando até o próximo replanejo — bug real), e
-`POST /admin/series/:sid/channels` + UI "Séries — canais em lote" move a
-temporada inteira de canal num clique. O Modo God já cobria o caso com prazo
-("tira a série X deste canal por 2 meses").
+### Fase 11 — Admin v2 — 11a, 11b, 11c e 11d ✅ FEITAS; faltam TMDB e presign
+**Objetivo:** upar qualquer coisa e o sistema entender sozinho. Entregues: lote/
+pasta (11a), uploads retomáveis + deleção definitiva (11b), área "A nomear" +
+correção por canal (11c), ingestão por link YouTube/acervos (11d — ver tabela).
 **Entregáveis restantes:**
 - TMDB (título oficial, sinopse, **poster** → EPG rico).
 - URL pré-assinada pro navegador enviar cada parte DIRETO ao R2 — junto com o
   **domínio próprio** (que também destrava o bucket público, ver fase 7).
 
-### Fase 12 — Comerciais condicionais ("promessas") — etapas 1+2 ✅ FEITAS em 2026-07-12
+### ~~Fase 12~~ ✅ COMPLETA em 2026-07-12/14 — comerciais como promessa
 **Objetivo:** promos de sequência/horário/maratona só irem ao ar quando a grade cumpre.
 **Spec:** [features/comerciais-condicionais.md](features/comerciais-condicionais.md).
-**Entregue:** whisper na fábrica (transcreve na ingestão + backfill do catálogo),
-LLM propõe a promessa (com casador determinístico de série), fila de revisão no
-painel (pendente = fora do ar até decidir), e o agendador cumpre: "a seguir"
-confirmado fecha o intervalo colado no programa prometido; horário/evento ficam
-retidos até a 10a. 10/10 (`pnpm verify:promessas`, LLM real).
+Entregue: whisper na fábrica, LLM propõe a promessa (casador determinístico de
+série), fila de revisão, agendador que cumpre. 4 tipos de promessa (`a_seguir`,
+`durante`, `bloco_horario`, `evento`) + modo fiel/livre por canal + reclassificar
+tipo. Ver tabela de fases concluídas.
 **Falta (etapa 3, junto com a 10a):** programação GUIADA por promo — o Diretor
 montar blocos/sequências justamente porque tem a promo perfeita pra eles, e
 promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o bloco.
