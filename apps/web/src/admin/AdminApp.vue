@@ -120,6 +120,21 @@ const tituloPromessa = (p: any) => { try { return JSON.parse(p.metadata).title ?
 const promPendentes = computed(() => promessas.value.filter((p) => p.status === 'pendente'))
 const promDecididas = computed(() => promessas.value.filter((p) => p.status === 'confirmada' || p.status === 'ignorar'))
 
+// ── navegação por seções (painel = menu lateral, uma seção por vez) ─────────
+type Aba = 'enviar' | 'fila' | 'catalogo' | 'promessas' | 'diretor'
+const ABA_KEY = 'bieltv_admin_aba'
+const aba = ref<Aba>((localStorage.getItem(ABA_KEY) as Aba) || 'enviar')
+watch(aba, (v) => localStorage.setItem(ABA_KEY, v))
+// modo god desligado no meio → sai da aba do Diretor pra não ficar tela vazia
+watch(god, (v) => { if (!v && aba.value === 'diretor') aba.value = 'fila' })
+
+// fila ao vivo: só os jobs ativos ficam à vista; concluídos/erros vão pro
+// histórico recolhível (senão o painel enche em minutos). Fica em v-show pra
+// as linhas seguirem no DOM (a verificação e2e lê o "concluído" por textContent).
+const mostraHistorico = ref(false)
+const jobsAtivos = computed(() => jobs.value.filter((j) => j.status === 'queued' || j.status === 'processing'))
+const jobsHistorico = computed(() => jobs.value.filter((j) => j.status !== 'queued' && j.status !== 'processing'))
+
 // interruptor POR CANAL: fiel (fase 12 manda) ⇄ livre (rodízio cego, pra
 // época de acervo ainda não editado) — o servidor replaneja o canal na hora
 const trocandoFieis = ref('')
@@ -960,8 +975,33 @@ onBeforeUnmount(() => clearInterval(poll))
     </div>
   </main>
 
-  <main v-else class="grid-2">
-    <section class="card">
+  <div v-else class="admin-shell">
+    <nav class="sidebar">
+      <button class="nav-item" :class="{ on: aba === 'enviar' }" @click="aba = 'enviar'">
+        <span class="nav-ico">📤</span> Enviar
+        <span v-if="pendentesVisiveis.length" class="nav-badge" title="uploads interrompidos">{{ pendentesVisiveis.length }}</span>
+      </button>
+      <button class="nav-item" :class="{ on: aba === 'fila' }" @click="aba = 'fila'">
+        <span class="nav-ico">⚙️</span> Fila
+        <span v-if="jobsAtivos.length" class="nav-badge azul" title="processando/na fila">{{ jobsAtivos.length }}</span>
+      </button>
+      <button class="nav-item" :class="{ on: aba === 'catalogo' }" @click="aba = 'catalogo'">
+        <span class="nav-ico">📚</span> Catálogo
+        <span v-if="aNomear.length" class="nav-badge" title="a nomear">{{ aNomear.length }}</span>
+      </button>
+      <button class="nav-item" :class="{ on: aba === 'promessas' }" @click="aba = 'promessas'">
+        <span class="nav-ico">📣</span> Promessas
+        <span v-if="promPendentes.length" class="nav-badge" title="promessas pendentes">{{ promPendentes.length }}</span>
+      </button>
+      <button v-if="god" class="nav-item god" :class="{ on: aba === 'diretor' }" @click="aba = 'diretor'">
+        <span class="nav-ico">⚡</span> Diretor
+      </button>
+    </nav>
+
+    <main class="content">
+      <p v-if="msg" class="global-msg" :class="msg.startsWith('✖') ? 'err' : 'ok'">{{ msg }}</p>
+
+      <section v-show="aba === 'enviar'" class="card">
       <h2>Enviar mídia</h2>
       <input type="file" accept="video/*" multiple @change="onPick" />
       <label class="pasta-btn">
@@ -1094,8 +1134,6 @@ onBeforeUnmount(() => clearInterval(poll))
         </button>
       </template>
 
-      <p v-if="msg" :class="msg.startsWith('✖') ? 'err' : 'ok'">{{ msg }}</p>
-
       <template v-if="pendentesVisiveis.length || retomadas.length">
         <h2 class="mt">Uploads interrompidos</h2>
         <p class="dim">
@@ -1130,46 +1168,67 @@ onBeforeUnmount(() => clearInterval(poll))
           >✕</button>
         </div>
       </template>
-    </section>
+      </section>
 
-    <section class="card">
-      <div class="fila-head">
-        <h2>Fila de processamento</h2>
-        <button
-          class="ghost"
-          title="o diretor apaga a grade futura e remonta do zero (o bloco no ar é preservado) — use depois de excluir/desativar vídeos"
-          @click="replanejar"
-        >🔄 diretor: reajustar a grade</button>
-      </div>
-      <p v-if="jobs.length === 0" class="dim">nenhum job ainda</p>
-      <div v-for="j in jobs" :key="j.id" class="job-row">
-        <span class="mono">{{ j.id }}</span>
-        <span class="dim grow">{{ j.title }}</span>
-        <span v-if="j.status === 'processing' && j.progress > 0" class="mini-bar">
-          <span class="mini-bar-fill" :style="{ width: j.progress + '%' }" />
-        </span>
-        <span class="chip" :class="`st-${j.status}`">
-          {{ j.status === 'processing' && j.progress > 0 ? `processando ${j.progress}%` : (STATUS_PT[j.status] ?? j.status) }}
-        </span>
-        <button v-if="j.status === 'error'" class="ghost" title="tentar de novo (volta pra fila)" @click="retryJob(j)">↻</button>
-        <span v-if="j.error" class="err small">{{ j.error }}</span>
-      </div>
+      <section v-show="aba === 'fila'" class="card">
+        <div class="fila-head">
+          <h2>Fila de processamento</h2>
+          <button
+            class="ghost"
+            title="o diretor apaga a grade futura e remonta do zero (o bloco no ar é preservado) — use depois de excluir/desativar vídeos"
+            @click="replanejar"
+          >🔄 diretor: reajustar a grade</button>
+        </div>
 
-      <div class="fieis-row">
-        <span class="dim small">comerciais por canal:</span>
+        <div class="secao-sub">
+          <span class="sub-label">Em andamento</span>
+          <span class="dim small">{{ jobsAtivos.length }} ativo(s)</span>
+        </div>
+        <p v-if="jobsAtivos.length === 0" class="dim">nada processando no momento</p>
+        <div v-for="j in jobsAtivos" :key="j.id" class="job-row">
+          <span class="mono">{{ j.id }}</span>
+          <span class="dim grow">{{ j.title }}</span>
+          <span v-if="j.status === 'processing' && j.progress > 0" class="mini-bar">
+            <span class="mini-bar-fill" :style="{ width: j.progress + '%' }" />
+          </span>
+          <span class="chip" :class="`st-${j.status}`">
+            {{ j.status === 'processing' && j.progress > 0 ? `processando ${j.progress}%` : (STATUS_PT[j.status] ?? j.status) }}
+          </span>
+          <span v-if="j.error" class="err small">{{ j.error }}</span>
+        </div>
+
         <button
-          v-for="ch in channels"
-          :key="ch.id"
-          class="fieis-btn"
-          :class="{ livre: ch.comerciais_fieis === 0 }"
-          :disabled="trocandoFieis === ch.id"
-          :title="ch.comerciais_fieis === 0 ? 'LIVRE: rodízio cego (acervo cru) — clique pra voltar ao fiel' : 'FIEL: promessa manda — clique pra liberar o acervo cru'"
-          @click="toggleFieisCanal(ch)"
-        >
-          {{ trocandoFieis === ch.id ? '…' : ch.comerciais_fieis === 0 ? '🎲' : '🎯' }} {{ ch.nome }}
-        </button>
-        <span class="dim small">🎯 fiel · 🎲 livre</span>
-      </div>
+          v-if="jobsHistorico.length"
+          class="ghost hist-toggle"
+          @click="mostraHistorico = !mostraHistorico"
+        >{{ mostraHistorico ? '▾' : '▸' }} Histórico ({{ jobsHistorico.length }})</button>
+        <div v-show="mostraHistorico" class="hist-lista">
+          <div v-for="j in jobsHistorico" :key="j.id" class="job-row">
+            <span class="mono">{{ j.id }}</span>
+            <span class="dim grow">{{ j.title }}</span>
+            <span class="chip" :class="`st-${j.status}`">{{ STATUS_PT[j.status] ?? j.status }}</span>
+            <button v-if="j.status === 'error'" class="ghost" title="tentar de novo (volta pra fila)" @click="retryJob(j)">↻</button>
+            <span v-if="j.error" class="err small">{{ j.error }}</span>
+          </div>
+        </div>
+      </section>
+
+      <section v-show="aba === 'promessas'" class="card">
+        <div class="fieis-row">
+          <span class="dim small">comerciais por canal:</span>
+          <button
+            v-for="ch in channels"
+            :key="ch.id"
+            class="fieis-btn"
+            :class="{ livre: ch.comerciais_fieis === 0 }"
+            :disabled="trocandoFieis === ch.id"
+            :title="ch.comerciais_fieis === 0 ? 'LIVRE: rodízio cego (acervo cru) — clique pra voltar ao fiel' : 'FIEL: promessa manda — clique pra liberar o acervo cru'"
+            @click="toggleFieisCanal(ch)"
+          >
+            {{ trocandoFieis === ch.id ? '…' : ch.comerciais_fieis === 0 ? '🎲' : '🎯' }} {{ ch.nome }}
+          </button>
+          <span class="dim small">🎯 fiel · 🎲 livre</span>
+        </div>
 
       <template v-if="promPendentes.length || promDecididas.length">
         <h2 class="mt">Promessas de comerciais</h2>
@@ -1209,7 +1268,9 @@ onBeforeUnmount(() => clearInterval(poll))
           <button class="ghost" @click="decidePromessa(p, 'pendente')">revisar</button>
         </div>
       </template>
+      </section>
 
+      <section v-show="aba === 'catalogo'" class="card">
       <template v-if="aNomear.length">
         <h2 class="mt">✏️ A nomear ({{ aNomear.length }})</h2>
         <p class="dim">
@@ -1322,9 +1383,9 @@ onBeforeUnmount(() => clearInterval(poll))
           </template>
         </div>
       </template>
-    </section>
+      </section>
 
-    <section v-if="god" class="card god-card">
+      <section v-show="god && aba === 'diretor'" class="card god-card">
       <h2>⚡ Modo God — fale com o Diretor</h2>
       <div class="chat-head">
         <select v-model="chatCanal" class="chat-canal">
@@ -1386,8 +1447,9 @@ onBeforeUnmount(() => clearInterval(poll))
           {{ identSaving === ch.id ? 'salvando…' : 'salvar identidade' }}
         </button>
       </div>
-    </section>
-  </main>
+      </section>
+    </main>
+  </div>
 
   <footer v-if="authed" class="admin-footer">
     <button class="god-toggle" :class="{ on: god }" @click="toggleGod">
@@ -1407,9 +1469,36 @@ onBeforeUnmount(() => clearInterval(poll))
 .back:hover { color: var(--text); }
 
 .gate { display: grid; place-items: center; min-height: 60vh; }
-.grid-2 { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(0, 1.4fr); gap: 20px; align-items: start; }
-@media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
-.god-card { grid-column: 1 / -1; }
+/* painel administrativo: menu lateral fixo + área de conteúdo (uma seção por vez) */
+.admin-shell { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 22px; align-items: start; }
+.sidebar { display: flex; flex-direction: column; gap: 4px; position: sticky; top: 12px; }
+.nav-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: transparent; border: 1px solid transparent; border-radius: 10px; padding: 10px 12px;
+  color: var(--text-dim); font: inherit; font-size: 14px; font-weight: 600; }
+.nav-item:hover { color: var(--text); background: var(--panel); }
+.nav-item.on { background: var(--panel); border-color: var(--line); color: var(--text); }
+.nav-item.god.on { border-color: #ffb020; color: #ffb020; }
+.nav-ico { font-size: 15px; }
+.nav-badge { margin-left: auto; min-width: 20px; text-align: center; font-size: 11px; font-weight: 700;
+  border-radius: 999px; padding: 1px 7px; background: rgba(255, 176, 32, 0.16); color: #ffb020; }
+.nav-badge.azul { background: rgba(77, 163, 255, 0.16); color: #4da3ff; }
+
+.content { min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.global-msg { border: 1px solid var(--line); background: var(--panel); border-radius: 8px;
+  padding: 10px 14px; font-size: 13px; }
+.global-msg.err { color: #ff6b6b; border-color: rgba(255, 107, 107, 0.4); }
+.global-msg.ok { color: var(--ok); border-color: rgba(56, 217, 122, 0.4); }
+
+.secao-sub { display: flex; align-items: baseline; gap: 8px; margin: 2px 0 8px; }
+.sub-label { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
+.hist-toggle { width: 100%; text-align: left; margin-top: 14px; }
+.hist-lista { max-height: 340px; overflow-y: auto; margin-top: 4px; }
+
+@media (max-width: 760px) {
+  .admin-shell { grid-template-columns: 1fr; }
+  .sidebar { flex-direction: row; overflow-x: auto; position: static; padding-bottom: 4px; }
+  .nav-item { width: auto; white-space: nowrap; }
+}
 
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
 .card h2 { font-size: 13px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
