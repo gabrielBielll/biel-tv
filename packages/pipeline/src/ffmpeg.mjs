@@ -258,3 +258,86 @@ export async function detectBlack(file, { d = 1.0, picTh = 0.98, pixTh = 0.1 } =
   }
   return blacks
 }
+
+// ── detecção pro cortador de comerciais ────────────────────────────────────
+// Ver docs/features/cortador-comerciais.md. O que estes helpers medem, o
+// cortador.mjs funde. Regra da casa: aqui é só medição — nenhum julgamento.
+
+/**
+ * Trechos de silêncio. O sinal MAIS confiável pra achar limite entre anúncios.
+ *
+ * ⚠️ `noise` NÃO tem default de propósito: o valor certo depende do chiado do
+ * arquivo e é MEDIDO pelo `achaThreshold()` do cortador.mjs. Medição real: num
+ * arquivo com hiss a -34dB, -30dB acha os gaps com erro de ~15ms e -40dB acha
+ * ZERO. Chutar o floor é o jeito nº 1 de essa feature não achar nada.
+ */
+export async function detectSilence(file, { noise, d = 0.3 } = {}) {
+  if (typeof noise !== 'number') throw new Error('detectSilence: noise (dB) é obrigatório — meça com achaThreshold()')
+  const { stderr } = await execFileAsync(FFMPEG(), [
+    '-hide_banner', '-i', file,
+    '-af', `silencedetect=n=${noise}dB:d=${d}`,
+    '-vn', '-f', 'null', '-',
+  ], BUF)
+  const out = []
+  // silence_end vem numa linha depois do start; parsear em pares mantém a
+  // ordem sem depender de regex multi-linha frágil.
+  const starts = [...stderr.matchAll(/silence_start:\s*([\d.-]+)/g)].map((m) => Number(m[1]))
+  const ends = [...stderr.matchAll(/silence_end:\s*([\d.-]+)/g)].map((m) => Number(m[1]))
+  for (let i = 0; i < starts.length; i++) {
+    // silêncio que vai até o fim do arquivo não ganha silence_end
+    if (ends[i] === undefined) continue
+    out.push({ start: starts[i], end: ends[i] })
+  }
+  return out
+}
+
+/** Cortes SECOS (sem preto nem silêncio) — o sinal de reserva. */
+export async function detectScene(file, { th = 0.4 } = {}) {
+  const { stderr } = await execFileAsync(FFMPEG(), [
+    '-hide_banner', '-i', file,
+    '-vf', `select='gt(scene,${th})',metadata=print`,
+    '-an', '-f', 'null', '-',
+  ], BUF)
+  return [...stderr.matchAll(/pts_time:([\d.]+)/g)].map((m) => Number(m[1]))
+}
+
+/**
+ * Extrai [start,end] pra um arquivo próprio.
+ *
+ * ⚠️ `-ss` DEPOIS do `-i` + re-encode: seek preciso, frame-accurate. Com
+ * `-c copy` o corte gruda no keyframe e VAZA pedaço do anúncio vizinho — que é
+ * exatamente o erro que a feature inteira existe pra não cometer. O pipeline
+ * re-encoda cada trecho de novo mais tarde, então precisão > velocidade aqui.
+ */
+export async function extraiTrecho(file, start, end, outFile) {
+  await execFileAsync(FFMPEG(), [
+    '-hide_banner', '-y', '-i', file,
+    '-ss', String(start), '-to', String(end),
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+    '-c:a', 'aac', '-b:a', '128k',
+    outFile,
+  ], BUF)
+  return outFile
+}
+
+/** 1 frame em `t` (serve pro portão de borda e pro portão visual do Gemini). */
+export async function frameEm(file, t, outFile, { largura = 320 } = {}) {
+  await execFileAsync(FFMPEG(), [
+    '-hide_banner', '-y', '-ss', String(t), '-i', file,
+    '-frames:v', '1', '-vf', `scale=${largura}:-1`, outFile,
+  ], BUF)
+  return outFile
+}
+
+/**
+ * Volume médio de um trecho, em dB. `-91` = silêncio digital.
+ * (O portão de borda usa isto pra saber se o clipe COMEÇA no conteúdo.)
+ */
+export async function volumeMedio(file, start, dur) {
+  const { stderr } = await execFileAsync(FFMPEG(), [
+    '-hide_banner', '-ss', String(start), '-t', String(dur), '-i', file,
+    '-af', 'volumedetect', '-vn', '-f', 'null', '-',
+  ], BUF)
+  const m = stderr.match(/mean_volume:\s*([\d.-]+) dB/)
+  return m ? Number(m[1]) : -91
+}
