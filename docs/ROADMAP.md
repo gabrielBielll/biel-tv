@@ -124,6 +124,12 @@ promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o 
      confirmada (sequência = a da grade real) — e no limite o agendador
      encomenda a vinheta certa pro intervalo certo (a "programação guiada
      por promo" da fase 12, invertida).
+- **Ingestão de playlist do YouTube (episódios em partes)** — pedido do Gabriel
+  (2026-07-14): colar o link de uma playlist onde episódios vêm partidos em
+  pedaços de ~4min, baixar tudo, juntar as partes NA ORDEM CERTA (parseada do
+  título, NUNCA da ordem da playlist — ver a pegadinha real do Jake Long) e
+  salvar como episódios inteiros agrupados em série. Spec completa em
+  [features/playlist-youtube.md](features/playlist-youtube.md).
 - **"A nomear" → transcrever um trecho no projeto externo do Gabriel** — ideia
   dele (2026-07-13): pra arquivo de nome irrecuperável, exportar um trecho
   (ex.: 60s de áudio, que o pipeline já sabe extrair) e mandar pro projeto
