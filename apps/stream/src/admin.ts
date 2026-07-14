@@ -138,6 +138,49 @@ admin.get('/yt-info', async (c) => {
   }
 })
 
+// ── cookies do YouTube (self-service) ──────────────────────────────────────
+// O YouTube não deixa renovar cookies automaticamente (precisaria da senha
+// do Google / navegador logado 24/7). O que dá pra fazer é a renovação SEM
+// depender de ninguém: o Gabriel cola o cookies.txt aqui → guardamos no D1 →
+// a fábrica busca daqui na hora de baixar → os vídeos que falharam voltam
+// pra fila sozinhos. Trade-off: cookies dão acesso à conta Google e ficam no
+// D1 atrás do token de admin (não no GitHub secret encriptado) — aceitável
+// num projeto pessoal só dele. O secret do GitHub segue como fallback.
+
+admin.post('/yt-cookies', async (c) => {
+  const { cookies } = await c.req.json<{ cookies?: string }>().catch(() => ({ cookies: '' }))
+  const raw = String(cookies ?? '')
+  if (!/\.youtube\.com/.test(raw) || !/(__Secure-3PSID|\bSID\b)/.test(raw)) {
+    return c.json({ error: 'não parece um cookies.txt do YouTube (faltam as linhas .youtube.com com o login)' }, 400)
+  }
+  // colar no campo/chat troca TABs por espaços — normaliza de volta pro
+  // formato Netscape (o yt-dlp exige TAB entre as colunas)
+  const norm = raw.split('\n')
+    .map((l) => (l.startsWith('#') || !l.trim() ? l : l.trim().replace(/[ \t]+/g, '\t')))
+    .join('\n') + '\n'
+  await c.env.DB.prepare("INSERT OR REPLACE INTO config (k, v) VALUES ('yt_cookies', ?1)").bind(norm).run()
+  // cookie novo → reenfileira tudo que falhou por link (não só YouTube, mas
+  // é o caso que importa) e acorda a fábrica
+  const r = await c.env.DB.prepare(
+    `UPDATE ingest_jobs SET status = 'queued', error = NULL, progress = 0, updated_at = unixepoch()
+     WHERE source_url IS NOT NULL AND status = 'error'`,
+  ).run()
+  c.executionCtx.waitUntil(dispatchFabrica(c.env))
+  return c.json({ ok: true, reenfileirados: r.meta.changes ?? 0 })
+})
+
+// a fábrica busca os cookies aqui (protegido pelo token de admin)
+admin.get('/yt-cookies', async (c) => {
+  const row = await c.env.DB.prepare("SELECT v FROM config WHERE k = 'yt_cookies'").first<{ v: string }>()
+  return c.json({ cookies: row?.v ?? null })
+})
+
+// status pro painel — NÃO devolve os cookies em si
+admin.get('/yt-cookies/status', async (c) => {
+  const row = await c.env.DB.prepare("SELECT length(v) n FROM config WHERE k = 'yt_cookies'").first<{ n: number }>()
+  return c.json({ configurado: Boolean(row), tamanho: row?.n ?? 0 })
+})
+
 admin.get('/jobs', async (c) => {
   const { results } = await c.env.DB.prepare(
     'SELECT * FROM ingest_jobs ORDER BY created_at DESC LIMIT 50',
@@ -726,7 +769,8 @@ admin.post('/diretor/evento/:id/cancelar', async (c) => {
 const CONFIG_KEYS = ['god_mode', 'last_reconcile']
 
 admin.get('/config', async (c) => {
-  const { results } = await c.env.DB.prepare('SELECT k, v FROM config').all<{ k: string; v: string }>()
+  // yt_cookies fica de fora: é grande e sensível — o painel usa /yt-cookies/status
+  const { results } = await c.env.DB.prepare("SELECT k, v FROM config WHERE k != 'yt_cookies'").all<{ k: string; v: string }>()
   return c.json(Object.fromEntries(results.map((r) => [r.k, r.v])))
 })
 

@@ -86,6 +86,7 @@ async function enter() {
     channels.value = await (await api('/channels')).json()
     const cfg = await (await api('/config')).json()
     god.value = cfg.god_mode === '1'
+    fetchCookieStatus()
     if (!chatCanal.value) chatCanal.value = channels.value[0]?.id ?? ''
     carregaChat()
     refresh()
@@ -246,6 +247,33 @@ function suggest(f: File, m: { duration: number }) {
     episode: se ? String(Number(se[2])) : '',
     tags: '',
     canais: suggestCanais(lower),
+  }
+}
+
+// ── cookies do YouTube (self-service) ──────────────────────────────────────
+const ytCookiesTexto = ref('')
+const ytCookiesStatus = ref<{ configurado: boolean } | null>(null)
+const salvandoCookies = ref(false)
+const mostraCookies = ref(false)
+async function fetchCookieStatus() {
+  try { ytCookiesStatus.value = await (await api('/yt-cookies/status')).json() } catch { /* ignora */ }
+}
+async function salvarCookies() {
+  if (!ytCookiesTexto.value.trim() || salvandoCookies.value) return
+  salvandoCookies.value = true
+  try {
+    const res = await postJson('/yt-cookies', { cookies: ytCookiesTexto.value })
+    const body = await res.json()
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    msg.value = `🍪 cookies atualizados — ${body.reenfileirados} vídeo(s) do YouTube de volta na fila`
+    ytCookiesTexto.value = ''
+    mostraCookies.value = false
+    fetchCookieStatus()
+    refresh()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  } finally {
+    salvandoCookies.value = false
   }
 }
 
@@ -949,6 +977,26 @@ onBeforeUnmount(() => clearInterval(poll))
         <button class="ghost" :disabled="ytBusy" @click="buscarLink">{{ ytBusy ? '…' : 'buscar' }}</button>
       </div>
 
+      <div class="cookies-box">
+        <button class="ghost small cookies-toggle" @click="mostraCookies = !mostraCookies">
+          🍪 cookies do YouTube
+          <span :class="ytCookiesStatus?.configurado ? 'ok' : 'dim'">
+            {{ ytCookiesStatus?.configurado ? '✓ configurados' : '— não configurados' }}
+          </span>
+        </button>
+        <div v-if="mostraCookies" class="cookies-panel">
+          <p class="dim small">
+            Se um vídeo do YouTube falhar com "faça login", os cookies venceram. Exporte de novo
+            (extensão <b>Get cookies.txt LOCALLY</b>, num perfil/janela novos, e feche sem navegar),
+            cole aqui e salve — os vídeos que falharam voltam pra fila sozinhos.
+          </p>
+          <textarea v-model="ytCookiesTexto" rows="4" placeholder="cole aqui o conteúdo do cookies.txt (começa com # Netscape HTTP Cookie File)" />
+          <button class="primary" :disabled="salvandoCookies" @click="salvarCookies">
+            {{ salvandoCookies ? 'salvando…' : 'salvar cookies e tentar de novo' }}
+          </button>
+        </div>
+      </div>
+
       <template v-if="linkPronto">
         <div class="form">
           <label>Título <input v-model="form.title" /></label>
@@ -1417,6 +1465,13 @@ button.ghost:hover { color: var(--text); }
 
 .link-row { margin-top: 8px; }
 .link-row input { font-size: 13px; }
+
+.cookies-box { margin-top: 8px; }
+.cookies-toggle { width: 100%; text-align: left; }
+.cookies-toggle .ok { color: var(--ok); }
+.cookies-panel { display: flex; flex-direction: column; gap: 8px; margin-top: 8px;
+  padding: 10px; border: 1px dashed var(--line); border-radius: 8px; }
+.cookies-panel textarea { font-family: ui-monospace, monospace; font-size: 11px; }
 
 .pasta-btn { display: block; margin-top: 8px; font-size: 12px; color: var(--text-dim);
   border: 1px dashed var(--line); border-radius: 8px; padding: 8px 10px; cursor: pointer; }

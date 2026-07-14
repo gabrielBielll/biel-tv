@@ -4,7 +4,7 @@
 // a grade. O pipeline emite linhas "progresso: N%" que a gente repassa pro
 // Worker (POST /admin/jobs/:id/progress) — é o % que aparece na fila do painel.
 import { spawn } from 'node:child_process'
-import { createWriteStream, mkdirSync, rmSync } from 'node:fs'
+import { createWriteStream, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { pipeline as streamPipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import { dirname, join, resolve } from 'node:path'
@@ -43,6 +43,32 @@ async function post(path, body, tries = 3) {
   }
 }
 
+// Cookies do YouTube (fase 11d): busca UMA vez os cookies self-service do
+// painel (POST /admin/yt-cookies — sempre os mais frescos); se não houver,
+// cai pro arquivo do secret do GitHub (YT_COOKIES_FILE). Cache por processo:
+// cada reenfileiramento roda uma run nova, então fica sempre atualizado.
+let cookiePathCache // undefined = ainda não buscou · null = nenhum · string = caminho
+async function cookieFile() {
+  if (cookiePathCache !== undefined) return cookiePathCache
+  try {
+    const res = await fetch(`${BASE}/admin/yt-cookies`, { headers: HDR })
+    if (res.ok) {
+      const { cookies } = await res.json()
+      if (cookies) {
+        const p = join(ROOT, '.ingest-work', '_yt-cookies.txt')
+        mkdirSync(dirname(p), { recursive: true })
+        writeFileSync(p, cookies)
+        log('cookies do YouTube: usando os do painel')
+        cookiePathCache = p
+        return p
+      }
+    }
+  } catch { /* cai pro fallback */ }
+  cookiePathCache = process.env.YT_COOKIES_FILE || null
+  if (cookiePathCache) log('cookies do YouTube: usando o secret do GitHub')
+  return cookiePathCache
+}
+
 async function processJob(job) {
   log(`processando "${job.id}" (${job.title})`)
   const dir = join(ROOT, '.ingest-work', '_staging')
@@ -54,16 +80,16 @@ async function processJob(job) {
     // 720p no máximo (perfil do canal é 720p, mais que isso é bit jogado
     // fora), sempre mp4, nunca playlist inteira por engano.
     log(`baixando de ${job.source_url.slice(0, 80)}…`)
+    const cookies = await cookieFile()
     const { spawnSync: run } = await import('node:child_process')
     const r = run('yt-dlp', [
       '--no-playlist', '--force-overwrites',
       '-f', 'bv*[height<=720]+ba/b[height<=720]/b',
       '--merge-output-format', 'mp4',
       // IP de datacenter (runner) toma "Sign in to confirm you're not a bot"
-      // do cliente web — o cliente de TV costuma passar sem token; cookies
-      // (secret opcional YT_COOKIES → arquivo) são o plano B definitivo.
+      // do cliente web — o cliente de TV ajuda, cookies são o definitivo.
       '--extractor-args', 'youtube:player_client=default,tv_simply,tv',
-      ...(process.env.YT_COOKIES_FILE ? ['--cookies', process.env.YT_COOKIES_FILE] : []),
+      ...(cookies ? ['--cookies', cookies] : []),
       '-o', src,
       job.source_url,
     ], {
@@ -77,7 +103,7 @@ async function processJob(job) {
       const tail = (r.stderr || r.stdout || '').trim().split('\n').filter((l) => l.trim()).at(-1) ?? 'yt-dlp falhou'
       // o caso recorrente merece uma mensagem que diz O QUE FAZER
       if (/Sign in to confirm/i.test(tail)) {
-        throw new Error('🍪 cookies do YouTube expiraram — reexporte em JANELA ANÔNIMA (senão o Google rotaciona e mata em horas), atualize o secret YT_COOKIES e clique ↻ no job. Receita: docs/GOTCHAS.md')
+        throw new Error('🍪 cookies do YouTube venceram — exporte de novo (extensão Get cookies.txt LOCALLY) e cole no painel em "🍪 cookies do YouTube"; os vídeos voltam pra fila sozinhos.')
       }
       throw new Error(`download falhou: ${tail.slice(0, 300)}`)
     }

@@ -213,8 +213,27 @@ PATH). A receita completa que FUNCIONA = cookies + Deno + yt-dlp-ejs.
      Google dele — só como secret do repo, nunca em arquivo commitado/log.
    - **Re-login automático NÃO existe por design**: automatizar exigiria
      guardar a senha do Google ou manter um navegador logado rodando — troca
-     péssima. O caminho é tornar a renovação rara (janela anônima) e barata
-     (mensagem 🍪 na fila + botão ↻).
+     péssima. O caminho é tornar a renovação rara (perfil/janela nova) e
+     barata (self-service no painel, abaixo).
+
+**Renovação self-service dos cookies (2026-07-14):** o painel tem a caixa
+"🍪 cookies do YouTube" (no card Enviar mídia). O Gabriel cola o cookies.txt
+novo → `POST /admin/yt-cookies` normaliza (espaços→TAB), guarda no D1
+(`config.yt_cookies`) e reenfileira todos os jobs de link em erro. A fábrica
+busca via `GET /admin/yt-cookies` (primário) e só cai no secret YT_COOKIES do
+GitHub se o painel não tiver nada. Ou seja: renovar cookie deixou de precisar
+do `gh secret set`/de mim — é colar no painel e salvar. `GET /admin/config`
+exclui `yt_cookies` de propósito (grande + sensível; o painel usa
+`/yt-cookies/status`). Trade-off consciente: cookies no D1 (atrás do token de
+admin) em vez do secret encriptado — ok num projeto pessoal; o secret do
+GitHub continua como fallback.
+
+**Fingerprint do cookie que FUNCIONA (validado 2026-07-14):** exportar do
+navegador NORMAL logado também serve — o que mata os cookies em ~20h é
+continuar navegando no YouTube depois de exportar (rotação do
+`__Secure-3PSIDTS`). "Perfil novo → logar → exportar → fechar sem navegar"
+evita isso. E o login do Google trava no MODO ANÔNIMO (bloqueia cookies de
+terceiros que o SSO usa) — por isso usar PERFIL novo, não anônimo.
 
 Bônus: o mesmo campo de link aceita **archive.org e URLs diretas de .mp4**
 (extractor genérico do yt-dlp) — acervos fora do YouTube não têm bot-check
