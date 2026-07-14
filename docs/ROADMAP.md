@@ -121,6 +121,11 @@ promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o 
      ElevenLabs (free tier) ou **Piper TTS local no runner (grátis, pt-BR)**;
      montagem 100% ffmpeg (overlay/zoompan/drawtext) na própria fábrica —
      nenhum gerador de vídeo pago necessário pro formato template.
+     → **Esta parte 2 virou spec própria em 2026-07-14:**
+     [features/construtor-comerciais.md](features/construtor-comerciais.md)
+     (o Gabriel evoluiu a ideia: locução que ele traz pronta em vez de TTS,
+     **vídeo** no lugar da imagem estática, música de época, e gatilho
+     automático quando um desenho novo entra no catálogo).
   3. *Fidedigna por construção*: a peça gerada já nasce com a promessa
      confirmada (sequência = a da grade real) — e no limite o agendador
      encomenda a vinheta certa pro intervalo certo (a "programação guiada
@@ -153,18 +158,46 @@ promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o 
   loudness, `fit`-vs-`fill` padrão, fonte do reprocesso.
 - **Cortador de comerciais (compilado → N comerciais)** — pedido do Gabriel
   (2026-07-14). **Spec:** [features/cortador-comerciais.md](features/cortador-comerciais.md).
-  Cola o link de um compilado (~4min com vários comerciais emendados) → o sistema
-  **detecta os limites** entre os anúncios (fusão de 3 sinais do ffmpeg: **preto**
-  `blackdetect d≈0.15` + **silêncio** `silencedetect` + **cena** `select scene`),
-  propõe os cortes pro operador revisar (thumb + juntar/dividir/aparar/descartar)
-  e cada trecho confirmado vira um `media_item` `comercial` pelo pipeline normal
-  (transcreve + promessa + "A nomear"). É a **playlist AO CONTRÁRIO** (1 fonte →
-  N mídias): mesmo esqueleto `analisar → revisar → confirmar`, tabela
-  `comercial_cuts` espelhando `playlist_ingests`, coluna nova `ingest_jobs.corte`.
+  Cola o link de um compilado (~4min com vários comerciais emendados) → **cada
+  anúncio aparece sozinho no catálogo**, pronto pro rodízio. É a **playlist AO
+  CONTRÁRIO** (1 fonte → N mídias). Tabela `comercial_cuts`, coluna nova
+  `ingest_jobs.corte`.
+  **⚠️ A spec foi REESCRITA no mesmo dia** — o Gabriel deixou claro que **não vai
+  revisar** ("queria algo automático, só subir o compilado e ele tratar"). Isso
+  matou a aba de cards (juntar/dividir/aparar) da v1 e trocou o desenho inteiro:
+  - **Threshold medido, não chutado:** varre o `silencedetect` e acha o **platô**
+    (a faixa de dB onde o resultado não muda) — cada compilado se auto-calibra.
+    Medido: com chiado a -34dB, de -20 a -33dB dá o gap no mesmo timestamp
+    (3.018594, sem mudar um dígito); a -34dB dá **zero**. **Sem platô → rejeita o
+    compilado inteiro.** O sistema sabe quando não sabe — é o que autoriza rodar
+    sem revisor.
+  - **Precisão medida, não temida:** `silencedetect` erra **~15ms** (meio frame de
+    TV) contra silêncio de posição conhecida. A precisão nunca foi o problema.
+  - **Zona morta, não ponto médio:** um limite são DOIS pontos (`gap_start`,
+    `gap_end`); o gap não pertence a ninguém. O erro cai no preto, não no anúncio.
+  - **5 portões no lugar do humano:** sinal (preto ∩ silêncio) → **grade de
+    15/30/60s** (o mais forte: independente do ffmpeg, vem de como comercial é
+    vendido) → borda técnica → **visual (Gemini multimodal: "os 2 frames de borda
+    são anúncios diferentes?")** → **semântico (DeepSeek: "a transcrição tem
+    fecho ou morre no meio da frase?")**. Falhou em um → descarta.
+  - **Descartar é de graça** (tem compilado infinito no YouTube); ingerir peça
+    quebrada, não. Portões conservadores: 5 de 9 é sucesso.
+  - **Chat do editor** (pedido 07-14): opcional e DEPOIS, nunca bloqueante —
+    "ficou ruim, tira do ar" / "corta em 1:23". Espelha o `diretor.ts`.
   ⚠️ Pegadinha nº 1 já confirmada no código: o `detectBlack()` usa `d=1.0` e NÃO
   acha o preto curto (0.1–0.4s) entre anúncios — o cortador chama o mesmo helper
-  com `d≈0.15`. O motor de detecção é o trabalho novo real; o resto é cola de
-  peças prontas (link+cookies, staging, pipeline, transcrição, "A nomear").
+  com `d≈0.15`. O motor é o trabalho novo real; o resto é cola de peças prontas
+  (link+cookies, staging, pipeline, transcrição, `llm.ts`, `diretor.ts`).
+- **Construtor de comerciais (molde → comercial novo)** — pedido do Gabriel
+  (2026-07-14). **Spec:** [features/construtor-comerciais.md](features/construtor-comerciais.md).
+  **Futuro declarado** — não antes do cortador. O outro lado do mesmo "editor":
+  molde PNG **com um pedaço vazado** + locução que ele traz pronta ("você está
+  vendo Pucca na Jetix") + música de época → o sistema põe alguns segundos do
+  desenho **dentro do vazado** e monta a vinheta. A sacada: o vazado é **alpha**,
+  então o buraco se acha sozinho (`alphaextract,negate,cropdetect`) e o molde por
+  cima recorta de graça — nenhuma coordenada digitada. **Gatilho:** desenho novo
+  no catálogo → a vinheta dele nasce sozinha. É a **parte 2 do item "Diretor
+  encomenda vinhetas GERADAS por IA"** (07-13) promovida a spec.
 - **Upload: consistência da UI ao anexar durante um envio** — pedido do Gabriel
   (2026-07-12): anexar mais arquivos enquanto um lote sobe SUBSTITUI a lista
   visual (os em andamento continuam subindo por baixo — chegam a aparecer como
