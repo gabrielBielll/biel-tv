@@ -151,6 +151,20 @@ promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o 
   (stream-copy de vídeo) quando só falta volume = muito mais barato. Também
   vira botão "✨ polir agora" por item. **Decisões abertas** (na spec): alvo de
   loudness, `fit`-vs-`fill` padrão, fonte do reprocesso.
+- **Cortador de comerciais (compilado → N comerciais)** — pedido do Gabriel
+  (2026-07-14). **Spec:** [features/cortador-comerciais.md](features/cortador-comerciais.md).
+  Cola o link de um compilado (~4min com vários comerciais emendados) → o sistema
+  **detecta os limites** entre os anúncios (fusão de 3 sinais do ffmpeg: **preto**
+  `blackdetect d≈0.15` + **silêncio** `silencedetect` + **cena** `select scene`),
+  propõe os cortes pro operador revisar (thumb + juntar/dividir/aparar/descartar)
+  e cada trecho confirmado vira um `media_item` `comercial` pelo pipeline normal
+  (transcreve + promessa + "A nomear"). É a **playlist AO CONTRÁRIO** (1 fonte →
+  N mídias): mesmo esqueleto `analisar → revisar → confirmar`, tabela
+  `comercial_cuts` espelhando `playlist_ingests`, coluna nova `ingest_jobs.corte`.
+  ⚠️ Pegadinha nº 1 já confirmada no código: o `detectBlack()` usa `d=1.0` e NÃO
+  acha o preto curto (0.1–0.4s) entre anúncios — o cortador chama o mesmo helper
+  com `d≈0.15`. O motor de detecção é o trabalho novo real; o resto é cola de
+  peças prontas (link+cookies, staging, pipeline, transcrição, "A nomear").
 - **Upload: consistência da UI ao anexar durante um envio** — pedido do Gabriel
   (2026-07-12): anexar mais arquivos enquanto um lote sobe SUBSTITUI a lista
   visual (os em andamento continuam subindo por baixo — chegam a aparecer como
