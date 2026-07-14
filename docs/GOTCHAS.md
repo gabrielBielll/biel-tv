@@ -275,17 +275,31 @@ travado nunca pendurar quem chamou. (extraiPromessa usa waitUntil e "funciona"
 porque também é chamado no caminho awaited; não confie no waitUntil pro caso
 que SÓ passa por ele.)
 
-**Validar concat por duração não pega "encoding diferente" — só arquivo
-quebrado.** `concatParts()` junta as partes cruas com `-f concat -c copy` e
-confere se a duração ≈ soma das partes. Mas o concat demuxer é tolerante: partes
-de resolução DIFERENTE (640x360 + 426x240) e até CODEC diferente (h264 + mpeg4)
-ainda somam a duração certa → passam como `copy`. Ou seja: o fallback do concat
-filter quase nunca dispara por esse check (só em arquivo patologicamente
-quebrado). Consequência prática: **não dá pra forçar o caminho `filter` com
-fixtures sintéticos** — o `verify-playlist` exercita o re-encode via a opção de
-teste `concatParts(..., { forcarFiltro: true })`. Na vida real o `-c copy` de
-partes do mesmo uploader é o caso comum e funciona; o pipeline normaliza o TODO
-depois de qualquer jeito.
+**Concat `-c copy` de partes com SAMPLE RATE de áudio diferente = áudio
+dessincronizado (e o normalize NÃO conserta).** Descoberto em 2026-07-14
+testando a junção com ffmpeg real. `concatParts()` juntava as partes cruas com
+`-f concat -c copy` e só conferia se a **duração do container ≈ soma**. Mas
+quando as partes têm sample rate divergente (ex.: uma 44,1 kHz + outra 48 kHz —
+comum em acervos onde os pedaços foram subidos em épocas diferentes), o concat
+demuxer reinterpreta as amostras na timebase errada e o **áudio "escorrega" do
+vídeo**: medido, 4s de parte 48k viraram +0,73s de áudio; o container fechava na
+duração certa (o skew cabia na tolerância de 2%), então **passava como `copy`** e
+o episódio saía com o áudio adiantado — dali pra frente, permanente. Numa parte
+real de ~240s isso vira ~13s de desync. O pipeline `normalize()` NÃO conserta
+(o skew sobrevive ao re-encode). Causa: a validação olhava só a duração TOTAL,
+nunca a sincronia A/V por stream, e o `-c copy` era tentado mesmo com áudio de
+parâmetros diferentes.
+**Fix:** `concatParts()` agora (1) só tenta `-c copy` se as partes
+compartilham codec/sample rate/canais de áudio (`audioUniforme`) — divergiu, vai
+direto pro `filter` (que reamostra tudo pra 48k); e (2) mesmo no `copy`, valida o
+**skew A/V por stream** (`streamDurations()`, ≤0,5s), não só a duração total —
+rede de segurança pra desync de qualquer origem (edit lists, priming, timebase
+torta). Resolução/SAR de vídeo diferentes continuam no `copy` de propósito: aí o
+`normalize()` reescala e absorve (skew 0,03s), sem re-encode à toa.
+`verify-playlist` ganhou o caso que faltava: parte com sample rate diferente tem
+que cair pro `filter` **sozinha** (sem `forcarFiltro`) e sair sincronizada — o
+buraco de cobertura que deixou o bug passar (o teste antigo só forçava o filter
+via `{ forcarFiltro: true }`, nunca exercitava a detecção automática).
 
 ## Scripts de verificação (`scripts/verify-*.mjs`)
 

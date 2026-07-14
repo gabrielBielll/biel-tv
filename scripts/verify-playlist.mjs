@@ -180,6 +180,22 @@ const durFiltro = Number(execFileSync(bin('ffprobe'),
 check('concatParts: plano B (concat filter) re-encoda e junta parte de resolução diferente',
   rf.metodo === 'filter' && Math.abs(durFiltro - 8) < 2, `metodo=${rf.metodo} dur=${durFiltro.toFixed(1)}s`)
 
+// desync guard (bug de 2026-07-14, ver GOTCHAS): parte com SAMPLE RATE de áudio
+// diferente, junta CRUA (-c copy), escorrega o áudio do vídeo — e o normalize
+// NÃO conserta. concatParts tem que DETECTAR sozinho (sem forcarFiltro) e cair
+// pro filter, que reamostra. p1/p2/p3 são 44100 (default do lavfi); este é 48000.
+const pAr = join(srcDir, 'par.mp4')
+execFileSync(ff, ['-y', '-hide_banner', '-loglevel', 'error',
+  '-f', 'lavfi', '-i', 'testsrc=size=640x360:rate=25', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000',
+  '-t', '4', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', pAr])
+const outAr = join(srcDir, '_joined_ar.mp4')
+const rAr = await concatParts([p1, pAr], outAr) // SEM forcarFiltro — a detecção é o teste
+const sd = (s) => Number(execFileSync(bin('ffprobe'),
+  ['-v', 'error', '-select_streams', `${s}:0`, '-show_entries', 'stream=duration', '-of', 'csv=p=0', outAr], { encoding: 'utf8' }).trim())
+const skewAr = Math.abs(sd('v') - sd('a'))
+check('concatParts: sample rate divergente cai pro filter SOZINHO e mantém A/V sincronizado',
+  rAr.metodo === 'filter' && skewAr < 0.2, `metodo=${rAr.metodo} skew=${skewAr.toFixed(3)}s`)
+
 // ── limpeza ─────────────────────────────────────────────────────────────────
 await post(`/admin/media/ep_${SERIE}_e01/status`, { status: 'disabled' })
 cleanup()

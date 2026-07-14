@@ -50,7 +50,28 @@ export async function probe(input) {
     vcodec: v.codec_name,
     acodec: a?.codec_name ?? null,
     hasAudio: Boolean(a),
+    // parâmetros de áudio: o concatParts usa pra decidir se o `-c copy` é
+    // seguro (sample rate/canais divergentes → o demuxer escorrega o áudio).
+    asampleRate: a?.sample_rate ? Number(a.sample_rate) : null,
+    achannels: a?.channels ? Number(a.channels) : null,
   }
+}
+
+/**
+ * Duração POR STREAM (vídeo e áudio) de um arquivo — usada pra flagrar desync
+ * A/V que a duração do container esconde. O concat `-c copy` de partes com
+ * timebase de áudio divergente estica o áudio: o container fecha na duração
+ * "certa" mas o áudio termina depois do vídeo (e o normalize NÃO conserta).
+ */
+async function streamDurations(file) {
+  const { stdout } = await execFileAsync(FFPROBE(), [
+    '-v', 'error', '-show_entries', 'stream=codec_type,duration',
+    '-print_format', 'json', file,
+  ], BUF)
+  const streams = JSON.parse(stdout).streams ?? []
+  const v = streams.find((s) => s.codec_type === 'video')
+  const a = streams.find((s) => s.codec_type === 'audio')
+  return { v: v ? Number(v.duration) : NaN, a: a ? Number(a.duration) : NaN }
 }
 
 /**
@@ -158,10 +179,23 @@ export async function concatParts(partFiles, outFile, { forcarFiltro = false } =
     soma += info.duration
   }
 
+  // O `-c copy` só é seguro quando as partes compartilham os parâmetros de
+  // ÁUDIO. Sample rate / codec / nº de canais divergentes (comum em acervos
+  // antigos, onde os pedaços foram subidos em épocas/ferramentas diferentes)
+  // fazem o concat demuxer reinterpretar as amostras na timebase errada → o
+  // áudio "escorrega" do vídeo, um desync que SOBREVIVE ao normalize. Quando
+  // diverge, vamos direto pro filter (que reamostra tudo pra 48k antes de
+  // juntar). Resolução/SAR de vídeo diferentes NÃO são problema aqui: o
+  // normalize reescala e absorve — por isso só o áudio pesa nesta decisão.
+  const audioUniforme = infos.every((i) =>
+    i.acodec === infos[0].acodec &&
+    i.asampleRate === infos[0].asampleRate &&
+    i.achannels === infos[0].achannels)
+
   // caminho feliz: junção CRUA sem re-encode (forcarFiltro pula direto pro
   // plano B — só usado nos testes, pra exercitar o re-encode sem depender de
   // um arquivo patológico que faça o -c copy divergir)
-  if (!forcarFiltro) {
+  if (!forcarFiltro && audioUniforme) {
     const listPath = `${outFile}.concat.txt`
     const listBody = partFiles.map((f) => `file '${resolve(f).replace(/'/g, "'\\''")}'`).join('\n') + '\n'
     writeFileSync(listPath, listBody)
@@ -171,7 +205,14 @@ export async function concatParts(partFiles, outFile, { forcarFiltro = false } =
         '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', outFile], BUF)
       const out = await probe(outFile)
       const tol = Math.max(2, soma * 0.02)
-      if (Math.abs(out.duration - soma) <= tol) copiaOk = true
+      const durOk = Math.abs(out.duration - soma) <= tol
+      // além da duração total: exige sincronia A/V por stream. A checagem de
+      // parâmetros acima pega a causa mais comum ANTES de tentar; esta é a
+      // rede de segurança pra qualquer desync que passe (edit lists, priming,
+      // timebase de vídeo torta). skew grande → rejeita a cópia, cai pro filter.
+      const { v: vDur, a: aDur } = await streamDurations(outFile)
+      const skewOk = !Number.isFinite(vDur) || !Number.isFinite(aDur) || Math.abs(vDur - aDur) <= 0.5
+      if (durOk && skewOk) copiaOk = true
     } catch {
       /* o -c copy falhou de vez → plano B abaixo */
     } finally {
