@@ -1,19 +1,98 @@
-# Feature: cortador de comerciais (compilado → N comerciais) — backlog
+# Feature: cortador de comerciais (compilado → N comerciais)
 
-> **v3 — reescrita em 2026-07-15, depois de rodar contra o ACERVO REAL.**
-> Estado: 📦 BACKLOG. O motor v1 está commitado (`b379687`) e **não serve** —
-> ver "O que morre", no fim. Não implementar em cima dele.
+> **v4 — 2026-07-15. O AUTOMÁTICO PERDEU; QUEM CORTA É O GABRIEL.**
+> Estado: 🟡 EM USO, com o Claude no meio do fluxo (ver "Como está hoje").
 >
-> **A ideia em uma frase:** colar o link de um **compilado** e **cada anúncio
-> aparecer sozinho no catálogo**, sem revisão, sem conferência, sem operador.
+> **A ideia em uma frase (v4):** o Gabriel marca início/fim de cada peça no
+> editor, salva, e a máquina corta com precisão de frame, nomeia, sobe e aposenta
+> a versão anterior.
+>
+> ⚠️ A v3 abria com *"sem revisão, sem conferência, sem operador"*. Está errado, e
+> o custo de descobrir foi de dois dias — a autópsia inteira está abaixo.
 
-## A história em três viradas (leia antes de escrever qualquer linha)
+## O placar que decidiu tudo
+
+| quem cortou | peças | aprovadas por ele |
+|---|---|---|
+| **motor automático** (v3) | 24 | **1** (~4%) |
+| **gabarito do Gabriel** | 16 | **16** |
+
+E não foi falta de esforço: **nenhum sinal serve** neste material. Medido contra
+as fronteiras que ele anotou à mão no compilado de 390s —
+
+| sinal | acerta | mas |
+|---|---|---|
+| cena | 5 de 6 | dispara **138×** em 390s (96% falso) |
+| silêncio | 3 de 6 | 39–92 disparos |
+| buraco de fala (whisper) | **1 de 6** | e o único tem 33s de largura |
+| preto | 0 de 6 | 2 ocorrências no arquivo inteiro |
+
+Comercial de 2004 **emenda direto**: sem preto, sem silêncio, e com corte de cena
+idêntico aos cortes de DENTRO do anúncio. Tentar casar as cenas com a grade de
+15/30/60 também falhou (3/6) — com um corte a cada 2.8s existe um ponto perto de
+qualquer lugar que se procure, então a "estrutura encontrada" era a que eu mandei
+encontrar. Não há o que detectar.
+
+Ele, assistindo, acertou tudo em minutos — e **todas** as fronteiras dele caem
+redondas na grade (29s, 29.5s, 30s, 60s, 10s), o que confirma a leitura.
+
+## Como está hoje (2026-07-15)
+
+```
+comercial já editado, subido no painel  → vai direto pro ar (intocado)
+cortador automático                     → nasce 'disabled', espera no editor
+ele marca no /r/cortar e SALVA          → corta → 'ready' → aposenta a anterior
+peça ruim no ar                         → /r, ele reporta, ela sai
+```
+
+**Regra dele:** *"quando eu clicar em salvar, aí sim está aprovado pra ir pro ar"*
+e *"deve desativar o vídeo antigo pra não ficar vários iguais na programação"*.
+
+### ⚠️ O elo que falta: o Claude está no meio
+
+O salvar grava em `cortes_marcados` (status `marcado`), mas **quem executa o corte
+é `scripts/recorta-marcado.mjs` rodado à mão**. Ou seja: ele marca, e só sai peça
+quando alguém pede pro Claude processar.
+
+**Decisão dele (2026-07-15), explícita:** *"por hora pode depender de você; vou ir
+vendo conforme for vendo a evolução, eu decido se deixo a fábrica automática ou
+continuo usando você"*.
+
+Então **não automatizar sem ele mandar**. O caminho, quando/se ele quiser, é um
+`tickCorteMarcado()` na fábrica: claim de `cortes_marcados WHERE status='marcado'`
+→ baixa a fonte → corta → ingere `--status ready` → desativa a fonte → marca
+`pronto`. O esqueleto já existe no `tickComercial` (que hoje devolve 404 e é
+ignorado de propósito — ver `factory-local.mjs`).
+
+## As telas
+
+| rota | o quê |
+|---|---|
+| `/r` (ou `/revisao`) | bancada: lista tudo, toca, ⏮ início / ⏭ fim, veredito + motivo, botão pro editor |
+| `/r/cortar` | editor: marca ini/fim/nome, régua própria, ±1s/±0.5s/±0.1s, rascunho local |
+
+O `/r` é **janela do que já está no ar**, não fila de aprovação — quem aprova é o
+salvar do editor.
+
+## O preto no fim das peças (não é bug do corte)
+
+O pipeline pada toda mídia pra múltiplo de 10 (`tpad`, preenchendo com PRETO)
+porque os segmentos têm que fechar na grade — é o que sincroniza os 3 canais.
+Uma vinheta de 4.89s ocupa 10s: **5.11s de preto**. Medido no ar:
+`black_start:4.87 → black_end:9.93`.
+
+**Decisão dele:** deixar assim (congelar o último quadro foi rejeitado: *"congelar
+é ruim"*). E ele já usa a regra a favor — marcou `0→10.00` e `0→19.99` de
+propósito, encostando na dezena pra zerar o padding.
+
+## A história em quatro viradas (leia antes de escrever qualquer linha)
 
 | | premissa central | o que a derrubou |
 |---|---|---|
 | **v1** | "o operador revisa antes de ir pro ar" | O Gabriel: *"queria algo automático, só subir o compilado e ele tratar"* — ele não vai revisar. Morreu a aba de cards (~metade da complexidade). |
 | **v2** | "preto ∩ silêncio acha os limites; o platô diz quando confiar" | **O acervo real.** Ver as medições abaixo. Morreu o motor inteiro. |
-| **v3** | *"cada sinal falha num lugar diferente; combine-os pelo que cada um sabe"* | (atual) |
+| **v3** | "cada sinal falha num lugar diferente; combine-os pelo que cada um sabe" | **O gabarito dele.** Combinar sinais ruins não faz sinal bom: 24 peças cortadas, 23 reprovadas. Morreu a detecção. |
+| **v4** | *"ele marca, a máquina corta"* | (atual) |
 
 A lição que a v2 pagou caro: **o teste sintético fabricava o mundo que a spec
 afirmava.** Eu plantei preto+silêncio nos limites porque a spec dizia que era
