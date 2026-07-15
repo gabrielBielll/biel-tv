@@ -315,7 +315,9 @@ for (const comp of compilados) {
       const r = spawnSync(process.execPath, ['--dns-result-order=ipv4first',
         join(ROOT, 'packages/pipeline/src/cli.mjs'), 'ingest', out,
         '--id', id, '--tipo', 'comercial', '--title', nome,
-        '--canais', comp.canal, '--target', 'remote', '--base-url', ''],
+        '--canais', comp.canal, '--target', 'remote', '--base-url', '',
+        // nasce FORA do ar: peça recortada é palpite até o Gabriel aprovar
+        '--status', 'disabled'],
         { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 * 1024 * 1024 })
       rmSync(out, { force: true })
       if (r.status !== 0) {

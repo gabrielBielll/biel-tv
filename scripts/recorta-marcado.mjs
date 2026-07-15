@@ -27,81 +27,21 @@ const log = (s) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${s}
 // ── o plano, transcrito dos comentários dele (2026-07-15) ─────────────────
 // mm:ss → segundos. Os nomes são os DELE: quem assistiu sabe o que é, e
 // "Iue Falante"/"Margo" provaram que o whisper inventa nome próprio.
-const PLANO = [
-  {
-    src: 'com_jetix_intervalo_comercial_hi', canal: 'jetix',
-    // "aos 5min e alguns milésimos quase chegando em 51 segundos começa o
-    //  tempestade ninja e termina aos 5:30 quase 5:31" → confirmado: 5:00.9→5:30.9
-    // "aos 5:43 e meio quase 5:44 e termina as 6:13"
-    // "aos 6:18 começo o batalhão e termina em 7:53 e já começa o medabots em
-    //  seguida e vai até 8:22. aos 8:35 começa o do [Shaman] king e termina 9:04"
-    pecas: [
-      { ini: 300.9, fim: 330.9, nome: 'Power Rangers: Tempestade Ninja' },
-      { ini: 343.5, fim: 373.0, nome: null }, // ele não nomeou — o LLM nomeia
-      { ini: 378.0, fim: 473.0, nome: 'Batalhão' },
-      { ini: 473.0, fim: 502.0, nome: 'Medabots' },
-      { ini: 515.0, fim: 544.0, nome: 'Shaman King' },
-    ],
-  },
-  {
-    src: 'ep_jetix_brasil_intervalo_muscu', canal: 'jetix',
-    // "as 0:23 e termina em 0:52 quase 0:53. logo depois começa o da pucca e
-    //  termina em 1:55. aos 2:30 começa o power rangers força animal e vai até
-    //  2:59. em seguida um comercial bacana da jetix MUDO pode ser usado em
-    //  qualquer lugar, termina em 3:09. o resto é lixo só recortes"
-    // 1:55→2:30 e depois de 3:09: descartado (confirmado por ele)
-    pecas: [
-      { ini: 23.0, fim: 52.5, nome: null },
-      { ini: 52.5, fim: 115.0, nome: 'Pucca' },
-      { ini: 150.0, fim: 179.0, nome: 'Power Rangers: Força Animal' },
-      { ini: 179.0, fim: 189.0, nome: 'Jetix — vinheta muda' },
-    ],
-  },
-  // ── as avulsas: comerciais que já existiam e ele mandou aparar ───────────
-  {
-    src: 'com_power_rangers_ranger_vermelh', canal: 'jetix',
-    // "começa bem mas deveria cortar em 24 segundos e alguns milissegundos pq
-    //  depois entra comercial do cinescopio"
-    pecas: [{ ini: 0, fim: 24.0, nome: 'Power Rangers — Ranger Vermelho' }],
-  },
-  {
-    src: 'com_perfil_power_rangers_spd_sky', canal: 'jetix',
-    // "aos 22 segundos começa o do força animal e termina aos 34 com tela preta,
-    //  e antes tem o anúncio do spd — dava pra cortar e fazer DOIS comerciais"
-    pecas: [
-      { ini: 0, fim: 22.0, nome: 'Power Rangers SPD — Sky Tate' },
-      { ini: 22.0, fim: 34.0, nome: 'Power Rangers: Força Animal' },
-    ],
-  },
-  {
-    src: 'com_comercial_de_power_rangers_f', canal: 'jetix',
-    // "o comercial real do spd começa aos 1 segundo e pode cortar aos 57 pq
-    //  depois vem o da beyblade e termina em 1:05 pq depois vem tela preta —
-    //  dá pra fazer 2 comerciais desse"
-    pecas: [
-      { ini: 1.0, fim: 57.0, nome: 'Power Rangers SPD' },
-      { ini: 57.0, fim: 65.0, nome: 'Beyblade' },
-    ],
-  },
-  // ⚠️ ids EXATOS: existem QUATRO "Curtas CN" e o prefixo 'com_cartoon_network_cu'
-  // casava com o Johnny Bravo e o Freddy — o dry-run flagrou que eu ia cortar o
-  // vídeo errado e deixar os marcados intactos.
-  {
-    src: 'cartoon_network_curtas_cn_pr', canal: 'cartoon_network', exato: true,
-    // "fica com a tela preta a partir de 1 min e 1 segundos, pode cortar o resto"
-    pecas: [{ ini: 0, fim: 61.0, nome: null }],
-  },
-  {
-    src: 'ep_cartoon_network_curtas_cn_sh', canal: 'cartoon_network', exato: true,
-    // "é a mesma coisa, pode cortar com 1min e 1seg"
-    pecas: [{ ini: 0, fim: 61.0, nome: null }],
-  },
-  {
-    src: 'com_cartoon_network_curtas_cn_jo', canal: 'cartoon_network', exato: true,
-    // marcado preto_demais também — mesmo defeito dos irmãos
-    pecas: [{ ini: 0, fim: 61.0, nome: null }],
-  },
-]
+// ── o PLANO vem do D1: é o que o Gabriel marcou e SALVOU no editor ────────
+// Regra dele (2026-07-15): "quando eu clicar em salvar, aí sim está aprovado
+// pra ir pro ar". Salvar = aprovação ⇒ estas peças nascem 'ready'.
+// (o corte AUTOMÁTICO é o contrário: nasce 'disabled' e espera ele no editor —
+//  ver scripts/recorta-acervo.mjs. Palpite da máquina não vai ao ar sozinho.)
+function carregaPlano() {
+  const rows = d1(`SELECT cm.compilado_id, cm.pecas, mc.channel_id AS canal
+     FROM cortes_marcados cm
+     LEFT JOIN media_channels mc ON mc.media_id = cm.compilado_id
+     WHERE cm.status = 'marcado'`)
+  return rows.map((r) => ({
+    src: r.compilado_id, canal: r.canal ?? 'jetix', exato: true,
+    pecas: JSON.parse(r.pecas),
+  }))
+}
 
 function d1(sql) {
   const r = spawnSync('npx', ['wrangler', 'd1', 'execute', 'biel-tv-db', '--remote', '--json', '--command', sql],
@@ -150,6 +90,7 @@ async function master(id, segCount) {
   return out
 }
 
+const PLANO = carregaPlano()
 const ids = new Set(d1('SELECT id FROM media_items').map((r) => r.id))
 log(`${ids.size} ids no catálogo · ${PLANO.length} fontes · ${PLANO.reduce((a, p) => a + p.pecas.length, 0)} peças planejadas`)
 
@@ -184,7 +125,10 @@ for (const p of PLANO) {
       const r = spawnSync(process.execPath, ['--dns-result-order=ipv4first',
         join(ROOT, 'packages/pipeline/src/cli.mjs'), 'ingest', out,
         '--id', id, '--tipo', 'comercial', '--title', nome,
-        '--canais', p.canal, '--target', 'remote', '--base-url', ''],
+        '--canais', p.canal, '--target', 'remote', '--base-url', '',
+        // 'ready': ele marcou e SALVOU — o salvar É a aprovação (regra dele).
+        // O cortador AUTOMÁTICO usa 'disabled'; aqui quem cortou foi ele.
+        '--status', 'ready'],
         { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 * 1024 * 1024 })
       rmSync(out, { force: true })
       if (r.status !== 0) { log(`  ✖ ${id}: ${String(r.stderr || r.stdout).trim().split('\n').at(-1)?.slice(0, 110)}`); continue }
@@ -201,11 +145,19 @@ for (const p of PLANO) {
     // e eu tinha DESCRITO essa trava pro Gabriel como se ela funcionasse.
     // A trava só parecia funcionar antes porque cada fonte entregava peça antes
     // de chegar aqui: o bug estava dormindo até a 1ª falha real.
+    // A fonte sai do ar só depois das peças DELA entrarem — e aqui elas já
+    // entram 'ready', então a substituição é imediata e o canal nunca fica sem.
+    // `desta`, não `feito.length`: o acumulador global fez 3 comerciais sumirem
+    // do rodízio sem substituto (ver o commit b461477).
     if (!DRY && desta > 0) {
       d1(`UPDATE media_items SET status='disabled' WHERE id='${row.id}'`)
-      log(`  ⏻ fonte desativada (${desta} peça(s) no ar)`)
+      d1(`UPDATE cortes_marcados SET status='pronto', n_pecas=${desta}, updated_at=unixepoch()
+          WHERE compilado_id='${row.id}'`)
+      log(`  ⏻ fonte fora do ar · ${desta} peça(s) no ar`)
     } else if (!DRY) {
-      log(`  ⚠ nenhuma peça desta fonte entrou — CONTINUA no ar de propósito`)
+      d1(`UPDATE cortes_marcados SET status='error', error='nenhuma peça saiu', updated_at=unixepoch()
+          WHERE compilado_id='${row.id}'`)
+      log(`  ⚠ nenhuma peça entrou — fonte intacta`)
     }
   } catch (e) { log(`✖ ${p.src}: ${String(e.message ?? e).slice(0, 160)}`) }
 }

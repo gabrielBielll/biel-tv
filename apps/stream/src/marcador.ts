@@ -196,10 +196,15 @@ const salvaRasc=()=>{try{localStorage.setItem(rk(),JSON.stringify(pecas))}catch(
 
 async function carrega(){
   comps=await (await fetch('/revisao/compilados')).json()
+  // ?id= vindo da bancada: abre direto NESTA peça. Sem isso o botão "editar"
+  // largaria ele no primeiro item da lista e ele teria que caçar de novo.
+  const alvo=new URLSearchParams(location.search).get('id')
   $('#sel').innerHTML=comps.map((c,i)=>'<option value="'+i+'">'+
     Math.round(c.duracao_seg)+'s — '+esc(String(c.titulo).slice(0,60))+
     (c.pecas?' ✓ '+JSON.parse(c.pecas).length+' peças':'')+'</option>').join('')
-  abre(0)
+  const i0=alvo?comps.findIndex(c=>c.id===alvo):-1
+  $('#sel').selectedIndex=i0>=0?i0:0
+  abre(i0>=0?i0:0)
 }
 function abre(i){
   cur=comps[i]; aberta=null; $('#abre').textContent=''; armaBotoes()

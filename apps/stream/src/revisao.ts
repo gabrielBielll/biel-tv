@@ -87,10 +87,17 @@ revisao.get('/compilados', async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT m.id, m.duracao_seg, m.status,
             COALESCE(json_extract(m.metadata,'$.title'), json_extract(m.metadata,'$.titulo'), m.id) AS titulo,
-            cm.pecas, cm.status AS corte_status, cm.n_pecas
+            cm.pecas, cm.status AS corte_status, cm.n_pecas,
+            n.veredito, n.categoria
      FROM media_items m
      LEFT JOIN cortes_marcados cm ON cm.compilado_id = m.id
-     WHERE m.tipo = 'comercial' AND m.duracao_seg >= 120
+     LEFT JOIN revisao_notas n ON n.media_id = m.id
+     -- ⚠️ SEM piso de duração: o Gabriel pede "as peças que você já cortou,
+     -- faça aparecer pra eu dar a polida final". O piso de 120s existia quando
+     -- o editor só servia pra fatiar compilado; agora ele é a bancada de
+     -- acabamento de QUALQUER peça — inclusive as de 10s, que são as que mais
+     -- sofrem (a regra dos 10s pada 4.89s → 10s com metade de preto).
+     WHERE m.tipo = 'comercial'
      ORDER BY m.duracao_seg DESC`,
   ).all()
   return c.json(results)
@@ -271,6 +278,7 @@ const PAGINA = `<!doctype html>
         <button class="pri" id="bIni">⏮ ver o início</button>
         <button class="pri" id="bFim">⏭ ver o fim (−3s)</button>
         <button id="bRe">↻ de novo</button>
+        <button id="bEd">✂️ polir no editor →</button>
       </div>
       <div class="veredito">
         <div class="lin">
@@ -398,6 +406,9 @@ async function nota(veredito){
   // vai direto pra próxima: ele está varrendo a lista, não quer clicar de novo
   if(n+1<itens.length) abre(n+1)
 }
+// leva pro editor já NESTA peça — é o "passar a responsabilidade" que ele
+// pediu: se o defeito é chato, ele mesmo apara aqui; se não, deixa comigo.
+$('#bEd').onclick=()=>{ if(sel) location.href='/r/cortar?id='+encodeURIComponent(sel.id) }
 $('#bBoa').onclick=()=>nota('boa')
 $('#bRuim').onclick=()=>nota('ruim')
 // Varredura sequencial: ~51 peças × 2-8MB seria uma enxurrada se disparasse

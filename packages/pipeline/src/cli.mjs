@@ -161,8 +161,11 @@ const metadata = {
   ...(opt.episode ? { episode: Number(opt.episode) } : {}),
   tags: opt.tags ? opt.tags.split(',').map((t) => t.trim()).filter(Boolean) : [],
 }
+// --status disabled: a mídia nasce FORA do ar, esperando aprovação. É o que o
+// cortador usa — peça recortada é palpite até o Gabriel ver.
 runD1(ROOT, buildRegisterSql({
   id: opt.id, tipo: opt.tipo, paddedDur, segmentCount: segCount, baseUrl, metadata, cues, canais, transcript,
+  status: opt.status === 'disabled' ? 'disabled' : 'ready',
 }), { local: opt.target === 'local', label: `register-${opt.id}` })
 
 if (!opt['keep-workdir']) rmSync(normalized, { force: true })

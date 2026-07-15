@@ -5,12 +5,28 @@ import { join } from 'node:path'
 
 const esc = (s) => String(s).replaceAll("'", "''")
 
-export function buildRegisterSql({ id, tipo, paddedDur, segmentCount, baseUrl, metadata, cues, canais = [], transcript = null }) {
+/**
+ * @param status 'ready' = entra no rodízio na hora · 'disabled' = fica no
+ *   catálogo esperando aprovação.
+ *
+ * ⚠️ O DEFAULT CONTINUA 'ready' de propósito: episódio, filme e upload manual
+ * são coisas que o Gabriel escolheu subir — já são a aprovação dele. Quem passa
+ * 'disabled' é o CORTADOR, porque peça recortada é palpite da máquina até ele
+ * ver (regra dele, 2026-07-15: "melhor não mandar pro ar, deixar sempre primeiro
+ * ir pra essa parte pra eu polir os cortes; quando eu clicar em salvar, aí sim
+ * está aprovado").
+ *
+ * Custou 12h aprender: as 24 peças da madrugada entraram 'ready' e foram ao ar
+ * antes de qualquer revisão — ele reprovou 23. Toda vez que algo quebrou hoje,
+ * a causa foi a mesma: coisa no ar antes de ele ver.
+ */
+export function buildRegisterSql({ id, tipo, paddedDur, segmentCount, baseUrl, metadata, cues, canais = [], transcript = null, status = 'ready' }) {
+  if (status !== 'ready' && status !== 'disabled') throw new Error(`status inválido: ${status}`)
   const lines = [
     `INSERT OR REPLACE INTO media_items
   (id, tipo, status, duracao_seg, segment_count, base_url, path_prefix, metadata)
 VALUES
-  ('${esc(id)}','${esc(tipo)}','ready',${paddedDur},${segmentCount},'${esc(baseUrl)}','media/${esc(id)}','${esc(JSON.stringify(metadata))}');`,
+  ('${esc(id)}','${esc(tipo)}','${esc(status)}',${paddedDur},${segmentCount},'${esc(baseUrl)}','media/${esc(id)}','${esc(JSON.stringify(metadata))}');`,
     `DELETE FROM media_cue_points WHERE media_id = '${esc(id)}';`,
   ]
   if (cues.length > 0) {
