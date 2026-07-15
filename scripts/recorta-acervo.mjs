@@ -295,9 +295,16 @@ for (const comp of compilados) {
     for (const [i, p] of entram.entries()) {
       const j = nomes[i]
       const f = j?.funcao ?? 'outro'
-      const nome = [comp.canal, j?.programa || null, (f !== 'outro' && f !== 'anuncio') ? f : null, j?.detalhe || null]
-        .filter(Boolean).join(' · ') || `peça ${i} de ${comp.titulo}`.slice(0, 60)
-      const base = ['com', slug(comp.canal), slug(j?.programa || j?.detalhe || `p${i}`), f !== 'outro' ? f : null]
+      // ⚠️ o LLM devolve "Desconhecido"/"N/A" literal quando não sabe, e isso
+      // vazava pro nome E pro id (saiu um `com_jetix_desconhecido` no lote de
+      // 2026-07-15). Um id chamado "desconhecido" é pior que um genérico: ele
+      // colide com o próximo desconhecido e não diz nada. Trata como vazio.
+      const VAZIO = /^(desconhecid[oa]|n\/?a|indefinid[oa]|sem nome|unknown|)$/i
+      const prog = VAZIO.test((j?.programa ?? '').trim()) ? '' : j.programa.trim()
+      const det = VAZIO.test((j?.detalhe ?? '').trim()) ? '' : j.detalhe.trim()
+      const nome = [comp.canal, prog || null, (f !== 'outro' && f !== 'anuncio') ? f : null, det || null]
+        .filter(Boolean).join(' · ') || `${comp.canal} · peça ${i} de ${comp.titulo}`.slice(0, 60)
+      const base = ['com', slug(comp.canal), slug(prog || det || `p${i}`), f !== 'outro' ? f : null]
         .filter(Boolean).join('_')
       const id = resolveId(base, idsExistentes)
       idsExistentes.add(id) // ⚠️ reservar JÁ: senão a próxima peça colide com esta
@@ -345,8 +352,10 @@ writeFileSync(rel, JSON.stringify(relatorio, null, 1))
 console.log(`\n${'═'.repeat(60)}`)
 let tot = 0
 for (const r of relatorio) {
-  if (r.erro) { console.log(`✖ ${r.compilado}: ${r.erro}`); continue }
-  tot += r.entraram
+  if (r.erro) { console.log(`✖ ${String(r.dur ?? '').padStart(4)}s ${r.compilado.slice(0, 30).padEnd(31)} → ERRO: ${r.erro.slice(0, 60)}`); continue }
+  // pulado não tem `entraram` — somar undefined contaminava o total com NaN
+  if (r.pulado) { console.log(`⛔ ${String(r.dur).padStart(4)}s ${r.compilado.slice(0, 30).padEnd(31)} → PULADO: ${r.motivo.slice(0, 52)}`); continue }
+  tot += r.entraram ?? 0
   console.log(`${r.desativado ? '⏻' : ' '} ${String(r.dur).padStart(4)}s ${r.compilado.slice(0, 30).padEnd(31)} → ${String(r.entraram).padStart(2)}/${r.candidatas} peças`)
 }
 console.log(`${'═'.repeat(60)}\n⇒ ${tot} peças no catálogo${DRY ? ' (DRY-RUN: nada foi escrito)' : ''}\n   relatório: ${rel}\n`)
