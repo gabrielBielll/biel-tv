@@ -1,8 +1,24 @@
 // Verificação do motor do cortador de comerciais (docs/features/cortador-comerciais.md).
 //
-// O ponto desta suíte: o Gabriel NÃO revisa e NÃO confere — então o motor tem
-// que se provar sozinho. Aqui o compilado é FABRICADO, com os limites plantados
-// em posições que nós escolhemos; o motor tem que achar exatamente elas.
+// ⚠️ LEIA ISTO ANTES DE CONFIAR NO 29/29 QUE ESTA SUÍTE IMPRIME.
+//
+// Este teste FABRICA o compilado: planta preto+silêncio nos limites porque a
+// spec afirmava que era assim que comercial emenda. Ou seja — ele constrói o
+// mundo que a premissa descreve e depois verifica a premissa nesse mundo. Passa
+// 29/29 e NÃO PROVA NADA sobre material real.
+//
+// Rodado no acervo de verdade (Jetix Intervalo Comercial HIGH, 600s), o mesmo
+// motor reprovou 100% dos candidatos: o preto aparece 4x em 600s (e uma delas
+// no MEIO de um anúncio), e o platô de silêncio não existe (434 gaps a -18dB
+// decaindo até 6 a -50dB, sem faixa estável — áudio de broadcast é comprimido).
+//
+// O que continua tendo valor aqui: os testes de ARITMÉTICA PURA (fundeZonas /
+// segmenta / portaoGrade) — esses independem de como o mundo é. O que precisa
+// morrer: tudo que afirma "o motor acha os limites", porque só acha os limites
+// que este arquivo plantou.
+//
+// Regra pra v3: fixture REAL (recorte de ~60s do acervo, anotado à mão). Quem
+// fabrica o compilado fabrica a premissa junto.
 //
 // Não precisa de wrangler, D1, nem rede: é ffmpeg puro. `pnpm verify:cortador`.
 import { execFileSync } from 'node:child_process'

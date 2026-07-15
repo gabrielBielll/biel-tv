@@ -161,6 +161,28 @@ quando o LLM tem liberdade de expressar a mesma intenção de mais de um
 jeito, é mais robusto fazer a operação inversa entender todos os formatos do
 que tentar constranger 100% da saída do modelo.**
 
+**O DeepSeek dá 400 se a palavra "json" não estiver LITERALMENTE no prompt** —
+e isso mata o fallback inteiro em silêncio. A API recusa
+`response_format: {type:'json_object'}` com `"Prompt must contain the word
+'json' in some form"` quando nem o system nem o user contêm a palavra
+(qualquer caixa serve: "JSON" passa). **Desenhar o formato com chaves não
+conta**: um prompt que termina em `Responda APENAS {"itens":[...]}` toma 400.
+Como o `pedeJson` engole erro e devolve `null`, o sintoma não é um erro — é o
+recurso "não achar nada". Foi o que derrubou a ingestão da playlist da Raven
+(2026-07-15): Gemini em 429 de cota + DeepSeek em 400 por isto = zero
+classificação. **Mitigado na fonte:** o `pedeJson` (`llm.ts`) agora testa
+`/json/i` no prompt e anexa "Responda em JSON." se faltar — vale por todos os
+chamadores, presentes e futuros. Ao escrever um prompt novo, não confie nisso
+como desculpa pra omitir; mas saiba que a rede de proteção existe.
+
+**Corolário: um fallback que nunca foi exercitado não é um fallback.** O
+`portaoSemantico` e o classificador de playlist tinham fallback de DeepSeek
+"pronto" desde a fase 11c e nenhum dos dois jamais funcionou — o Gemini
+primário sempre respondeu, e o 400 do DeepSeek só apareceu no dia em que a
+cota do Gemini estourou. Ao montar cadeia primário→fallback, **testar o
+fallback sozinho** (derrubar o primário de propósito), senão a descoberta vem
+no pior dia possível.
+
 **Grupos de série feitos em loop de `curl` sem checar resposta perdem
 chamadas silenciosamente.** Durante um smoke test real, um loop `for id in
 ...; do curl -s ... >/dev/null; done` pra agrupar 5 mídias numa série só
@@ -285,6 +307,21 @@ arquivo-fonte especificamente (normalizar frame rate antes, por exemplo).
 Deixa o job em `error` na fila; visível no admin.
 
 ## Playlist / ingestão de "episódios em partes"
+
+**Acervo dublado em PT numera `T02E01` — com T de Temporada, não S de Season.**
+O `episodioRegex` só conhecia `Episódio N`, `Ep N` e `S02E01`, então nos 111
+títulos de "As Visões da Raven" ele achava a PARTE (`(1/5)`) e nunca o
+EPISÓDIO → os 111 vídeos caíam em `sem_classificacao` → 0 episódios → o painel
+"não acha os pedaços pra unir". Somado ao 400 do DeepSeek (ver "Diretor / LLM"),
+foram **duas falhas independentes** escondendo uma à outra. Hoje o regex cobre
+`Episódio/Capítulo N`, `Ep N`, `S02E01`, `T02E01` e `2x01`. **Ao ver "não achou
+nada" numa playlist, teste o regex nos títulos reais ANTES de culpar o LLM** —
+é determinístico e responde em 1 segundo.
+
+**A playlist quase sempre tem vídeo que não é episódio** (abertura,
+encerramento, trailer). "As Visões da Raven" = 22 eps × 5 partes + 1 abertura =
+111. Cair em `sem_classificacao` é o comportamento CERTO pra esses — não é sinal
+de falha do parser. O sinal de falha é `sem_classificacao` ≈ total.
 
 **`waitUntil()` NÃO é confiável pra trabalho longo no dev/miniflare.** A
 classificação da playlist (chamada de LLM de ~6s) rodava em

@@ -1,359 +1,216 @@
 # Feature: cortador de comerciais (compilado → N comerciais) — backlog
 
-> Especificado em 2026-07-14. **Reescrito no mesmo dia**, depois de uma discussão
-> com o Gabriel que mudou o requisito central (ver "A virada", abaixo).
-> Estado: 📦 BACKLOG (planejado, não implementado).
+> **v3 — reescrita em 2026-07-15, depois de rodar contra o ACERVO REAL.**
+> Estado: 📦 BACKLOG. O motor v1 está commitado (`b379687`) e **não serve** —
+> ver "O que morre", no fim. Não implementar em cima dele.
 >
-> **A ideia em uma frase:** colar o link de um **compilado** do YouTube (~4min
-> com vários comerciais emendados) e **cada anúncio aparecer sozinho no
-> catálogo**, pronto pro rodízio. Sem revisão, sem conferência, sem operador.
+> **A ideia em uma frase:** colar o link de um **compilado** e **cada anúncio
+> aparecer sozinho no catálogo**, sem revisão, sem conferência, sem operador.
 
-## O problema
+## A história em três viradas (leia antes de escrever qualquer linha)
 
-O acervo bom de comerciais antigos no YouTube quase sempre vem **compilado**:
-um vídeo de 4–10min com 6–15 anúncios emendados. Usar um só exigiria baixar,
-abrir num editor, achar os cortes na mão e exportar cada peça — inviável no
-volume que o Gabriel quer.
-
-## A virada (o que mudou da v1 desta spec — leia antes de implementar)
-
-A v1 tinha como **regra de ouro** "o operador revisa antes de qualquer coisa ir
-pro ar", com uma aba de cards (juntar/dividir/aparar/descartar/nomear). O Gabriel
-foi explícito: **ele não vai revisar.** Nem cards, nem conferir corte, nem ficar
-dando comando. O requisito real é *sobe o compilado e trata*.
-
-Isso mata três coisas da v1 e obriga a resolver o problema de verdade:
-
-| v1 (morta) | v2 (esta) |
-|---|---|
-| Aba de revisão com cards | **Não existe.** Era ~metade da complexidade. |
-| `confiança` = nº pro humano olhar | **Portão automático** que descarta sozinho |
-| `silencedetect n=-30dB` (chute) | **Threshold medido** por platô, por compilado |
-| Merge de trecho curto (*salvar* o duvidoso) | **Descartar** o duvidoso |
-| Thumbnail do miolo pro operador | Frames de **borda** pro portão visual |
-
-E deixa a pergunta que a v1 escondia atrás do humano: **quem garante o corte, se
-ninguém olha?** O resto da spec é a resposta.
-
-## O medo do Gabriel, medido em vez de discutido
-
-Ele perguntou: *"o corte vai ser no momento exato entre um comercial e outro?"*.
-Fabricamos um áudio com silêncio em posições **conhecidas** e medimos o ffmpeg:
-
-| Verdade (construída) | `silencedetect` reportou | erro |
+| | premissa central | o que a derrubou |
 |---|---|---|
-| silêncio começa em 3.000 | 3.018594 | +18ms |
-| silêncio acaba em 3.400 | 3.413333 | +13ms |
-| silêncio começa em 6.400 | 6.408707 | +9ms |
-| silêncio acaba em 6.650 | 6.664127 | +14ms |
+| **v1** | "o operador revisa antes de ir pro ar" | O Gabriel: *"queria algo automático, só subir o compilado e ele tratar"* — ele não vai revisar. Morreu a aba de cards (~metade da complexidade). |
+| **v2** | "preto ∩ silêncio acha os limites; o platô diz quando confiar" | **O acervo real.** Ver as medições abaixo. Morreu o motor inteiro. |
+| **v3** | *"cada sinal falha num lugar diferente; combine-os pelo que cada um sabe"* | (atual) |
 
-**Um frame de TV dura 33ms.** O erro é de meio frame, sempre pra frente (o
-detector precisa de algumas amostras pra confirmar a queda — viés constante).
+A lição que a v2 pagou caro: **o teste sintético fabricava o mundo que a spec
+afirmava.** Eu plantei preto+silêncio nos limites porque a spec dizia que era
+assim que comercial emenda, e o motor achou 29/29. O primeiro arquivo real
+derrubou tudo em 90 segundos. Teste que constrói a própria premissa não prova
+nada — e a v3 só existe porque o Gabriel tinha o acervo à mão.
 
-### Descoberta 1 — a precisão não é o problema
+## O que o acervo REAL provou (medido, não suposto)
 
-Achar *onde* está o silêncio é sub-frame. E **extrair** no timestamp pedido
-também é resolvido: `-ss` DEPOIS do `-i` + re-encode é frame-accurate. O jeito de
-errar seria `-c copy`, que gruda no keyframe e vaza pedaço do vizinho — proibido
-aqui (o pipeline re-encoda cada trecho de qualquer forma; precisão > velocidade).
+**Material:** `com_jetix_intervalo_comercial_hi` (600s, "Jetix Intervalo Comercial
+HIGH") — reconstruído dos 60 segmentos `.ts` no R2 — e o rip de 41s "A seguir
+Pucca + ID Basquetebol". O catálogo tem **6 compilados** (600s, 470s, 390s, 200s,
+150s, 150s), todos com "Intervalo" no título; 4 deles têm id `ep_*` porque foram
+reclassificados de episódio pra comercial (id é imutável, o `tipo` mudou).
 
-### Descoberta 2 — o threshold é tudo, e ele se descobre sozinho
+### 1. O preto NÃO marca troca de comercial — e engana
 
-Repetimos o teste com chiado de fundo a -34dB (fita VHS), varrendo o threshold:
+**4 ocorrências em 600s** (57s, 272s, 339s, 601s), num intervalo com ~15-20
+anúncios. Pior: o único preto daquela vizinhança cai **no meio de um anúncio** —
+a locução faz "Ele é grande! / Enorme! / Gigante! / Imenso!" e há preto entre os
+adjetivos. Cortar ali picotaria um comercial em quatro.
 
-| threshold | gaps achados | 1º gap |
-|---|---|---|
-| -20dB a **-33dB** | 2 (correto) | **3.018594** — idêntico em toda a faixa |
-| -34dB pra baixo | 0 | — |
+> Comercial de TV brasileira dos anos 2000 **emenda direto**. O preto era usado
+> na entrada/saída do **bloco**, não entre anúncios. A "pegadinha nº 1" da v1/v2
+> (`detectBlack` com `d=1.0` não acha preto curto) era verdadeira e **irrelevante**:
+> ajustar pra `d=0.15` acha preto que não é limite.
 
-Existe um **platô**: 13dB de largura onde o resultado não muda *um dígito*. Então
-o noise floor **não pode ser uma constante na spec** — ele é uma propriedade
-medida de cada compilado:
+### 2. O silêncio NÃO tem platô — decai continuamente
 
-> **Auto-calibração:** varre o `silencedetect` de -20dB a -45dB, acha a faixa
-> contígua onde o nº de gaps e os timestamps não mudam, usa o **meio** dela.
+Sweep no compilado de 600s:
 
-Isso apaga a decisão aberta nº 1 da v1 ("qual noise floor? -30dB?"). Não é chute
-que alguém tem que acertar — é medição.
+| dB | gaps | | dB | gaps |
+|---|---|---|---|---|
+| -18 | 434 | | -34 | 21 |
+| -20 | 331 | | -38 | 15 |
+| -24 | 111 | | -40 | 14 |
+| -28 | 57 | | -42 | 14 |
+| -30 | 40 | | -46 | 10 |
+| -32 | 27 | | -50 | 6 |
 
-### Descoberta 3 — a falha é barulhenta, não sutil (é isso que autoriza o modo automático)
+**Não existe faixa estável.** O "14, 14" que o motor v2 abraçou como platô de 4dB
+são dois degraus vizinhos de uma escada em queda livre. Áudio de intervalo
+comercial é **comprimido/maximizado pra broadcast**: não há silêncio de verdade
+entre as peças, só o ponto mais baixo de um decaimento contínuo. O platô só
+existe em áudio sintético (transição instantânea) — foi por isso que funcionou no
+teste fabricado.
 
-Com threshold acima do chiado: acerta sub-frame. Abaixo: **acha zero**. Não existe
-o caso do meio ("achou, mas errou por meio segundo"). E a largura do platô vira a
-medida de confiança de graça:
+E o silêncio erra dos dois lados: dá **falso positivo** (6 pausas internas dentro
+de uma peça só) e **falso negativo** (limites reais sem silêncio a -30dB).
 
-- **Platô largo** → existe uma resposta estável → pode cortar.
-- **Sem platô** (o nº de gaps muda a cada dB) → **rejeita o compilado inteiro**,
-  loga, fim. O Gabriel cola outro link.
+### 3. A transcrição acha os limites — onde há fala
 
-> **O princípio que sustenta a feature sem revisor: o sistema sabe quando ele não
-> sabe.** Um sistema que erra achando que acertou precisa de alguém olhando. Um
-> que ou acerta com meio frame de erro ou levanta a mão e desiste, não precisa.
+`faster-whisper` no compilado: **164 segmentos** de fala com timestamp, em ~3min
+de CPU. Os buracos de fala > 0.8s viram candidatos, e o **texto dos dois lados
+decide**:
 
-## O modelo certo de um limite: zona morta, não ponto
+- **É limite:** a fala fecha com a assinatura da marca e a seguinte abre outro
+  assunto. Comercial **fecha com a marca** — é isso que a transcrição mostra.
+- **Não é limite:** a frase atravessa o gap (a sequência de adjetivos acima é o
+  caso-escola: 3 buracos, 1 anúncio só).
+- **Vinheta se anuncia sozinha:** as peças de canal dizem literalmente "você está
+  vendo /continuem vendo <programa>". Não precisa de visão pra achá-las.
 
-A v1 mandava usar o **ponto médio** do `black_start`/`black_end` como limite. Está
-errado — ou pelo menos é pior de graça. Entre dois anúncios **não existe uma
-fronteira**: existe um **gap** (preto+silêncio, 0.2–1s). Qualquer ponto dentro
-dele é um corte correto.
+> ⚠️ **`scripts/transcreve.py` JÁ produz os timestamps e os JOGA FORA** na última
+> linha (`" ".join(seg.text ...)`). Os `segments` do faster-whisper têm `.start`
+> e `.end`, e o script já roda com `vad_filter=True`. A informação que a v3
+> precisa é gerada hoje e descartada na saída — falta só uma flag `--json`.
 
-Um limite são **dois** pontos, não um:
+### 4. Onde não há fala, o whisper é cego — mas a peça ainda assina
 
-- fim do comercial A = `gap_start` (último frame de conteúdo dele)
-- início do comercial B = `gap_end` (primeiro frame de conteúdo dele)
-- **o gap inteiro não pertence a ninguém** e é descartado
+**91 segundos** (149-241s, 15% do compilado) sem uma palavra transcrita. Não é
+silêncio: o volume médio é **-30.3dB contra -30.1dB** de um trecho com fala —
+idêntico. É trilha + efeitos sem locução.
 
-Ganho duplo: nenhum dos dois carrega preto na ponta (o ponto médio dava ~0.1s de
-preto de brinde pra cada um), e o **erro cai na zona morta em vez do conteúdo** —
-se a detecção do gap errar 15ms pra dentro, você perde 15ms de preto, não de
-anúncio.
+Investigado a fundo (o Gabriel suspeitou que fosse pedaço de desenho, depois que
+fossem comerciais com efeitos+música):
 
-## Os três sinais (detecção)
+- **zero cortes de cena** (`scene > 0.5`) nos 91s inteiros;
+- estética contínua (gameplay verde → personagem → corredor azul);
+- **fecha com o logo do JETIX** em ~238s.
 
-| Sinal | Comando (esboço) | Pega |
-|---|---|---|
-| **Silêncio** | `-af silencedetect=n=<AUTO>dB:d=0.3 -vn -f null -` | o mais confiável; **threshold pelo platô**, nunca fixo |
-| **Preto** | `-vf blackdetect=d=0.15:pic_th=0.98:pix_th=0.10 -an -f null -` | flash preto entre anúncios |
-| **Corte de cena** | `-vf select='gt(scene,0.4)',metadata=print -an -f null -` | cortes SECOS (sem preto nem silêncio) |
+Veredito: é **uma peça só** — uma promo institucional do canal, sem locução. A
+regra do Gabriel: *"se for uma variação única, aí faz sentido remover"*.
 
-> ⚠️ **PEGADINHA CRÍTICA (confirmada no código):** `detectBlack()` em
-> `packages/pipeline/src/ffmpeg.mjs:249` usa `d=1.0` — pensado pro cue point de
-> intervalo (≥1s de preto). **Entre anúncios o preto é curtíssimo (0.1–0.4s)**:
-> com `d=1.0` ele **não acha nada**. Chamar o mesmo helper com **`d≈0.15`** (a
-> assinatura já aceita `{ d, picTh, pixTh }` — não reescrever, só chamar certo).
+> **O sinal que sai daí:** a peça **fecha com a assinatura** — só que **visual**
+> (cartela/logo) em vez de textual. É o mesmo princípio do portão semântico,
+> no canal que sobra quando não há fala. Comercial mudo de época termina igual:
+> cartela da marca. **Isto cobre o ponto cego do whisper.**
 
-**Fusão:** clusteriza candidatos numa janela `W ≈ 0.5s`, guarda quais sinais
-contribuíram, e cada cluster vira uma **zona** `[gap_start, gap_end]` (não um ponto).
+### 5. O portão da grade sobreviveu
 
-## Os portões (o que substitui a revisão humana)
+Foi o único da v2 que resistiu ao real: a promo de 90s **não é** 15/30/60 nem por
+acidente, e a grade a mata sozinha. Continua sendo o portão mais forte, e pelo
+mesmo motivo de antes: é o único **independente do arquivo** — vem de como
+comercial é vendido, não de medir bits.
 
-Cada comercial candidato passa por cinco portões **independentes** — eles erram de
-formas diferentes, que é o ponto. Ordem importa: **determinístico primeiro** (grátis
-e reprodutível), LLM só no que sobreviveu.
+⚠️ Mas **não serve pra vinheta/ID de canal**: no rip de 41s as três peças reais
+(vinheta "a seguir" 9.8s, ID de basquete 23.9s, Pucca 7.3s) não batem em nenhum
+slot. A grade vale pra **anúncio de anunciante**, não pra peça de canal.
 
-1. **Portão de sinal** — preto ∩ silêncio na mesma janela. *O limite é real?*
-   Sinal solto não passa.
-2. **Portão de duração (o mais forte, e novo)** — comercial de TV é vendido em
-   slot de **15s / 30s / 60s**. Se o trecho deu 29.8s, os **dois** limites estão
-   certos — e essa confirmação **não vem do ffmpeg, vem de como o mundo funciona**.
-   É um sinal genuinamente independente. Fora da grade (ex.: 43s) → descarta.
-3. **Portão de borda técnica** — depois de cortar, checa se o clipe **começa e
-   termina com conteúdo** (não com preto/silêncio). Se abre com preto, o corte
-   vazou → descarta. É o detector conferindo o próprio resultado.
-4. **Portão visual (Gemini)** — a conferência que um humano faria com o olho,
-   automática. **Implementado** (`apps/stream/src/portoes.ts`), e o desenho dele
-   mudou duas vezes por causa de teste contra o Gemini real (2026-07-14):
+## A tabela que resume tudo — quem falha onde
 
-   **⚠️ Lição 1 — não peça veredito, peça fato.** A 1ª versão mandava os dois
-   frames juntos e perguntava *"são o mesmo anúncio?"*. Com dois anúncios
-   **claramente diferentes** (cartelas "KAISER" e "FUSCA 0KM"), o Gemini
-   respondeu **"mesmo anúncio, confiança ALTA"** e inventou a justificativa:
-   *"famosa promoção da Kaiser que sorteava Fuscas zero quilômetro"* — que não
-   existe. Dois frames lado a lado **convidam o modelo a achar coerência**, e ele
-   acha, com confiança alta, exatamente onde o prompt mandava dizer "baixa".
-   Descrevendo cada frame **isolado**, acertou de primeira:
-   `{"marca":"Kaiser","produto":"Cerveja"}`. Desenho final: o LLM **extrai fatos
-   por frame** (marca/produto/cores/texto) e o **código compara as marcas** —
-   a regra da casa (`diretor.ts:2`) aqui não é estilo, é o que separa funcionar
-   de alucinar. Bônus: a comparação vira **auditável**, que é o que deixa o
-   Gabriel entender meses depois por que algo foi descartado.
+| sinal | falso positivo | falso negativo | serve pra |
+|---|---|---|---|
+| **preto** | sim (no meio do anúncio) | sim (4 em 600s) | ~nada. Rebaixar a curiosidade. |
+| **silêncio** | sim (pausas internas) | sim (limites sem silêncio) | **timestamp preciso** (±15ms) de um limite já confirmado |
+| **cena** | sim (cortes internos: 89 em 600s) | não, mas afogado em ruído | refinar timestamp; detectar "bloco contínuo" (zero cenas = 1 peça) |
+| **transcrição** | raro | **cego sem locução** (15% aqui) | **decidir SE é limite** onde há fala |
+| **fecho visual (logo)** | ? (a testar) | ? | **decidir SE é limite** onde NÃO há fala |
+| **grade 15/30/60** | ~10% por acaso | vinheta/ID não bate | matar trecho que não é anúncio |
 
-   **⚠️ Lição 2 — indisponível ≠ reprovado.** Medido na chave real: **503**
-   ("high demand") depois de 32s, **429** ("exceeded your quota") na chamada
-   seguinte, **200** em 3.5s depois de 20s de pausa. **A chave é free tier.** A
-   versão anterior desta spec mandava descartar quando o Gemini falhasse
-   ("falha segura") — com essa cota, um compilado de 8 limites seria descartado
-   quase inteiro **por cota, não por qualidade**, e o Gabriel veria "não
-   funciona" sem nunca saber por quê. Por isso `Veredito.indisponivel` é
-   distinto de `ok:false`: **a fábrica faz retry com backoff e no fim se
-   abstém**. Os portões 1–3 seguram o grosso — um fantasma teria que ter
-   preto ∩ silêncio dos dois lados **E** cair exatamente na grade de 15/30/60s
-   pra chegar até aqui.
+## A arquitetura v3
 
-   Sem fallback por construção: `deepseek-v4-flash` não aceita imagem (decisão
-   do Gabriel). `llm.ts:pedeJsonComImagem()` é só-Gemini.
+Cada peça faz **só o que sabe fazer**:
 
-   > **Consequência operacional:** o pacing/retry é responsabilidade da
-   > **fábrica**, não do Worker — um request de Worker não pode esperar 20s
-   > entre N chamadas. Um endpoint por candidato, e a fábrica espaça.
-5. **Portão semântico (DeepSeek/Gemini)** — o whisper já transcreve na ingestão
-   (fase 12, de graça). Um anúncio inteiro **tem fecho**: slogan, marca, "vá até
-   uma revenda". Cortado no meio, a transcrição morre no meio da frase. `pedeJson`
-   com schema de 2 campos. Classificação binária de transcrição curta —
-   `deepseek-v4-flash` dá conta folgado e já é pago.
+1. **Whisper (local, grátis, sem cota)** → segmentos de fala com timestamp.
+   Buracos > 0.8s = **candidatos** a limite.
+2. **Zonas sem fala** (como os 91s) → não viram candidato por ausência; entram
+   por **fecho visual** (procurar cartela/logo) e por `scene`: **zero cortes de
+   cena num trecho longo = bloco contínuo = uma peça só**.
+3. **DeepSeek lendo o texto** (`pedeJson`, já pago, tem cota) → *este buraco é
+   limite?* A fala fechou com marca/slogan, ou a frase atravessa? **Texto, não
+   imagem** — o Gemini sai da rota crítica e o problema de cota some.
+4. **ffmpeg** → *onde exatamente*: o gap de silêncio mais próximo do buraco dá o
+   corte com **±15ms** (medido). O whisper dá ±1s e **não pode** cortar.
+5. **Portões que sobraram:** grade de duração; borda técnica; bloco contínuo.
 
-Passou nos cinco → catálogo → rodízio → no ar. Falhou em **qualquer um** → lixo,
-com uma linha de log.
+> **Whisper diz QUAIS. O LLM diz SE. O ffmpeg diz ONDE.**
+> É a regra da casa (`diretor.ts:2`) — o LLM decide, o código calcula — aplicada
+> na única divisão que o acervo real sustenta.
 
-### O que NÃO passa pro LLM (a regra da casa)
+### Margem de segurança (pedido do Gabriel, 07-15)
 
-`diretor.ts:2` já cravou: **"o LLM DECIDE (ações tipadas em JSON garantido), o
-CÓDIGO CALCULA"**. Aplicado aqui: threshold, sinais, grade de duração e borda
-técnica são **medição e aritmética** — não vão pro LLM. Perguntar pro DeepSeek se
-"29.8 está perto de 30" troca uma linha de JS reprodutível por 300ms, uma chamada
-de rede que pode cair, e uma resposta que **pode variar entre execuções**. Como
-ninguém audita a saída, o sistema **precisa** ser reprodutível: quando um
-comercial sair torto, o Gabriel tem que poder olhar o número e saber por quê — não
-interrogar um oráculo que já esqueceu. O LLM entra só nos portões 4 e 5, que são
-julgamento de verdade (visual e linguagem), e no nome.
+Ele notou que pode entrar pedaço de programa no corte e propôs "deixar alguns
+segundos a mais, no máximo 5". A tensão a resolver ao implementar: margem **pra
+frente** aumenta a chance de invadir o vizinho. A saída é ser **assimétrico**:
+folga quando o vizinho é outro anúncio (pegar 1s de comercial alheio é inócuo),
+**zero** quando o vizinho é programa (1s de desenho estraga a peça). **Decisão
+aberta:** confirmar a intenção dele (garantir que a peça não seja truncada?).
 
-## A assimetria que autoriza descartar sem dó
+## O que MORRE do que está commitado
 
-- Descartar um comercial bom → custo **≈ zero**. Tem compilado infinito no
-  YouTube; é só colar outro link.
-- Ingerir um comercial cortado no meio → **vai pro ar quebrado**, e ninguém está
-  conferindo.
+- `achaThreshold()` / sweep de platô (`cortador.mjs`) — **o platô não existe** em
+  áudio real. A correção de deriva (07-15) conserta um bug legítimo mas não salva
+  o critério. Pode virar utilitário de diagnóstico; não é o motor.
+- `portaoSinal()` (preto ∩ silêncio obrigatório) — **rejeitou 100%** do acervo
+  real. É a premissa errada, codificada.
+- `D_PRETO`/`detectBlack` como sinal de limite — 4 em 600s, e engana.
+- `verify-cortador.mjs` (29/29) — **valida um mundo fabricado**. Manter só o que
+  testa aritmética pura (`fundeZonas`, `segmenta`, grade); o resto tem que
+  passar a rodar contra um **recorte do acervo real** commitado como fixture.
+- `portaoVisual()` (`portoes.ts`) — a ideia (LLM extrai fato, código compara)
+  **sobrevive e é boa**; muda o papel: de portão 4 pra **detector de fecho visual**
+  nas zonas sem fala. As duas lições gravadas no topo do arquivo continuam
+  válidas (não peça veredito, peça fato; indisponível ≠ reprovado).
 
-Logo, **os portões devem ser brutalmente conservadores**. De 9 candidatos, ingerir
-5 e jogar 4 fora é *sucesso*, não desperdício. A v1 tentava salvar o duvidoso (o
-"merge de trecho curto"); sem revisor, salvar é o comportamento errado.
+## O que se APROVEITA
 
-**Nada de corte silencioso:** o descartado vai pra uma tabela de log (com o motivo
-e o portão que barrou). É **log, não fila de trabalho** — ninguém precisa abrir.
-O painel mostra uma linha: *"compilado X: 9 candidatos, 5 no ar, 4 descartados"*.
-
-## O chat do editor (a válvula — opcional, nunca bloqueante)
-
-Pedido do Gabriel (2026-07-14). A distinção que ele fez, e que a spec adota:
-
-> **Revisão** = trabalho obrigatório, antes, com ele de gargalo. ❌ Rejeitada.
-> **Chat** = opcional, depois, quando *ele* notar algo. ✅ É o que ele quer.
-
-Nada espera pelo chat. Ele existe pra dois usos:
-
-1. **Feedback pós-ar:** *"o comercial da Kaiser ficou ruim"* → tira do ar/descarta.
-2. **Corte na mão, por cima do automático:** *"no compilado X corta em 1:23 e
-   2:47"* — o Gabriel passa os timestamps direto e o sistema fatia, **pulando os
-   portões** (a ordem dele é a autoridade).
-3. Consequência de graça: *"por que você descartou 4?"* → o log responde.
-
-**Espelha o Diretor** (`diretor.ts`), não inventa padrão: o LLM emite **ações
-tipadas** (`cortar_em`, `descartar`, `aparar`, `refazer_compilado`) e o **código
-valida contra o catálogo e executa**. Mesma cadeia Gemini→DeepSeek, mesmo
-`PlanoChat`, mesmos backstops determinísticos (o `diretor.ts:238` já ensina que
-modelo flash fala a data certa na resposta e esquece de preencher o campo).
-
-**Decisão aberta:** aba de chat própria ("✂️ Editor") vs. ações novas no chat do
-Diretor que já existe no Modo God. Inclinação: aba própria — o contexto do system
-prompt é outro (compilados e cortes recentes, não a grade).
-
-## Modelo de dados
-
-```sql
-CREATE TABLE IF NOT EXISTS comercial_cuts (
-  id          TEXT PRIMARY KEY,            -- cc_<hex>
-  source_url  TEXT,                        -- link do compilado (ou NULL se upload)
-  staging_key TEXT,                        -- o compilado baixado, no R2
-  canais      TEXT NOT NULL DEFAULT '',
-  status      TEXT NOT NULL DEFAULT 'baixando'
-              CHECK (status IN ('baixando','analisando','cortando','pronto','rejeitado','error')),
-  threshold   REAL,                        -- o dB escolhido pelo platô (auditoria)
-  plato       TEXT,                        -- JSON {min,max} do platô medido
-  candidatos  TEXT,                        -- JSON: cada trecho + portões + veredito
-  error       TEXT,
-  created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
-  updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
-);
-CREATE INDEX IF NOT EXISTS idx_comercial_cuts_status ON comercial_cuts (status, created_at);
-
-ALTER TABLE ingest_jobs ADD COLUMN corte TEXT;  -- JSON {start,end} · presente = fatiar
--- ATENÇÃO: ALTER ADD COLUMN não é idempotente — aplicar 1x local, 1x remoto.
-```
-
-Sem status `revisar` (não existe mais revisão). `threshold`/`plato` ficam gravados
-**pra auditoria**: é como o Gabriel descobre, meses depois, por que um compilado
-foi rejeitado. `corte` presente no job = a fábrica lê o `staging_key`, extrai
-`[start,end]` e manda pro pipeline. Ausente = job normal.
-
-## Endpoints no Worker (`admin.ts`)
-
-- `POST /admin/comerciais` — cola o link → cria `comercial_cuts` → `dispatchFabrica`.
-- `POST /admin/comerciais/claim` — a fábrica reivindica (self-heal, igual playlist).
-- `POST /admin/comerciais/:id/resultado` — a fábrica devolve candidatos + vereditos
-  dos portões → cria 1 `ingest_job` por **aprovado** (sem passar por humano).
-- `POST /admin/comerciais/:id/error`.
-- `GET  /admin/comerciais` — lista pro painel (a linha de contagem + o log).
-- `POST /admin/editor/chat` — o chat (espelha o do Diretor).
-
-## Fábrica (`scripts/factory-local.mjs`)
-
-- **`tickComercial()`** (como `tickPlaylist()`): claim → baixa o compilado
-  (`baixarUrl`, reusa cookies/Deno) → staging R2 → **sweep de threshold** → platô?
-  → detecta zonas → aplica portões 1–3 → extrai os frames de borda → portões 4–5
-  → `POST /comerciais/:id/resultado`. Prioridade alta na fila `tick()`.
-- **`processJob()`**: se `job.corte` existe → baixa o `staging_key` do R2, extrai
-  `[start,end]` e roda o `cli.mjs ingest` de sempre com `--tipo comercial`.
-
-## Pipeline (`packages/pipeline/src/ffmpeg.mjs`)
-
-- `detectBlack` já serve — **chamar com `d=0.15`** (não o default 1.0).
-- `detectSilence(file, { noise, d=0.3 })` → `[{start,end}]`.
-- `achaThreshold(file)` → **o sweep + platô** → `{ db, plato:{min,max} }` ou `null`.
-- `detectScene(file, { th=0.4 })` → `[t, …]`.
-- `proponhaZonas(file, duration, opts)` → fusão → `[{gapStart, gapEnd, sinais}]`.
-- `extraiTrecho(file, start, end, out)` → `-ss` DEPOIS do `-i`, re-encode.
-- `frameEm(file, t, out)` → 1 frame (serve pros portões de borda e visual).
-- `temConteudoNaBorda(file)` → o portão 3.
-
-## Teste (`verify-cortador`) — sem depender do Gabriel
-
-Ele não vai conferir, e **não precisa**: o teste sintético valida o motor sozinho.
-Constrói um compilado falso com N clipes de **duração escolhida por nós**,
-separados por preto+silêncio, e verifica que o motor acha **exatamente** os
-limites plantados (tolerância de 1 frame / 33ms) e que a grade de duração bate.
-Foi assim que as três descobertas acima foram medidas — a mesma técnica, no motor
-inteiro em vez de só no áudio.
-
-O que o sintético **não** prova é se compilado real do YouTube se comporta como o
-falso. **O platô cobre esse buraco:** se o real for bagunçado demais, não tem
-platô e é rejeitado sozinho. A falha é segura.
+- **`fundeZonas()` (zona morta)** — o modelo continua certo: um limite é
+  `[gapStart, gapEnd]`, o gap não é de ninguém, o erro cai no preto e não no
+  conteúdo. Medido: invasão ≤ 1 frame (33ms), que é o **piso físico** (um gap de
+  0.45s a 30fps dá 13,5 frames; não há corte no meio de um frame).
+- **`extraiTrecho`** (`-ss` DEPOIS do `-i` + re-encode) — frame-accurate. `-c copy`
+  gruda no keyframe e vaza o vizinho: proibido.
+- **`detectSilence`** com `noise` obrigatório — continua certo, mas como
+  **refinador de timestamp**, não como detector.
+- **`pedeJson`/`pedeJsonComImagem`**, `diretor.ts` (molde do chat), download por
+  link, staging R2, pipeline, fase 12, fila com retry — tudo pronto.
+- **Descartar é grátis** (tem compilado infinito no YouTube); ingerir peça
+  quebrada, não. Portões conservadores. 5 de 9 é sucesso.
+- **O chat do editor** (opcional, DEPOIS, nunca bloqueante) — inalterado.
 
 ## Decisões abertas
 
-1. ~~Noise floor do `silencedetect`~~ → **resolvida**: platô, medido por compilado.
-2. **Tolerância da grade** de 15/30/60s: hoje ±1.5s (`GRADE_TOL`). Comercial de
-   época pode ter sido cortado fora do padrão; conservador demais descarta
-   acervo bom — mas descartar é barato.
-3. **Largura mínima de platô** pra aceitar um compilado: hoje 4dB (`PLATO_MIN`).
-   No sintético com hiss deu 11dB, mas ele é mais limpo que a realidade.
-4. Chat do editor: **aba própria vs. ações no Diretor** (ver acima).
-5. **Cota do Gemini** (nova, e a mais urgente na prática): a chave é free tier e
-   dá 429/503 sob carga — medido. O portão visual gasta **2 chamadas por
-   limite** (uma descrição por frame). Num compilado de 8 anúncios são ~16
-   chamadas, e a cota não aguenta em rajada. Opções: (a) espaçar na fábrica
-   (lento, mas o Actions tem tempo de sobra); (b) descrever **1 frame por
-   candidato** e comparar vizinhos — cai pra N chamadas em vez de 2N, e o frame
-   do meio é até mais representativo que o de borda (que pode pegar fade);
-   (c) pagar o tier. **Inclinação: (b) + (a).**
+1. **Margem assimétrica** — confirmar a intenção do Gabriel (acima).
+2. **Fecho visual** — como achar a cartela final sem gastar cota: 1 frame no fim
+   de cada candidato? Só nas zonas sem fala? (A chave do Gemini é **free tier**:
+   medido 503 "high demand" após 32s e 429 "exceeded quota" na chamada seguinte.)
+3. **Peça de canal vs. anúncio** — a grade só vale pra anunciante. Vinheta/ID
+   precisa de outro critério (a transcrição as identifica: "você está vendo X").
+4. **Bloco contínuo** — quantos segundos sem corte de cena definem "uma peça só"?
+   (Nos 91s: zero cenas > 0.5.)
+5. **API de transcrição** — usar o `transcreve.py` local (faster-whisper `small`,
+   ~3min por 600s de CPU) ou o serviço externo do Gabriel (ver o item "A nomear"
+   no ROADMAP)? **Perguntar antes de apontar pra lá.**
 
-## Reaproveita (quase tudo já existe)
+## Teste — a regra nova
 
-- `detectBlack()` (só chamar com `d` certo) — pronto.
-- **`llm.ts:pedeJson`** (Gemini 3.5 Flash → `deepseek-v4-flash`, JSON com schema,
-  timeout 30s) — pronto pro portão semântico; **precisa de variante multimodal**
-  pro portão visual.
-- **`diretor.ts`** — o molde do chat (ações tipadas + executor + backstops).
-- Download por link + cookies self-service + Deno (11d) — pronto.
-- Staging no R2 (uploads/11b) — pronto.
-- Pipeline normaliza/segmenta/transcreve/registra — pronto.
-- Transcrição → promessa (fase 12) + "A nomear" (11c) — prontos.
-- Fila `ingest_jobs` com progresso %, retry ↻ e self-heal — de graça.
-
-## Esforço
-
-- Migration: **pequeno**.
-- Motor (sweep/platô + 3 sinais + zonas + portões 1–3 + frames): **médio** — é o
-  trabalho novo real.
-- Portões 4–5 (variante multimodal do `pedeJson` + 2 prompts): **pequeno**.
-- Worker (endpoints): **médio**. Fábrica (`tickComercial` + ramo de corte): **médio**.
-- Chat do editor: **médio** (espelha o Diretor).
-- UI: **pequeno** — colar link + uma linha de contagem + o log. (A v1 tinha uma
-  aba inteira de cards aqui; morreu.)
+**Fixture real, não fabricada.** Um recorte curto (~60s) de um compilado do
+acervo, commitado, com os limites anotados à mão. O sintético só vale pra testar
+aritmética (fusão, grade, segmentação) — nunca pra validar detecção, porque quem
+fabrica o compilado fabrica a premissa junto.
 
 ## Relacionado
 
-- [construtor-comerciais.md](construtor-comerciais.md) — o outro lado do mesmo
-  "editor": em vez de **cortar** comercial de compilado, **montar** comercial
-  novo a partir de molde. Pedido do Gabriel em 2026-07-14, futuro.
-- [playlist-youtube.md](playlist-youtube.md) — o esqueleto (N partes → 1 mídia;
-  aqui é 1 fonte → N mídias) e o molde de `analisar → processar`.
+- [construtor-comerciais.md](construtor-comerciais.md) — o outro lado do editor:
+  molde + vazado → vinheta nova. O `alphaextract,negate,cropdetect` acha o buraco
+  sozinho.
+- [playlist-youtube.md](playlist-youtube.md) — N partes → 1 mídia (aqui é o
+  inverso); o molde de `analisar → processar` e o esqueleto da fila.

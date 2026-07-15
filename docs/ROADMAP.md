@@ -162,9 +162,33 @@ promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o 
   anúncio aparece sozinho no catálogo**, pronto pro rodízio. É a **playlist AO
   CONTRÁRIO** (1 fonte → N mídias). Tabela `comercial_cuts`, coluna nova
   `ingest_jobs.corte`.
-  **⚠️ A spec foi REESCRITA no mesmo dia** — o Gabriel deixou claro que **não vai
-  revisar** ("queria algo automático, só subir o compilado e ele tratar"). Isso
-  matou a aba de cards (juntar/dividir/aparar) da v1 e trocou o desenho inteiro:
+  **⚠️⚠️ v3 (2026-07-15): o ACERVO REAL derrubou o motor.** Rodado no
+  `com_jetix_intervalo_comercial_hi` (600s, reconstruído dos 60 `.ts` do R2), o
+  motor commitado (`b379687`) **reprovou 100% dos candidatos**. As duas premissas
+  centrais são falsas pra este material:
+  - **preto não marca troca de comercial**: 4 ocorrências em 600s, e o único da
+    vizinhança cai DENTRO de um anúncio (entre "grande!/enorme!/gigante!") —
+    cortar ali picotaria um comercial em quatro. Comercial brasileiro dos anos
+    2000 emenda direto; o preto era da entrada/saída do BLOCO.
+  - **platô de silêncio não existe**: o sweep decai monotonicamente (434 gaps a
+    -18dB → 6 a -50dB). Áudio de broadcast é comprimido — não há silêncio entre
+    peças, só o fundo de um decaimento. O platô só existe em áudio SINTÉTICO.
+  **A lição que custou caro:** o `verify-cortador` (29/29 ✅) FABRICAVA o
+  compilado plantando preto+silêncio nos limites — construía o mundo que a
+  premissa afirmava e verificava a premissa nele. Regra nova: fixture REAL.
+  **Arquitetura v3:** whisper diz QUAIS (buraco de fala = candidato; o
+  `transcreve.py` já gera os timestamps e os JOGA FORA na última linha), o LLM
+  diz SE (o texto fechou com a marca? — texto vai pro DeepSeek, que tem cota; o
+  Gemini sai da rota crítica), o ffmpeg diz ONDE (±15ms, medido). Onde não há
+  locução (15% do compilado testado), a peça ainda **fecha com a assinatura
+  VISUAL** (logo/cartela) — foi assim que se identificou uma promo institucional
+  de 90s: zero cortes de cena + fecha com o logo do Jetix. Sobrevivem da v2: a
+  **zona morta** (invasão ≤ 1 frame = piso físico) e a **grade de 15/30/60**
+  (único portão que resistiu ao real — mas só vale pra anunciante, não pra
+  vinheta/ID de canal).
+  **⚠️ A spec já tinha sido REESCRITA na v2** — o Gabriel deixou claro que **não
+  vai revisar** ("queria algo automático, só subir o compilado e ele tratar").
+  Isso matou a aba de cards (juntar/dividir/aparar) da v1:
   - **Threshold medido, não chutado:** varre o `silencedetect` e acha o **platô**
     (a faixa de dB onde o resultado não muda) — cada compilado se auto-calibra.
     Medido: com chiado a -34dB, de -20 a -33dB dá o gap no mesmo timestamp

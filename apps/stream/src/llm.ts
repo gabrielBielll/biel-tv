@@ -99,6 +99,13 @@ export async function pedeJson(
   }
   if (env.DEEPSEEK_API_KEY) {
     try {
+      // A API do DeepSeek REJEITA com 400 ("Prompt must contain the word 'json'
+      // in some form") quando se usa response_format:json_object e a palavra
+      // "json" não aparece LITERALMENTE no prompt. Desenhar o formato com
+      // chaves (`{"itens":[...]}`) não conta. Quem esquecia a palavra perdia o
+      // fallback INTEIRO em silêncio — o catch abaixo só devolve null. Garantir
+      // aqui, no único lugar que conhece a regra, vale por todos os chamadores.
+      const systemDS = /json/i.test(system + user) ? system : `${system}\n\nResponda em JSON.`
       const res = await fetch('https://api.deepseek.com/chat/completions', {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${env.DEEPSEEK_API_KEY}` },
@@ -107,7 +114,7 @@ export async function pedeJson(
           model: 'deepseek-v4-flash',
           response_format: { type: 'json_object' },
           messages: [
-            { role: 'system', content: system },
+            { role: 'system', content: systemDS },
             { role: 'user', content: user },
           ],
         }),

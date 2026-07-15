@@ -1,6 +1,35 @@
 // Cortador de comerciais: 1 compilado → N anúncios. A playlist AO CONTRÁRIO.
 // Spec: docs/features/cortador-comerciais.md
 //
+// ┌─────────────────────────────────────────────────────────────────────────┐
+// │ ⛔ ESTE MOTOR NÃO SERVE PRO ACERVO REAL. NÃO CONSTRUA EM CIMA DELE.      │
+// │                                                                         │
+// │ Ele passa 29/29 no verify — contra um compilado que o TESTE FABRICA,    │
+// │ plantando preto+silêncio nos limites porque a spec dizia que era assim  │
+// │ que comercial emenda. Rodado no acervo de verdade (Jetix Intervalo      │
+// │ Comercial, 600s, reconstruído do R2), REPROVOU 100% dos candidatos:     │
+// │                                                                         │
+// │  · preto: 4 ocorrências em 600s — e o único perto de um limite estava   │
+// │    DENTRO de um anúncio (entre "grande!/enorme!/gigante!"). Cortar ali  │
+// │    picotaria um comercial em quatro. `portaoSinal()` exige preto ∩      │
+// │    silêncio: é a premissa errada, codificada.                           │
+// │  · platô: NÃO EXISTE em áudio real. O sweep decai monotonicamente       │
+// │    (434 gaps a -18dB → 6 a -50dB) porque áudio de broadcast é           │
+// │    comprimido: não há silêncio entre peças, só o fundo de um            │
+// │    decaimento. O platô só existe onde a transição é instantânea — ou    │
+// │    seja, em áudio sintético. `achaThreshold()` mede uma propriedade     │
+// │    que o material não tem.                                              │
+// │                                                                         │
+// │ SOBREVIVEM (ver "O que se APROVEITA" na spec): fundeZonas() — o modelo  │
+// │ de zona morta está certo e foi medido (invasão ≤ 1 frame, o piso        │
+// │ físico); segmenta(); portaoGrade() — o único portão que resistiu ao     │
+// │ real; extraiTrecho(); detectSilence() como REFINADOR de timestamp       │
+// │ (±15ms) de um limite já confirmado por outro sinal.                     │
+// │                                                                         │
+// │ A v3 inverte: whisper diz QUAIS (buraco de fala = candidato), o LLM diz │
+// │ SE (o texto fechou com a marca?), o ffmpeg diz ONDE (±15ms).            │
+// └─────────────────────────────────────────────────────────────────────────┘
+//
 // Regra da casa (diretor.ts:2): o LLM DECIDE, o CÓDIGO CALCULA. Este módulo é
 // a metade "código calcula" — medição e aritmética, zero julgamento, 100%
 // reprodutível. Os portões que precisam de julgamento (visual/semântico) são
@@ -39,10 +68,24 @@ async function extraiAudio(file, outWav) {
   return outWav
 }
 
-/** Assinatura de um resultado de detecção: nº de gaps + timestamps a meio
- *  frame (33ms/2). Dois thresholds com a mesma assinatura "concordam". */
-function assinatura(gaps) {
-  return gaps.map((g) => `${g.start.toFixed(2)}-${g.end.toFixed(2)}`).join('|')
+/**
+ * Dois thresholds "concordam" quando enxergam a MESMA ESTRUTURA: o mesmo número
+ * de gaps, cada um no mesmo lugar dentro de `tol`.
+ *
+ * ⚠️ NÃO comparar timestamp exato (foi assim na 1ª versão, e quebrou no
+ * primeiro arquivo real). Em áudio de verdade o som DECAI em vez de cortar
+ * feito parede: quanto mais baixo o threshold, mais tarde ele cruza. Medido num
+ * rip real do Jetix — o mesmo gap aparece em 9.73 (-20dB), 9.78 (-22dB) e 9.79
+ * (-24dB). A deriva é física do som, não ruído; exigir dígito igual só funciona
+ * em áudio sintético (onde a transição é instantânea) e rejeita todo compilado
+ * de verdade. O que é estável — e o que a feature precisa — é a ESTRUTURA.
+ */
+const TOL_PLATO = 0.25 // s — deriva aceitável de um gap ao longo do platô
+
+function mesmaEstrutura(a, b, tol = TOL_PLATO) {
+  if (a.length !== b.length || a.length === 0) return false
+  return a.every((g, i) =>
+    Math.abs(g.start - b[i].start) <= tol && Math.abs(g.end - b[i].end) <= tol)
 }
 
 /**
@@ -66,19 +109,22 @@ export async function achaThreshold(file, { d = D_SILENCIO } = {}) {
     const wav = await extraiAudio(file, join(tmp, 'a.wav'))
     const amostras = []
     for (let db = SWEEP_MAX; db >= SWEEP_MIN; db--) {
-      const gaps = await detectSilence(wav, { noise: db, d })
-      amostras.push({ db, gaps, sig: assinatura(gaps) })
+      amostras.push({ db, gaps: await detectSilence(wav, { noise: db, d }) })
     }
 
-    // Maior faixa contígua com a mesma assinatura.
-    // ⚠️ Assinatura VAZIA não conta: os thresholds abaixo do chiado acham zero
-    // gaps e formariam um "platô" larguíssimo de nada — que é justamente o caso
-    // que precisa ser rejeitado, não escolhido. (Foi assim no teste real: -34dB
-    // a -50dB = 17dB contíguos de zero.)
+    // Maior faixa contígua que enxerga a mesma estrutura. A comparação é sempre
+    // contra a ÂNCORA (o topo da faixa), nunca contra o vizinho: comparando de
+    // vizinho em vizinho, uma deriva de 0.05s por dB passaria despercebida e
+    // acumularia sem limite ao longo de 10dB.
+    //
+    // ⚠️ Estrutura VAZIA não conta como platô: abaixo do piso de ruído TODOS os
+    // thresholds acham zero gaps e formariam um "platô" larguíssimo de nada —
+    // que é justamente o caso a rejeitar, não a escolher. (No rip real do Jetix:
+    // -26dB a -50dB = 25dB contíguos de zero.)
     let melhor = null
     for (let i = 0; i < amostras.length;) {
       let j = i
-      while (j + 1 < amostras.length && amostras[j + 1].sig === amostras[i].sig) j++
+      while (j + 1 < amostras.length && mesmaEstrutura(amostras[i].gaps, amostras[j + 1].gaps)) j++
       const largura = amostras[i].db - amostras[j].db + 1
       if (amostras[i].gaps.length > 0 && (!melhor || largura > melhor.largura)) {
         melhor = { largura, hi: amostras[i].db, lo: amostras[j].db, gaps: amostras[i].gaps }

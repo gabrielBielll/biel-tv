@@ -62,8 +62,12 @@ function episodioRegex(title: string): number | null {
   const t = title ?? ''
   const m =
     t.match(/epis[óo]dio\s*0*(\d{1,3})/i) ??
+    t.match(/cap[íi]tulo\s*0*(\d{1,3})/i) ??
     t.match(/\bep\.?\s*0*(\d{1,3})\b/i) ??
-    t.match(/\bs\d{1,2}\s*[.\-x]?\s*e\s*0*(\d{1,3})\b/i)
+    // "S02E01" (Season) e "T02E01" (Temporada — acervo dublado em PT usa T).
+    t.match(/\b[st]\d{1,2}\s*[.\-x]?\s*e\s*0*(\d{1,3})\b/i) ??
+    // "2x01" — o que importa é o número DEPOIS do x (o antes é a temporada).
+    t.match(/\b\d{1,2}\s*x\s*0*(\d{1,3})\b/i)
   return m ? Number(m[1]) : null
 }
 function parteRegex(title: string): number | null {
@@ -93,8 +97,22 @@ async function classificaLLM(env: Env, entries: Entry[], serieDica?: string): Pr
 - "episodio": número do episódio (inteiro). Se o título não disser, null.
 - "parte": número da parte/pedaço dentro do episódio (inteiro). Se não disser, null.
 - "titulo_limpo": título curto e limpo do episódio, SEM o "(Parte N)".
-Os títulos podem estar bagunçados ("Episódio 05 - Ato 4, Cena 15 (Parte 2)"). O episódio e a parte SEMPRE saem do texto do título, jamais da posição na playlist.
-Responda APENAS {"itens":[{"video_id","serie","episodio","parte","titulo_limpo"}]}.
+
+Cada acervo do YouTube numera do seu jeito. Formatos que aparecem na prática — use-os para DEDUZIR o padrão da playlist, não como lista fechada:
+| Título                                        | episodio | parte |
+| "Série - T02E01 | Fora de Controle (1/5)"     | 1        | 1     |
+| "Série - S02E05 - O Teste (Parte 2)"          | 5        | 2     |
+| "Série 2x01 - Título"                         | 1        | null  |
+| "Série - Episódio 05 - Ato 4, Cena 15 (Pt 3)" | 5        | 3     |
+| "Série - Ep. 12 [parte 3 de 6]"               | 12       | 3     |
+| "Série - Capítulo 7 - segunda parte"          | 7        | 2     |
+| "Série - Abertura | 2ª Temporada"             | null     | null  |
+
+ATENÇÃO às duas confusões clássicas:
+- Em "T02E01"/"S02E01"/"2x01", o número depois de T/S (ou antes do "x") é a TEMPORADA — o episódio é o número depois do E/x. Nunca devolva a temporada como episódio.
+- "(1/5)" é parte 1 DE 5 pedaços — o 5 é o total, não o episódio.
+Quem não for episódio da série (abertura, encerramento, trailer, compilado), devolva episodio e parte null em vez de chutar.
+Responda APENAS o JSON {"itens":[{"video_id","serie","episodio","parte","titulo_limpo"}]}.
 ${serieDica ? `\nDICA DO OPERADOR — a série desta playlist é: "${serieDica}".` : ''}`
 
   const schema = {
