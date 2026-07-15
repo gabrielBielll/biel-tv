@@ -137,22 +137,62 @@ Cada peça faz **só o que sabe fazer**:
 3. **DeepSeek lendo o texto** (`pedeJson`, já pago, tem cota) → *este buraco é
    limite?* A fala fechou com marca/slogan, ou a frase atravessa? **Texto, não
    imagem** — o Gemini sai da rota crítica e o problema de cota some.
-4. **ffmpeg** → *onde exatamente*: o gap de silêncio mais próximo do buraco dá o
-   corte com **±15ms** (medido). O whisper dá ±1s e **não pode** cortar.
+   ✅ **TESTADO (07-15) — a premissa que decidia a v3.** 13 buracos anotados à
+   mão (gabarito fixado ANTES), julgados cegos pelo DeepSeek: **13/13**, e
+   **10/10** nos de alta confiança. Chegou pelo mesmo caminho ("sequência
+   retórica do mesmo anúncio" pro caso-armadilha dos adjetivos; "vinheta de
+   canal, indicando transição"), e usou até a **duração da pausa** como indício
+   sem ninguém pedir. **A análise funciona sem o Claude na sala** — que era a
+   única coisa que importava pro "sobe e trata".
+   > ⚠️ Isso só apareceu depois de consertar um bug de instrumento: o
+   > `json_object` do DeepSeek garante JSON válido, **não as nossas chaves** (ele
+   > não tem `responseSchema` como o Gemini). Sem o schema no prompt ele
+   > respondia com nomes próprios, o campo virava `undefined`, e `undefined` era
+   > lido como veredito negativo — "3 erros" que eram meus. Consertado no
+   > `llm.ts` (`a252356`), e **atinge os 4 módulos em produção** que usam o
+   > helper.
+4. **A precisão (o ONDE)** → ⛔ **A v3 AFIRMAVA "o ffmpeg dá ±15ms". É FALSO.**
+   Medido nos 25 limites confirmados: **8 têm âncora limpa** (1 silêncio dentro
+   do buraco), **11 são ambíguos** (o buraco tem 3, 4, até 27 silêncios — qual
+   deles?) e **6 não têm nada**. Aqueles ±15ms foram medidos num limite cuja
+   posição já se sabia; o problema real é justamente não saber. Ver a escada
+   abaixo.
 5. **Portões que sobraram:** grade de duração; borda técnica; bloco contínuo.
 
-> **Whisper diz QUAIS. O LLM diz SE. O ffmpeg diz ONDE.**
-> É a regra da casa (`diretor.ts:2`) — o LLM decide, o código calcula — aplicada
-> na única divisão que o acervo real sustenta.
+> **Whisper diz QUAIS. O LLM diz SE. O ONDE vem da margem — com o ffmpeg
+> refinando quando tem o que refinar (1/3 das vezes).**
+> É a regra da casa (`diretor.ts:2`) — o LLM decide, o código calcula.
 
-### Margem de segurança (pedido do Gabriel, 07-15)
+### A escada da precisão (e por que a margem do Gabriel estava certa)
 
-Ele notou que pode entrar pedaço de programa no corte e propôs "deixar alguns
-segundos a mais, no máximo 5". A tensão a resolver ao implementar: margem **pra
-frente** aumenta a chance de invadir o vizinho. A saída é ser **assimétrico**:
-folga quando o vizinho é outro anúncio (pegar 1s de comercial alheio é inócuo),
-**zero** quando o vizinho é programa (1s de desenho estraga a peça). **Decisão
-aberta:** confirmar a intenção dele (garantir que a peça não seja truncada?).
+O placar de 8/25 assusta menos do que parece: **buraco curto não precisa de
+âncora**. Metade dos limites tem buraco de 1–1.5s; cortar no meio erra ≤0.75s, e
+o que está ali é música de transição, não conteúdo. O problema real são os
+buracos longos (#8 = 12.3s, #15 = 91.7s), onde o meio erraria 6s e 45s.
+
+**E o limite nunca está no meio do vazio — está grudado na ponta.** No #15 a fala
+parou em 149.1s e a promo institucional começou logo depois; os outros 91s são a
+promo inteira, sem locução. Faz sentido pela forma como comercial é feito: a
+locução fecha com a marca, sobram 1–2s de trilha/cartela, e a próxima peça entra.
+
+> Que é exatamente o que o Gabriel propôs por intuição de quem assistiu o
+> material: *"aproveitar o fim da vinheta e deixar alguns segundos a mais, tipo
+> no máximo 5, e depois cortar"*. A medição explica inclusive o teto: passou de
+> ~5s do fim da fala, não se está mais no rabicho da peça — se está dentro da
+> seguinte.
+
+A escada (nenhum degrau depende de LLM ou de olho humano):
+
+1. **1 silêncio no buraco** → ancora nele (±15ms). 8 dos 25.
+2. **Vários silêncios** → o **primeiro depois do fim da fala**, dentro da margem.
+3. **Nenhum** → `fim da fala + margem`, com **teto de 5s**.
+4. **Buraco longo (>5s) sem âncora** → é bloco sem locução (promo/comercial
+   mudo): **não cortar no escuro**. Trata como peça inteira e deixa a grade de
+   duração decidir — foi o que matou a promo de 90s.
+
+**Assimetria a resolver na implementação:** margem pra frente aumenta a chance de
+invadir o vizinho. Folga quando o vizinho é outro anúncio (1s de comercial alheio
+é inócuo); **zero** quando o vizinho é programa (1s de desenho estraga a peça).
 
 ## O que MORRE do que está commitado
 
@@ -188,10 +228,16 @@ aberta:** confirmar a intenção dele (garantir que a peça não seja truncada?)
 
 ## Decisões abertas
 
-1. **Margem assimétrica** — confirmar a intenção do Gabriel (acima).
-2. **Fecho visual** — como achar a cartela final sem gastar cota: 1 frame no fim
-   de cada candidato? Só nas zonas sem fala? (A chave do Gemini é **free tier**:
-   medido 503 "high demand" após 32s e 429 "exceeded quota" na chamada seguinte.)
+1. ~~Margem assimétrica — confirmar a intenção do Gabriel~~ → **resolvida pela
+   medição** (ver "A escada da precisão"): a margem é o mecanismo principal do
+   ONDE, não um detalhe. Falta só calibrar o teto (5s é o palpite dele; os buracos
+   curtos medidos são de 1–1.5s, então 5s tem folga de sobra).
+2. **Fecho visual** — **rebaixado.** Era pra cobrir o ponto cego do whisper
+   (zonas sem locução, 15% do compilado testado), mas o degrau 4 da escada já dá
+   um destino seguro a esses blocos sem precisar de visão: não corta, trata como
+   peça inteira, a grade decide. Vale testar depois, se o degrau 4 estiver
+   jogando fora comercial mudo bom. (A chave do Gemini é **free tier**: medido
+   503 "high demand" após 32s e 429 "exceeded quota" na chamada seguinte.)
 3. **Peça de canal vs. anúncio** — a grade só vale pra anunciante. Vinheta/ID
    precisa de outro critério (a transcrição as identifica: "você está vendo X").
 4. **Bloco contínuo** — quantos segundos sem corte de cena definem "uma peça só"?
