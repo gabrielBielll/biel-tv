@@ -105,7 +105,23 @@ export async function pedeJson(
       // chaves (`{"itens":[...]}`) não conta. Quem esquecia a palavra perdia o
       // fallback INTEIRO em silêncio — o catch abaixo só devolve null. Garantir
       // aqui, no único lugar que conhece a regra, vale por todos os chamadores.
-      const systemDS = /json/i.test(system + user) ? system : `${system}\n\nResponda em JSON.`
+      //
+      // ⚠️ E o `json_object` do DeepSeek garante JSON VÁLIDO, não as NOSSAS
+      // CHAVES: ele não tem `responseSchema` como o Gemini, então o schema que
+      // esta função recebe simplesmente NÃO CHEGAVA nele. Enquanto o Gemini
+      // responde ninguém percebe; no dia em que ele cai por cota (429 medido em
+      // 2026-07-14 — a chave é free tier), o fallback devolve JSON válido com o
+      // formato que o modelo inventar, e o chamador lê `undefined` sem erro
+      // nenhum. Falha silenciosa exatamente quando o fallback deveria salvar.
+      // Descoberto de raspão: um teste do cortador lia `confianca: undefined` e
+      // interpretava a resposta como negativa — o modelo estava certo, o
+      // contrato é que não existia.
+      // Injetar o schema no prompt é o que o DeepSeek entende. Com isto, o
+      // mesmo lote que "errava" 3 de 13 passou a bater 13/13.
+      const schemaTxt = geminiSchema ? `\n\nResponda em json seguindo EXATAMENTE este schema (mesmos nomes de campo, sem extras):\n${JSON.stringify(geminiSchema)}` : ''
+      const systemDS = /json/i.test(system + user) && !geminiSchema
+        ? system
+        : `${system}${schemaTxt || '\n\nResponda em JSON.'}`
       const res = await fetch('https://api.deepseek.com/chat/completions', {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${env.DEEPSEEK_API_KEY}` },
