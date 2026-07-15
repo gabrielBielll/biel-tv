@@ -9,7 +9,8 @@ import { pipeline as streamPipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { concatParts } from '../packages/pipeline/src/ffmpeg.mjs'
+import { FFMPEG, concatParts, extraiTrecho, detectSilence, detectBlack, detectScene, probe } from '../packages/pipeline/src/ffmpeg.mjs'
+import { achaBuracos, ancoraCorte, fundePelaGrade, classificaPeca } from '../packages/pipeline/src/cortador.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8787'
@@ -267,10 +268,181 @@ async function processJob(job) {
   await post('/admin/schedule/run', { rebuild: true })
 }
 
+
+// ── cortador de comerciais (docs/features/cortador-comerciais.md) ──────────
+// A fábrica MEDE, o Worker JULGA. Aqui roda o caro e determinístico (baixar,
+// transcrever, medir sinais, cortar); o "este buraco é limite?" e o "como se
+// chama?" são LLM e ficam no Worker, onde a chave mora — a fábrica nunca chamou
+// LLM e não recebe GEMINI/DEEPSEEK_API_KEY nos secrets do Actions. Manter assim.
+//
+// Sem staging no meio: o cli.mjs ingest já normaliza/segmenta/sobe/registra a
+// partir de um arquivo em DISCO, e a peça recortada já está em disco aqui. O
+// round-trip pelo R2 seria trabalho puro — a fábrica nem sabe subir pro staging
+// (ela só baixa; quem sobe é o navegador do Gabriel).
+
+/** transcreve.py --json: fala COM timestamps. Os buracos entre segmentos são os
+ *  candidatos a limite. Ao contrário da ingestão normal (onde a transcrição é
+ *  opcional e o exit 3 é tolerado), aqui SEM whisper não há cortador. */
+async function transcreveComTempo(file, workdir) {
+  const wav = join(workdir, 'audio16k.wav')
+  await new Promise((ok, fail) => {
+    const p = spawn(FFMPEG(), ['-y', '-hide_banner', '-loglevel', 'error', '-i', file,
+      '-vn', '-ac', '1', '-ar', '16000', wav], { stdio: ['ignore', 'ignore', 'inherit'] })
+    p.on('error', fail)
+    p.on('exit', (c) => (c === 0 ? ok() : fail(new Error(`ffmpeg wav saiu ${c}`))))
+  })
+  const out = await new Promise((ok, fail) => {
+    const p = spawn('python3', [join(ROOT, 'scripts/transcreve.py'), wav, '--json'],
+      { stdio: ['ignore', 'pipe', 'pipe'] })
+    let buf = '', err = ''
+    p.stdout.on('data', (d) => (buf += d))
+    p.stderr.on('data', (d) => (err += d))
+    p.on('error', fail)
+    p.on('exit', (c) => {
+      if (c === 3) return fail(new Error('faster-whisper não instalado — o cortador depende dele'))
+      if (c !== 0) return fail(new Error(`transcreve.py saiu ${c}: ${err.slice(0, 200)}`))
+      ok(buf)
+    })
+  })
+  return JSON.parse(out)
+}
+
+/** Ingere UM arquivo já em disco pelo pipeline de sempre. */
+async function ingerePeca(file, { id, title, canais }) {
+  const args = [
+    '--dns-result-order=ipv4first',
+    join(ROOT, 'packages/pipeline/src/cli.mjs'), 'ingest', file,
+    '--id', id, '--tipo', 'comercial', '--title', title,
+    ...(canais ? ['--canais', canais] : []),
+    '--target', TARGET,
+    ...(TARGET === 'remote' ? ['--base-url', ''] : []),
+  ]
+  await new Promise((ok, fail) => {
+    const p = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let tail = ''
+    const come = (c) => { tail = (tail + c).slice(-2000) }
+    p.stdout.on('data', (d) => come(String(d)))
+    p.stderr.on('data', (d) => come(String(d)))
+    p.on('error', fail)
+    p.on('close', (code) => {
+      if (code === 0) return ok()
+      const linhas = tail.trim().split('\n').map((l) => l.trim())
+        .filter((l) => l && !l.startsWith('progresso:') && !l.startsWith('at ') && !/^Node\.js v/.test(l))
+      fail(new Error(linhas.filter((l) => l.includes('✖') || /error/i.test(l)).at(-1) ?? linhas.at(-1) ?? 'pipeline falhou'))
+    })
+  })
+}
+
+async function tickComercial() {
+  const res = await fetch(`${BASE}/admin/comerciais/claim`, { method: 'POST', headers: HDR })
+  if (res.status === 204) return false
+  if (!res.ok) throw new Error(`comerciais claim HTTP ${res.status}`)
+  const cc = await res.json()
+  const workdir = join(ROOT, '.ingest-work', `cc_${cc.id}`)
+  mkdirSync(workdir, { recursive: true })
+  try {
+    // 1. o compilado em disco
+    const src = join(workdir, 'compilado.mp4')
+    if (cc.source_url) {
+      const cookies = await cookieFile()
+      await baixarUrl(cc.source_url, src, cookies)
+      await devolveCookies(cookies)
+    } else if (cc.staging_key) {
+      const r = await fetch(`${BASE}/admin/staging/${encodeURIComponent(cc.staging_key)}`, { headers: HDR })
+      if (!r.ok) throw new Error(`staging download HTTP ${r.status}`)
+      await streamPipeline(Readable.fromWeb(r.body), createWriteStream(src))
+    } else {
+      throw new Error('comercial_cut sem source_url nem staging_key')
+    }
+    const { duration } = await probe(src)
+
+    // 2. whisper diz QUAIS (o passo caro: ~3min de CPU por 600s)
+    await post(`/admin/comerciais/${cc.id}/status`, { status: 'transcrevendo', dur_seg: duration })
+    const fala = await transcreveComTempo(src, workdir)
+    const buracos = achaBuracos(fala)
+    log(`▸ ${cc.id}: ${duration.toFixed(0)}s · ${fala.length} falas · ${buracos.length} buracos candidatos`)
+
+    // 3. o Worker JULGA (é ele que tem a chave do LLM)
+    await post(`/admin/comerciais/${cc.id}/status`, { status: 'analisando', fala })
+    const vered = await post(`/admin/comerciais/${cc.id}/julga`, { buracos })
+
+    // 4. a MARGEM diz ONDE (o ffmpeg só ancora em ~1/3 dos casos — medido)
+    const [s30, s24, preto, cena] = await Promise.all([
+      detectSilence(src, { noise: -30, d: 0.25 }),
+      detectSilence(src, { noise: -24, d: 0.25 }),
+      detectBlack(src, { d: 0.15 }),
+      detectScene(src, { th: 0.4 }),
+    ])
+    const sinais = { silencio_30db: s30, silencio_24db: s24, preto, cena }
+    const pontos = []
+    for (const [i, b] of buracos.entries()) {
+      if (!vered.limites?.[i]) continue
+      const a = ancoraCorte(b, sinais)
+      // t === null = bloco sem locução (promo/mudo): não corta no escuro
+      if (a.t !== null) pontos.push(a.t)
+    }
+    pontos.sort((x, y) => x - y)
+
+    // 5. peças entre cortes, remontando o que o corte quebrou
+    let pecas = []
+    for (let i = 0; i <= pontos.length; i++) {
+      const pIni = i === 0 ? 0 : pontos[i - 1]
+      const pFim = i === pontos.length ? duration : pontos[i]
+      if (pFim - pIni < 0.1) continue
+      pecas.push({ i: pecas.length, ini: pIni, fim: pFim, dur: Math.round((pFim - pIni) * 100) / 100 })
+    }
+    pecas = fundePelaGrade(pecas)
+    const entram = pecas.filter((p) => classificaPeca(p).ok)
+    log(`▸ ${cc.id}: ${pecas.length} peças (${pecas.filter((p) => p.fundido).length} remontadas) · ${entram.length} entram`)
+
+    // 6. o Worker nomeia (LLM + vocabulário do acervo) e devolve ids SEM colisão
+    //    — INSERT OR REPLACE sobrescreve em silêncio se dois ids baterem.
+    await post(`/admin/comerciais/${cc.id}/status`, { status: 'cortando' })
+    const nomes = await post(`/admin/comerciais/${cc.id}/nomeia`, {
+      pecas: entram.map((p) => ({
+        ini: p.ini, fim: p.fim, dur: p.dur,
+        texto: fala.filter((f) => f.start >= p.ini - 0.3 && f.end <= p.fim + 0.3).map((f) => f.text).join(' '),
+      })),
+    })
+
+    // 7. corta e ingere cada peça pelo pipeline de sempre
+    const feitas = []
+    for (const [i, p] of entram.entries()) {
+      const info = nomes.pecas?.[i] ?? {}
+      const id = info.id ?? `${cc.id}_${i}`
+      const out = join(workdir, `peca${i}.mp4`)
+      // -ss DEPOIS do -i + re-encode: frame-accurate. -c copy grudaria no
+      // keyframe e vazaria a peça vizinha.
+      await extraiTrecho(src, p.ini, p.fim, out)
+      await ingerePeca(out, { id, title: info.nome ?? `peça ${i} de ${cc.id}`, canais: cc.canal })
+      rmSync(out, { force: true })
+      feitas.push({ ...p, ...info, id })
+      log(`  ✔ ${id} (${p.dur}s)${p.fundido ? ' [remontada]' : ''}`)
+    }
+    await post(`/admin/comerciais/${cc.id}/pronto`, {
+      pecas: pecas.map((p, i) => ({ ...p, ...(nomes.pecas?.[i] ?? {}) })),
+      n_pecas: feitas.length,
+      n_descartadas: pecas.length - feitas.length,
+    })
+    log(`✔ ${cc.id}: ${feitas.length} peças no catálogo`)
+    await post('/admin/schedule/run', { rebuild: true })
+  } catch (e) {
+    await post(`/admin/comerciais/${cc.id}/error`, { error: String(e.message ?? e).slice(0, 500) })
+      .catch(() => log('não consegui nem marcar o erro do cortador — worker fora do ar?'))
+    log(`✖ ${cc.id} falhou: ${e.message}`)
+  } finally {
+    rmSync(workdir, { recursive: true, force: true })
+  }
+  return true
+}
+
 async function tick() {
   // análise de playlist tem prioridade: é rápida (só lista os títulos) e
   // destrava a revisão no painel antes dos downloads pesados
   if (await tickPlaylist()) return true
+  // o cortador vem antes dos jobs pesados: transcrever 600s leva ~3min, mas
+  // enfileira N peças de uma vez — quanto antes começar, antes a fila anda
+  if (await tickComercial()) return true
   const res = await fetch(`${BASE}/admin/jobs/claim`, { method: 'POST', headers: HDR })
   if (res.status === 204) return false
   if (!res.ok) throw new Error(`claim HTTP ${res.status}`)
