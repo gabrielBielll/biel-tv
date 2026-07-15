@@ -410,6 +410,28 @@ export function ancoraCorte(buraco, sinais, { margem = MARGEM_MAX } = {}) {
 export const FRAGMENTO_MAX = 3.0 // s — abaixo disto não é peça, é sobra de corte
 
 /**
+ * Acima disto não é peça, é BLOCO que ninguém cortou.
+ *
+ * ⚠️ Medido no dry-run do acervo real (2026-07-15): saiu uma "peça" de 135s que
+ * os frames revelaram conter TRÊS coisas — a promo institucional de 90s (sem
+ * locução, logo sem candidato pro whisper), depois um promo de Power Rangers, e
+ * no fim o comercial do "grande/enorme/gigante". A escada recusa cortar DENTRO
+ * de um buraco longo (degrau 4), mas nada impedia a PEÇA longa de sair inteira.
+ *
+ * 90s é defensável dos dois lados: anunciante não compra slot acima de 60s, e
+ * promo de canal de época não passa disso. Acima é o ponto cego do whisper
+ * (trecho sem locução) saindo como se fosse anúncio — e enfiar um "comercial"
+ * de 2min no rodízio recria, em menor escala, o problema que a feature existe
+ * pra resolver (o Gabriel tinha 6 intervalos de até 10min tocando como
+ * comercial).
+ *
+ * Bloco não é DESTRUÍDO: o compilado de origem só é desativado, nunca deletado,
+ * e os .ts continuam no R2 — dá pra reprocessar com outro critério sem baixar
+ * nada.
+ */
+export const PECA_MAX = 90.0 // s
+
+/**
  * ⭐ A GRADE COMO CORRETOR, não como portão.
  *
  * Descoberto olhando frame (2026-07-15): o comercial do Beyblade saiu partido em
@@ -491,8 +513,9 @@ export function fundePelaGrade(pecas, { grade = GRADE, tol = GRADE_TOL } = {}) {
  * Então a grade NÃO reprova (ela só corrige, no fundePelaGrade). O único
  * descarte é o fragmento: pedaço < 3s não é peça, é sobra de corte.
  */
-export function classificaPeca(p, { grade = GRADE, tol = GRADE_TOL } = {}) {
+export function classificaPeca(p, { grade = GRADE, tol = GRADE_TOL, max = PECA_MAX } = {}) {
   if (p.dur < FRAGMENTO_MAX) return { ok: false, motivo: `fragmento de ${p.dur.toFixed(1)}s — sobra de corte, não é peça` }
+  if (p.dur > max) return { ok: false, motivo: `bloco de ${p.dur.toFixed(0)}s — trecho que ninguém cortou (ponto cego do whisper), não é peça` }
   const slot = grade.find((g) => Math.abs(p.dur - g) <= tol)
   return {
     ok: true,

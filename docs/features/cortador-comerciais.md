@@ -131,6 +131,34 @@ Cada peça faz **só o que sabe fazer**:
 
 1. **Whisper (local, grátis, sem cota)** → segmentos de fala com timestamp.
    Buracos > 0.8s = **candidatos** a limite.
+   > ⛔ **ISTO FALHA NA MAIORIA DO ACERVO — medido em 2026-07-15, e é a 5ª
+   > premissa desta feature a cair pelo mesmo motivo: calibrei num arquivo e
+   > generalizei.**
+   >
+   > | compilado | segs | mediana | buracos ≥0.8s |
+   > |---|---|---|---|
+   > | `com_jetix_intervalo_comercial_hi` (603s) | 164 | **2.6s** | **36** |
+   > | `ep_intervalos_jetix_brasil_2004` (470s) | 99 | 4.1s | **6** |
+   > | `ep_jetix_brasil_intervalo_muscu` (390s) | 83 | 4.0s | **5** |
+   >
+   > O 600s — onde TODA a v3 foi calibrada, e de onde saiu a fixture — é a
+   > **exceção**: é o único em que o whisper segmenta fino. Nos outros ele
+   > agrupa em blocos de ~4s e os candidatos somem. Baixar o mínimo de 0.8s
+   > pra 0.4s **não muda nada** (6 → 6): os segmentos são contíguos.
+   >
+   > E as pausas ESTÃO no áudio — no mesmo compilado 2 o ffmpeg acha **130
+   > silêncios a -30dB** (59 a -35dB) e 65 cortes de cena. O whisper é que não
+   > quebra nelas.
+   >
+   > **A lição:** a segmentação do whisper é COMPORTAMENTO DE MODELO (varia por
+   > arquivo, sem aviso), enquanto silêncio é FÍSICA (está sempre lá). Elegi o
+   > instável como fonte de candidatos.
+   >
+   > **Correção proposta (NÃO testada — precisa de gabarito do compilado 2,
+   > anotado olhando frame):** candidatos = `silêncio ∪ buraco de fala`,
+   > deduplicados; o LLM continua julgando pelo texto das bordas. O silêncio tem
+   > falso positivo (pausa dentro da peça), mas é justamente o que o portão de
+   > julgamento existe pra matar — e ele acertou 13/13 nisso.
 2. **Zonas sem fala** (como os 91s) → não viram candidato por ausência; entram
    por **fecho visual** (procurar cartela/logo) e por `scene`: **zero cortes de
    cena num trecho longo = bloco contínuo = uma peça só**.
