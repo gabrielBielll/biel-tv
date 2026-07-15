@@ -117,6 +117,19 @@ for (const p of PLANO) {
       // aparo gera id igual ao do original (mesmo nome) → resolveId daria _2, que
       // não diz nada. '_cortado' explica por que existem dois.
       const base = aparo ? `${row.id}_cortado` : `com_${slug(p.canal)}_${slug(nome)}`
+      // ⚠️ APOSENTAR a geração anterior desta MESMA peça, em vez de empilhar.
+      // Regra do Gabriel (2026-07-15): "ele deve desativar o vídeo antigo pra não
+      // ficar vários iguais na programação".
+      //
+      // O `resolveId` sozinho evita SOBRESCREVER (INSERT OR REPLACE apaga em
+      // silêncio) — mas ao dar _2, _3, _4 ele criava GERAÇÕES. Cada vez que eu
+      // re-rodei o script (ex.: depois da falha do Força do Tempo) tudo era
+      // refeito e empilhava mais uma: chegou a 4 Força Animal, 2 Medabots, 2
+      // Pucca, 2 Shaman King e 2 Batalhão TOCANDO JUNTOS no canal.
+      // Evitar o id repetido não basta: é preciso tirar o velho do ar.
+      const velhas = d1(`SELECT id FROM media_items
+        WHERE tipo='comercial' AND status='ready'
+          AND json_extract(metadata,'$.title') = '${String(nome).replace(/'/g, "''")}'`)
       const id = resolveId(base.slice(0, 60), ids)
       ids.add(id)
       if (DRY) { log(`  · [dry] ${id}  ${pc.ini}→${pc.fim} (${dur}s)  "${nome}"`); feito.push(id); desta++; continue }
@@ -132,6 +145,12 @@ for (const p of PLANO) {
         { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 * 1024 * 1024 })
       rmSync(out, { force: true })
       if (r.status !== 0) { log(`  ✖ ${id}: ${String(r.stderr || r.stdout).trim().split('\n').at(-1)?.slice(0, 110)}`); continue }
+      // só agora que a nova está no ar: aposenta as anteriores do mesmo nome
+      for (const v of velhas) {
+        if (v.id === id) continue
+        d1(`UPDATE media_items SET status='disabled' WHERE id='${v.id}'`)
+        log(`     ↳ aposentou a anterior: ${v.id}`)
+      }
       log(`  ✔ ${id} (${dur}s) — ${nome}`)
       feito.push(id); desta++
     }

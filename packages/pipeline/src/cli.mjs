@@ -30,6 +30,13 @@ const { values: opt, positionals } = parseArgs({
     tags: { type: 'string' },
     target: { type: 'string', default: 'local' },
     canais: { type: 'string' },
+    // 'disabled' = a mídia nasce FORA do ar, esperando aprovação no editor.
+    // Usado pelo cortador automático (peça recortada é palpite da máquina até o
+    // Gabriel ver). Default 'ready': upload manual/episódio/filme é escolha dele,
+    // já é a aprovação. ⚠️ parseArgs RECUSA flag não declarada
+    // (ERR_PARSE_ARGS_UNKNOWN_OPTION) — passar --status sem esta linha derruba o
+    // ingest inteiro antes de começar.
+    status: { type: 'string', default: 'ready' },
     'base-url': { type: 'string' },
     'min-edge': { type: 'string', default: '60' },
     crf: { type: 'string', default: '23' },
