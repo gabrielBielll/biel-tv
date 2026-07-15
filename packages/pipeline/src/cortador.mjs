@@ -406,3 +406,99 @@ export function ancoraCorte(buraco, sinais, { margem = MARGEM_MAX } = {}) {
   const t = buraco.ini + Math.min(buraco.dur / 2, margem)
   return { t, zona: { gapStart: t, gapEnd: t }, metodo: 'margem', precisao: buraco.dur / 2 }
 }
+
+export const FRAGMENTO_MAX = 3.0 // s — abaixo disto não é peça, é sobra de corte
+
+/**
+ * ⭐ A GRADE COMO CORRETOR, não como portão.
+ *
+ * Descoberto olhando frame (2026-07-15): o comercial do Beyblade saiu partido em
+ * dois — corpo de 22.6s + a cartela final de 8.7s. Somados: 31.3s ≈ 30s. Ou
+ * seja, **a grade sabia que o corte estava errado**. O erro veio do gabarito: a
+ * fala depois do buraco era o slogan, eu li "acabou aqui" e o DeepSeek concordou
+ * comigo — mas o slogan PERTENCE à peça que ele fecha; o limite vinha depois
+ * dele. Único caso em que o gabarito e o modelo erraram juntos, e só apareceu
+ * porque alguém foi olhar a imagem.
+ *
+ * Se dois vizinhos somam um slot de anunciante, o limite entre eles é falso.
+ *
+ * ⚠️ A GUARDA que faz isto ser seguro: só funde se NENHUMA das duas peças já
+ * bate na grade sozinha. Sem ela, dois comerciais legítimos de 15s emendados
+ * somariam 30s e virariam uma peça só — destruindo dois anúncios bons pra
+ * fabricar um Frankenstein.
+ *
+ * ⚠️ E por que NÃO fundir por tamanho, como a v1 fazia ("< 8s é corte falso,
+ * gruda no vizinho"): isso massacraria as vinhetas do Gabriel. Vinheta de canal
+ * tem 5s e é peça inteira — a emissora não vende espaço pra si mesma, então não
+ * obedece à grade. Guiado pela grade, a vinheta de 5s não funde com ninguém
+ * (5+5 não dá 15) e sobrevive.
+ */
+export function fundePelaGrade(pecas, { grade = GRADE, tol = GRADE_TOL } = {}) {
+  const erroGrade = (d) => Math.min(...grade.map((g) => Math.abs(d - g)))
+  const naGrade = (d) => erroGrade(d) <= tol
+
+  // ⚠️ NÃO ser guloso da esquerda pra direita. Medido no acervo real: a peça do
+  // Beyblade podia casar com o vizinho da ESQUERDA (6.0+22.6=28.6≈30) ou com o
+  // da DIREITA (22.6+8.7=31.3≈30) — as duas somas batem na grade. O guloso pegou
+  // a primeira e colou o rabo do comercial ANTERIOR no Beyblade, deixando a
+  // cartela final órfã. Só apareceu porque alguém foi olhar os frames.
+  //
+  // Então: levantar TODOS os pares possíveis, ordenar pelo erro contra o slot
+  // (quem fecha mais redondo ganha) e ir escolhendo sem reusar peça. 31.3 erra
+  // 1.3s do slot de 30; 28.6 erra 1.4s — o par certo vence por pouco, mas vence.
+  const pares = []
+  for (let i = 0; i < pecas.length - 1; i++) {
+    const a = pecas[i]
+    const b = pecas[i + 1]
+    if (naGrade(a.dur) || naGrade(b.dur)) continue // guarda: peça inteira não funde
+    const soma = a.dur + b.dur
+    if (!naGrade(soma)) continue
+    pares.push({ i, erro: erroGrade(soma), soma })
+  }
+  pares.sort((x, y) => x.erro - y.erro)
+
+  const usada = new Set()
+  const fusao = new Map()
+  for (const p of pares) {
+    if (usada.has(p.i) || usada.has(p.i + 1)) continue // peça já casada
+    usada.add(p.i); usada.add(p.i + 1)
+    fusao.set(p.i, p)
+  }
+
+  const out = []
+  for (let i = 0; i < pecas.length; i++) {
+    const p = fusao.get(i)
+    if (!p) { if (!usada.has(i) || !fusao.has(i - 1)) out.push(pecas[i]); continue }
+    const a = pecas[i]
+    const b = pecas[i + 1]
+    out.push({
+      ...a,
+      fim: b.fim,
+      dur: Math.round(p.soma * 100) / 100,
+      fundido: true,
+      motivo: `remontado: ${a.dur.toFixed(1)}s + ${b.dur.toFixed(1)}s = ${p.soma.toFixed(1)}s (slot de anunciante, erro ${p.erro.toFixed(1)}s) — o limite entre elas era falso`,
+    })
+    i++ // consome o vizinho
+  }
+  return out
+}
+
+/**
+ * O que entra no catálogo. Decisão do Gabriel (2026-07-15): **tudo** — ele roda
+ * os canais em modo livre, e vinheta/chamada de canal é material que ele quer
+ * tanto quanto anúncio.
+ *
+ * Então a grade NÃO reprova (ela só corrige, no fundePelaGrade). O único
+ * descarte é o fragmento: pedaço < 3s não é peça, é sobra de corte.
+ */
+export function classificaPeca(p, { grade = GRADE, tol = GRADE_TOL } = {}) {
+  if (p.dur < FRAGMENTO_MAX) return { ok: false, motivo: `fragmento de ${p.dur.toFixed(1)}s — sobra de corte, não é peça` }
+  const slot = grade.find((g) => Math.abs(p.dur - g) <= tol)
+  return {
+    ok: true,
+    // o slot é INFORMATIVO: bateu = provável anúncio de anunciante; não bateu =
+    // provável peça de canal (vinheta/chamada). Não é veredito.
+    tipo: slot ? `anuncio (slot ${slot}s)` : p.dur <= 12 ? 'vinheta/id (curta)' : 'chamada/promo',
+    slot: slot ?? null,
+  }
+}
