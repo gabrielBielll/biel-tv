@@ -1,0 +1,373 @@
+{
+ "_doc": "FIXTURE REAL do cortador — ver docs/features/cortador-comerciais.md",
+ "_fonte": "media_item com_jetix_intervalo_comercial_hi (600s), trecho 0-70s. O VIDEO NAO ESTA AQUI (copyright + peso): estes sao dados DERIVADOS, reconstrutiveis dos .ts no R2.",
+ "_porque": "O verify-cortador antigo FABRICAVA o compilado plantando preto+silencio nos limites — construia o mundo que a premissa afirmava. Passava 29/29 e reprovou 100% no acervo real. Quem fabrica o compilado fabrica a premissa junto.",
+ "_gabarito": "anotado a mao em 2026-07-15, ANTES de qualquer julgamento automatico. O DeepSeek bateu 8/8 nestes buracos.",
+ "trecho_seg": 70,
+ "fala": [
+  {
+   "start": 0,
+   "end": 0.6,
+   "text": "Também."
+  },
+  {
+   "start": 2.9,
+   "end": 4.9,
+   "text": "Continuem vendo Cinescopio."
+  },
+  {
+   "start": 6.6,
+   "end": 8.6,
+   "text": "Um futuro surpreendente."
+  },
+  {
+   "start": 8.6,
+   "end": 10.4,
+   "text": "É o Anity 2000X."
+  },
+  {
+   "start": 10.4,
+   "end": 12.6,
+   "text": "Viver é quase como estar em um vídeo bem."
+  },
+  {
+   "start": 13.5,
+   "end": 15.1,
+   "text": "E um herói único."
+  },
+  {
+   "start": 15.1,
+   "end": 17.1,
+   "text": "Eu sou Mega Man, primeiro e único."
+  },
+  {
+   "start": 18.2,
+   "end": 20.7,
+   "text": "Não tirem os olhos do seu canal, favorito."
+  },
+  {
+   "start": 20.7,
+   "end": 22.4,
+   "text": "A qualquer momento voltamos com..."
+  },
+  {
+   "start": 22.4,
+   "end": 23.6,
+   "text": "BACARINÃO!"
+  },
+  {
+   "start": 25.2,
+   "end": 27,
+   "text": "Todos acreditam que é um jogo."
+  },
+  {
+   "start": 27.7,
+   "end": 30.1,
+   "text": "Mas você está preparado para tanto poder?"
+  },
+  {
+   "start": 33.55,
+   "end": 34.75,
+   "text": "É Beyblade!"
+  },
+  {
+   "start": 34.75,
+   "end": 39.18,
+   "text": "Quatro heróis!"
+  },
+  {
+   "start": 39.18,
+   "end": 40.78,
+   "text": "Quatro pistas sagradas!"
+  },
+  {
+   "start": 40.78,
+   "end": 42.38,
+   "text": "E o desafio máximo!"
+  },
+  {
+   "start": 43.08,
+   "end": 46.28,
+   "text": "Venceiros bem lutadores mais poderosos do planeta!"
+  },
+  {
+   "start": 47.28,
+   "end": 50.35,
+   "text": "É Beyblade!"
+  },
+  {
+   "start": 50.95,
+   "end": 53.15,
+   "text": "Todos os dias a 6 da tarde!"
+  },
+  {
+   "start": 65.48,
+   "end": 69.08,
+   "text": "Qual Disney Pictures apresenta o Iue Falante?"
+  },
+  {
+   "start": 69.08,
+   "end": 72.78,
+   "text": "É a primeira caçada da história ao Iue Falante!"
+  }
+ ],
+ "sinais": {
+  "silencio_30db": [
+   {
+    "start": 23.67,
+    "end": 23.94
+   },
+   {
+    "start": 25.01,
+    "end": 25.29
+   },
+   {
+    "start": 54.99,
+    "end": 55.72
+   },
+   {
+    "start": 57.09,
+    "end": 59.03
+   },
+   {
+    "start": 59.3,
+    "end": 59.6
+   },
+   {
+    "start": 59.62,
+    "end": 60.07
+   },
+   {
+    "start": 60.33,
+    "end": 60.6
+   },
+   {
+    "start": 61.13,
+    "end": 61.97
+   },
+   {
+    "start": 62,
+    "end": 62.74
+   },
+   {
+    "start": 64.86,
+    "end": 65.45
+   }
+  ],
+  "silencio_24db": [
+   {
+    "start": 0,
+    "end": 0.3
+   },
+   {
+    "start": 0.39,
+    "end": 0.65
+   },
+   {
+    "start": 0.69,
+    "end": 1.1
+   },
+   {
+    "start": 1.64,
+    "end": 1.89
+   },
+   {
+    "start": 2.49,
+    "end": 2.75
+   },
+   {
+    "start": 4.69,
+    "end": 5.02
+   },
+   {
+    "start": 5.48,
+    "end": 6.18
+   },
+   {
+    "start": 6.18,
+    "end": 6.68
+   },
+   {
+    "start": 19.13,
+    "end": 19.5
+   },
+   {
+    "start": 20.53,
+    "end": 20.78
+   },
+   {
+    "start": 21.5,
+    "end": 21.87
+   },
+   {
+    "start": 23.57,
+    "end": 24.02
+   },
+   {
+    "start": 24.37,
+    "end": 24.86
+   },
+   {
+    "start": 24.94,
+    "end": 25.29
+   },
+   {
+    "start": 27.34,
+    "end": 27.75
+   },
+   {
+    "start": 46.15,
+    "end": 46.45
+   },
+   {
+    "start": 54.85,
+    "end": 55.93
+   },
+   {
+    "start": 56.68,
+    "end": 56.98
+   },
+   {
+    "start": 57.02,
+    "end": 59.03
+   },
+   {
+    "start": 59.28,
+    "end": 59.6
+   },
+   {
+    "start": 59.61,
+    "end": 60.07
+   },
+   {
+    "start": 60.31,
+    "end": 60.6
+   },
+   {
+    "start": 60.73,
+    "end": 61.1
+   },
+   {
+    "start": 61.11,
+    "end": 61.97
+   },
+   {
+    "start": 61.98,
+    "end": 62.74
+   },
+   {
+    "start": 63.72,
+    "end": 64.01
+   },
+   {
+    "start": 64.71,
+    "end": 65.56
+   },
+   {
+    "start": 67.41,
+    "end": 67.67
+   }
+  ],
+  "preto": [
+   {
+    "start": 57.27,
+    "end": 58
+   }
+  ],
+  "cena": [
+   0.49,
+   0.55,
+   9.69,
+   9.95,
+   10.41,
+   10.48,
+   13.28,
+   13.78,
+   17.08,
+   23.37,
+   28.2,
+   29.9,
+   30.71,
+   30.88,
+   44.81,
+   45.55,
+   48.31,
+   55.24,
+   65.59
+  ]
+ },
+ "buracos": [
+  {
+   "n": 1,
+   "ini": 0.6,
+   "fim": 2.9,
+   "dur": 2.3,
+   "limite": true,
+   "conf": "alta",
+   "nota": "entra vinheta de canal"
+  },
+  {
+   "n": 2,
+   "ini": 4.9,
+   "fim": 6.6,
+   "dur": 1.7,
+   "limite": true,
+   "conf": "alta",
+   "nota": "vinheta termina, entra anuncio"
+  },
+  {
+   "n": 3,
+   "ini": 12.6,
+   "fim": 13.5,
+   "dur": 0.9,
+   "limite": false,
+   "conf": "alta",
+   "nota": "frase continua atravessando a pausa"
+  },
+  {
+   "n": 4,
+   "ini": 17.1,
+   "fim": 18.2,
+   "dur": 1.1,
+   "limite": true,
+   "conf": "alta",
+   "nota": "fecho com assinatura do personagem/marca"
+  },
+  {
+   "n": 5,
+   "ini": 23.6,
+   "fim": 25.2,
+   "dur": 1.6,
+   "limite": true,
+   "conf": "media",
+   "nota": "troca de assunto"
+  },
+  {
+   "n": 6,
+   "ini": 30.1,
+   "fim": 33.55,
+   "dur": 3.45,
+   "limite": false,
+   "conf": "media",
+   "nota": "slogan no meio do anuncio, nao no fim"
+  },
+  {
+   "n": 7,
+   "ini": 46.28,
+   "fim": 47.28,
+   "dur": 1,
+   "limite": true,
+   "conf": "media",
+   "nota": "fecho com slogan"
+  },
+  {
+   "n": 8,
+   "ini": 53.15,
+   "fim": 65.48,
+   "dur": 12.33,
+   "limite": true,
+   "conf": "alta",
+   "nota": "12.3s + troca total; limite grudado na ponta (fim da fala + margem)"
+  }
+ ]
+}

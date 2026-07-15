@@ -24,6 +24,7 @@
     "verify:uploads": "node scripts/verify-uploads.mjs",
     "verify:promessas": "node scripts/verify-promessas.mjs",
     "verify:cortador": "node scripts/verify-cortador.mjs",
+    "verify:cortador:v3": "node scripts/verify-cortador-v3.mjs",
     "verify:editorial": "node scripts/verify-editorial.mjs",
     "verify:votaton": "node scripts/verify-votaton.mjs",
     "verify:nomear": "node scripts/verify-nomear.mjs",

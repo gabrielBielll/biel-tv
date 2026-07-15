@@ -1,8 +1,12 @@
 // Cortador de comerciais: 1 compilado → N anúncios. A playlist AO CONTRÁRIO.
 // Spec: docs/features/cortador-comerciais.md
 //
+// ⚠️ Este arquivo tem DOIS motores. O v3 (que serve) está no FIM, na seção
+//    "MOTOR v3". O v1 abaixo está morto e explicado — a autópsia vale a leitura
+//    porque é o registro de como 4 premissas confiantes caíram uma a uma.
+//
 // ┌─────────────────────────────────────────────────────────────────────────┐
-// │ ⛔ ESTE MOTOR NÃO SERVE PRO ACERVO REAL. NÃO CONSTRUA EM CIMA DELE.      │
+// │ ⛔ O MOTOR v1 (ABAIXO) NÃO SERVE PRO ACERVO REAL. NÃO CONSTRUA NELE.     │
 // │                                                                         │
 // │ Ele passa 29/29 no verify — contra um compilado que o TESTE FABRICA,    │
 // │ plantando preto+silêncio nos limites porque a spec dizia que era assim  │
@@ -304,4 +308,101 @@ export async function analisaCompilado(file, opts = {}) {
     candidatos,
     aprovados: candidatos.filter((c) => c.aprovado).length,
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MOTOR v3 — o que serve. Spec: docs/features/cortador-comerciais.md
+//
+// Divisão de trabalho, cada peça só no que sabe (e cada uma MEDIDA no acervo
+// real antes de virar código — ver os números em cada função):
+//
+//   whisper diz QUAIS  → buraco de fala = candidato a limite
+//   o LLM diz SE       → o texto das bordas decide (13/13 medido, no Worker)
+//   a MARGEM diz ONDE  → o ffmpeg só ancora no 1/3 das vezes em que tem o quê
+//
+// A margem é ideia do Gabriel ("aproveitar o fim da vinheta e deixar alguns
+// segundos a mais, no máximo 5"), e a medição depois explicou por que funciona:
+// o limite NUNCA está no meio do vazio, está grudado no fim da fala. Comercial
+// fecha com a marca, sobram 1-2s de trilha/cartela, entra a próxima peça.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const MIN_BURACO = 0.8 // s — pausa menor que isto é respiro, não limite
+export const MARGEM_MAX = 5.0 // s — teto do Gabriel: passou disto, já se está
+//                                   DENTRO da peça seguinte, não no rabicho dela
+
+/**
+ * Buracos de fala = os candidatos. Só isto: quem decide se é limite é o LLM
+ * (texto das bordas), e este módulo não opina.
+ *
+ * @param fala `[{start,end,text}]` — do `transcreve.py --json`.
+ */
+export function achaBuracos(fala, { minGap = MIN_BURACO } = {}) {
+  const out = []
+  for (let i = 0; i < fala.length - 1; i++) {
+    const ini = fala[i].end
+    const fim = fala[i + 1].start
+    if (fim - ini < minGap) continue
+    out.push({
+      n: out.length + 1,
+      ini, fim,
+      dur: Math.round((fim - ini) * 100) / 100,
+      textoAntes: fala[i].text,
+      textoDepois: fala[i + 1].text,
+    })
+  }
+  return out
+}
+
+/**
+ * ⭐ A ESCADA DA PRECISÃO — onde cortar, dado um buraco já confirmado como limite.
+ *
+ * Medido nos 25 limites do compilado real: só **8 têm âncora limpa**, 11 são
+ * ambíguos (o buraco tem 3, 4, até 27 silêncios dentro) e 6 não têm nada. Ou
+ * seja: a promessa "o ffmpeg dá ±15ms" vale em 1/3 dos casos. Os ±15ms foram
+ * medidos num limite cuja posição já se sabia — que é justamente o que não se
+ * sabe aqui.
+ *
+ * Mas o estrago é menor do que parece: metade dos buracos tem 1–1.5s, e cortar
+ * no meio erra ≤0.75s DE MÚSICA DE TRANSIÇÃO, não de conteúdo. O problema real
+ * é o buraco longo (12s, 91s), e para esse o degrau 4 recusa em vez de chutar.
+ *
+ * @returns {{t, zona, metodo, precisao}} ou `{t:null, metodo:'bloco'}` = não
+ *   cortar (bloco sem locução: promo/comercial mudo — deixa a grade decidir).
+ */
+export function ancoraCorte(buraco, sinais, { margem = MARGEM_MAX } = {}) {
+  // Silêncios que caem DENTRO do buraco. Preferir o floor mais alto (-24dB
+  // pegou 28 no trecho contra 10 do -30dB): áudio de broadcast é comprimido, o
+  // "silêncio" real é raso. Se o mais alto der ambíguo, o mais fundo desempata.
+  const dentro = (arr) => (arr ?? []).filter((s) => s.end >= buraco.ini && s.start <= buraco.fim)
+  const zonaDe = (s) => ({ gapStart: Math.max(s.start, buraco.ini), gapEnd: Math.min(s.end, buraco.fim) })
+
+  for (const arr of [sinais.silencio_30db, sinais.silencio_24db]) {
+    const ss = dentro(arr)
+    // ── degrau 1: âncora limpa (8 dos 25) ──
+    if (ss.length === 1) {
+      const z = zonaDe(ss[0])
+      return { t: z.gapStart, zona: z, metodo: 'silencio', precisao: 0.033 }
+    }
+    // ── degrau 2: vários → o PRIMEIRO depois do fim da fala, dentro da margem.
+    // (não o maior, nem o do meio: o limite está grudado na ponta) ──
+    if (ss.length > 1) {
+      const cand = ss.filter((s) => s.start >= buraco.ini && s.start <= buraco.ini + margem)
+      if (cand.length) {
+        const z = zonaDe(cand[0])
+        return { t: z.gapStart, zona: z, metodo: 'silencio-margem', precisao: 0.25 }
+      }
+    }
+  }
+
+  // ── degrau 4 (antes do 3, porque recusar tem prioridade): buraco longo sem
+  // âncora = bloco sem locução. NÃO cortar no escuro — cortar no meio de um
+  // buraco de 91s erraria 45s. Foi assim que a promo institucional apareceu. ──
+  if (buraco.dur > margem) {
+    return { t: null, metodo: 'bloco', motivo: `buraco de ${buraco.dur}s sem âncora: bloco sem locução (promo/mudo?) — a grade decide` }
+  }
+
+  // ── degrau 3: nada, mas o buraco é curto → fim da fala + margem, limitado
+  // pelo próprio buraco. Erro ≤ dur/2, e o que está aí é trilha. ──
+  const t = buraco.ini + Math.min(buraco.dur / 2, margem)
+  return { t, zona: { gapStart: t, gapEnd: t }, metodo: 'margem', precisao: buraco.dur / 2 }
 }
