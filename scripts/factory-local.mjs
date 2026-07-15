@@ -336,6 +336,20 @@ async function ingerePeca(file, { id, title, canais }) {
 async function tickComercial() {
   const res = await fetch(`${BASE}/admin/comerciais/claim`, { method: 'POST', headers: HDR })
   if (res.status === 204) return false
+  // ⚠️ 404 = os endpoints do cortador NÃO existem no Worker em produção (a
+  // migration/rotas ainda não foram pra lá). Isso NÃO é erro: é feature não
+  // implantada, e a fábrica tem que seguir pro resto da fila.
+  //
+  // Custou caro aprender: este tick foi commitado (64c727f) SEM os endpoints, e
+  // como ele roda ANTES do claim de jobs, o throw daqui derrubava a fábrica
+  // inteira — 5 erros seguidos e process.exit(1). A fila de ingestão do Gabriel
+  // (22 episódios da Raven) ficou PARADA das 03:03 em diante, e o e-mail de
+  // workflow falho foi o único aviso. O commit até dizia "ainda não roda:
+  // faltam os endpoints" — mas "não roda" virou "derruba o que já rodava".
+  //
+  // Regra: um tick de feature nova nunca pode quebrar os ticks que já
+  // funcionam. Endpoint ausente ⇒ sem trabalho, segue o baile.
+  if (res.status === 404) return false
   if (!res.ok) throw new Error(`comerciais claim HTTP ${res.status}`)
   const cc = await res.json()
   const workdir = join(ROOT, '.ingest-work', `cc_${cc.id}`)
