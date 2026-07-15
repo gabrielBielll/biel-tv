@@ -200,6 +200,42 @@ for (const comp of compilados) {
     const buracos = achaBuracos(fala)
     log(`  ${fala.length} falas · ${buracos.length} buracos candidatos`)
 
+    // ⛔ PORTEIRO DO COMPILADO INTEIRO (2026-07-15, achado no dry-run).
+    //
+    // A v3 tira os candidatos dos buracos de fala do whisper — e isso só
+    // funciona quando o whisper segmenta FINO. Medido nos 6 compilados:
+    //   603s → 164 segs, mediana 2.6s, 36 buracos  ← o único que funciona
+    //   470s →  99 segs, mediana 4.1s,  6 buracos
+    //   390s →  83 segs, mediana 4.0s,  5 buracos
+    //   200s →  ...      mediana ~4s,   3 buracos
+    // As pausas ESTÃO no áudio (130 silêncios a -30dB no de 470s): o whisper é
+    // que não quebra nelas. Segmentação de whisper é comportamento de modelo,
+    // varia por arquivo sem avisar.
+    //
+    // Com poucos candidatos as peças saem de 50-94s. O cap de 90s pega o
+    // absurdo, mas NÃO o plausível-e-errado: uma "peça" de 50s pode ser dois
+    // anúncios de 25s que ninguém separou — e essa entra no catálogo como se
+    // fosse boa. Sem revisor humano, peça plausível-e-errada é o pior caso: ela
+    // não grita.
+    //
+    // Então: densidade de candidatos abaixo do piso ⇒ NÃO CORTA este compilado.
+    // Ele fica intacto e no ar (status quo), esperando a correção da fonte de
+    // candidatos (silêncio ∪ buraco) ser testada contra gabarito. Descartar é
+    // grátis; ingerir peça quebrada, não.
+    const densidade = buracos.length / (duration / 60) // candidatos por minuto
+    const MIN_DENSIDADE = 2.5 // o de 603s tem 3.6/min; os quebrados, 0.8-1.0/min
+    if (densidade < MIN_DENSIDADE) {
+      log(`  ⛔ PULADO: só ${densidade.toFixed(1)} candidatos/min (piso ${MIN_DENSIDADE}) — ` +
+        `o whisper segmentou grosso (mediana ${(fala.reduce((a, s) => a + (s.end - s.start), 0) / fala.length).toFixed(1)}s) ` +
+        `e as peças sairiam de 50-94s sem ninguém pra conferir. Original CONTINUA no ar.`)
+      relatorio.push({
+        compilado: comp.id, titulo: comp.titulo, dur: comp.dur, pulado: true,
+        motivo: `densidade de candidatos ${densidade.toFixed(1)}/min < ${MIN_DENSIDADE} — fonte de candidatos (buraco de fala) não serve pra este arquivo`,
+        buracos: buracos.length, falas: fala.length,
+      })
+      continue
+    }
+
     // 2c. o LLM diz SE (13/13 medido contra gabarito anotado à mão)
     const vered = await cache(`${comp.id}.julga.json`, async () => {
       log(`  julgando ${buracos.length} buracos no DeepSeek…`)
