@@ -197,17 +197,45 @@ export const ACERVO: Acervo = {
   ],
 }
 
+/**
+ * A FUNÇÃO da peça — o que distingue várias peças do MESMO programa.
+ *
+ * Veio do roteiro que o Gabriel usa pras vinhetas geradas (2026-07-15): cada
+ * programa tem 3 peças fixas, e o problema dele era justamente "tem vários
+ * comerciais do mesmo desenho, é bom dar detalhes pra saber o que é". Três
+ * peças de Pucca não são 3 nomes iguais: são Pucca-início, Pucca-saída,
+ * Pucca-volta.
+ *
+ * As frases de época já falam assim, então o mesmo classificador serve pro
+ * acervo recortado E pras vinhetas que o construtor vai gerar. E casa direto
+ * com os tipos de promessa da fase 12.
+ */
+export type FuncaoPeca = 'inicio' | 'saida' | 'volta' | 'anuncio' | 'outro'
+
+/** função da peça → tipo de promessa da fase 12 (o agendador já sabe cumprir) */
+export const FUNCAO_TO_PROMESSA: Record<string, string | null> = {
+  inicio: 'a_seguir', // "A seguir: X" / "E agora: X"
+  volta: 'durante', // "Você está assistindo X" — bumper de permanência
+  saida: 'durante', // "Voltamos já com X" — segura pro intervalo
+  anuncio: null,
+  outro: null,
+}
+
 const SCHEMA_NOME = {
   type: 'object',
   properties: {
-    nome: { type: 'string' },
-    tipo: { type: 'string', enum: ['anuncio', 'vinheta', 'chamada'] },
-    refere_a: { type: 'string' },
+    programa: { type: 'string' },
+    funcao: { type: 'string', enum: ['inicio', 'saida', 'volta', 'anuncio', 'outro'] },
     fora_do_acervo: { type: 'boolean' },
+    detalhe: { type: 'string' },
     completa: { type: 'boolean' },
   },
-  required: ['nome', 'tipo', 'refere_a', 'fora_do_acervo', 'completa'],
+  required: ['programa', 'funcao', 'fora_do_acervo', 'detalhe', 'completa'],
 }
+
+const slug = (s: string) =>
+  s.normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40)
 
 /**
  * Nomeia uma peça recortada. Pedido do Gabriel: *"é bom dar nomes certos pra
@@ -230,29 +258,52 @@ export async function nomeiaPeca(
   env: Env,
   transcricao: string,
   durSeg: number,
+  canal: string,
   acervo: Acervo = ACERVO,
-): Promise<{ nome: string; tipo: string; refereA: string; foraDoAcervo: boolean; completa: boolean } | null> {
+): Promise<{ id: string; nome: string; programa: string; funcao: FuncaoPeca; promessa: string | null; foraDoAcervo: boolean; completa: boolean } | null> {
   if (transcricao.trim().length < 8) return null // peça muda: o nome sai da imagem, não daqui
 
   const system =
     'Você cataloga peças de intervalo de TV brasileira dos anos 2000 (canais retrô). ' +
     'Recebe a transcrição de UMA peça.\n' +
     'A transcrição é AUTOMÁTICA e erra nomes próprios (ex.: escreve "Sinascópio" onde se diz "Cinescópio").\n' +
-    `CANAIS do acervo: ${acervo.canais.join(' | ')}\n` +
     `PROGRAMAS do acervo: ${acervo.programas.join(' | ')}\n` +
-    'REGRA: se a peça se referir a um item das listas (mesmo mal transcrito), use a GRAFIA EXATA da lista.\n' +
-    'Se NÃO estiver nas listas, NÃO force nada da lista — use o nome que você entender e marque fora_do_acervo=true.\n' +
-    'Responda em json com as chaves: nome (string, max 6 palavras), tipo ("anuncio"|"vinheta"|"chamada"), ' +
-    'refere_a (string: item do acervo, ou ""), fora_do_acervo (boolean), completa (boolean).'
-  const user = `Peça de ${durSeg.toFixed(0)}s. Transcrição:\n"""${transcricao.slice(0, 1500)}"""\nResponda em json.`
+    'REGRA: se a peça se referir a um programa da lista (mesmo mal transcrito), use a GRAFIA EXATA da lista.\n' +
+    'Se NÃO estiver na lista, NÃO force nada dela — use o nome que você entender e marque fora_do_acervo=true.\n' +
+    'FUNÇÃO da peça (é o que distingue várias peças do MESMO programa):\n' +
+    ' "inicio" = anuncia o que vem ("A seguir:", "E agora:")\n' +
+    ' "saida"  = segura pro intervalo ("Voltamos já com", "Não saia daí")\n' +
+    ' "volta"  = identifica o que está no ar ("Você está assistindo", "Continuem vendo")\n' +
+    ' "anuncio" = publicidade de produto/terceiro · "outro" = nada disso\n' +
+    'NÃO opine sobre o canal: ele já é conhecido.\n' +
+    'Responda em json com as chaves: programa (string), funcao ("inicio"|"saida"|"volta"|"anuncio"|"outro"), ' +
+    'fora_do_acervo (boolean), detalhe (string, max 5 palavras que distingam esta peça de outra do mesmo programa), ' +
+    'completa (boolean).'
+  const user = `Peça de ${durSeg.toFixed(0)}s do canal ${canal}. Transcrição:\n"""${transcricao.slice(0, 1500)}"""\nResponda em json.`
 
   const out = await pedeJson(env, system, user, SCHEMA_NOME)
   if (!out) return null
   const j = out.json
+
+  const programa = String(j.programa ?? '').trim()
+  const funcao = (['inicio', 'saida', 'volta', 'anuncio', 'outro'].includes(j.funcao) ? j.funcao : 'outro') as FuncaoPeca
+  const detalhe = String(j.detalhe ?? '').trim()
+
+  // ⚠️ O NOME é montado pelo CÓDIGO, com o canal que o CHAMADOR já sabe.
+  // Pedir o canal ao LLM foi um erro medido: ele devolveu "Cartoon Network" pra
+  // uma peça do Beyblade num compilado do JETIX — inventou um fato que o código
+  // tinha na mão (está no media_item de origem). Regra da casa (diretor.ts:2):
+  // o LLM DECIDE (extrai o que só se sabe lendo), o CÓDIGO CALCULA (o resto).
+  const partes = [canal, programa || null, funcao !== 'outro' && funcao !== 'anuncio' ? funcao : null, detalhe || null]
+  const nome = partes.filter(Boolean).join(' · ')
+
   return {
-    nome: String(j.nome ?? '').trim(),
-    tipo: String(j.tipo ?? ''),
-    refereA: String(j.refere_a ?? ''),
+    // id determinístico e LEGÍVEL — o Gabriel pede pra poder editar depois
+    id: ['com', slug(canal), slug(programa || detalhe || 'peca'), funcao].filter(Boolean).join('_'),
+    nome,
+    programa,
+    funcao,
+    promessa: FUNCAO_TO_PROMESSA[funcao] ?? null,
     foraDoAcervo: Boolean(j.fora_do_acervo),
     completa: Boolean(j.completa),
   }

@@ -14,7 +14,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { achaBuracos, ancoraCorte, MARGEM_MAX } from '../packages/pipeline/src/cortador.mjs'
+import { achaBuracos, ancoraCorte, MARGEM_MAX, fundePelaGrade, classificaPeca, resolveId } from '../packages/pipeline/src/cortador.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const fx = JSON.parse(readFileSync(join(ROOT, 'scripts/fixtures/cortador-jetix-70s.json'), 'utf8'))
@@ -98,6 +98,41 @@ const ra = ancoraCorte(comAncora, um)
 check('1 silêncio no buraco → ancora nele, não na margem', ra.metodo === 'silencio', `t=${ra.t}`)
 check('  ...e a zona morta é o silêncio (o gap não é de ninguém)',
   ra.zona.gapStart === 11.4 && ra.zona.gapEnd === 11.9)
+
+// ── 7. merge pela grade: remonta o que o corte quebrou ────────────────────
+console.log('\n── merge pela grade (corretor, não portão) ──')
+// o caso real: Beyblade partido em corpo + cartela final
+const partido = [{ i: 0, ini: 17.7, fim: 23.7, dur: 6.0 }, { i: 1, ini: 23.7, fim: 46.3, dur: 22.6 }, { i: 2, ini: 46.3, fim: 55.0, dur: 8.7 }]
+const fundido = fundePelaGrade(partido)
+const bey = fundido.find((p) => p.fundido)
+check('remonta o comercial partido', Boolean(bey), bey?.motivo?.slice(0, 44))
+check('  ...escolhe o par CERTO (22.6+8.7=31.3, não 6.0+22.6=28.6)',
+  bey && Math.abs(bey.dur - 31.3) < 0.05, `deu ${bey?.dur}s`)
+check('  ...e deixa a peça vizinha intacta', fundido.some((p) => !p.fundido && Math.abs(p.dur - 6.0) < 0.05))
+// guarda: dois anúncios legítimos de 15s NÃO podem virar um de 30s
+const doisBons = [{ i: 0, ini: 0, fim: 15, dur: 15 }, { i: 1, ini: 15, fim: 30, dur: 15 }]
+check('NÃO funde dois anúncios que já batem na grade (o Frankenstein)',
+  fundePelaGrade(doisBons).length === 2)
+// vinheta de 5s não funde com nada (5+5 não dá 15) — o material do Gabriel
+const vinhetas = [{ i: 0, ini: 0, fim: 5, dur: 5 }, { i: 1, ini: 5, fim: 10, dur: 5 }]
+check('vinhetas de 5s sobrevivem (não fundem)', fundePelaGrade(vinhetas).length === 2)
+
+// ── 8. tudo entra (decisão do Gabriel: modo livre) ────────────────────────
+console.log('\n── classificação: só fragmento é descartado ──')
+check('vinheta de 5s entra', classificaPeca({ dur: 5 }).ok)
+check('anúncio de 30s entra', classificaPeca({ dur: 30 }).ok)
+check('chamada de 40s entra (fora da grade, mas entra)', classificaPeca({ dur: 40 }).ok)
+check('fragmento de 0.7s NÃO entra', !classificaPeca({ dur: 0.7 }).ok)
+check('o slot é informativo, não veredito', classificaPeca({ dur: 30 }).slot === 30 && classificaPeca({ dur: 40 }).slot === null)
+
+// ── 9. id único: INSERT OR REPLACE não perdoa ─────────────────────────────
+console.log('\n── colisão de id ──')
+const jaTem = new Set(['com_jetix_cinescopio_volta'])
+check('id livre passa limpo', resolveId('com_jetix_pucca_inicio', jaTem) === 'com_jetix_pucca_inicio')
+const r1 = resolveId('com_jetix_cinescopio_volta', jaTem)
+check('id colidido ganha sufixo (não sobrescreve)', r1 === 'com_jetix_cinescopio_volta_2', r1)
+jaTem.add(r1)
+check('  ...e o próximo também', resolveId('com_jetix_cinescopio_volta', jaTem) === 'com_jetix_cinescopio_volta_3')
 
 console.log(`\n${fail === 0 ? '✅' : '❌'} ${pass}/${pass + fail}\n`)
 process.exit(fail === 0 ? 0 : 1)

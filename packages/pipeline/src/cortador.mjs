@@ -502,3 +502,27 @@ export function classificaPeca(p, { grade = GRADE, tol = GRADE_TOL } = {}) {
     slot: slot ?? null,
   }
 }
+
+/**
+ * ⭐ Id único a partir de um id LEGÍVEL — sem apagar ninguém.
+ *
+ * ⚠️ O pipeline registra com `INSERT OR REPLACE`: id repetido não dá erro, ele
+ * SOBRESCREVE em silêncio. E repetir é o caso comum, não a exceção — medido num
+ * compilado real: duas vinhetas diferentes do Cinescópio ("Continuem vendo" e
+ * "Você está vendo") geram `com_jetix_cinescopio_volta` as duas. Num lote de 6
+ * compilados isso comeria peças sem deixar rastro.
+ *
+ * Sufixo só quando precisa: o caso comum fica com o id limpo (o Gabriel pediu id
+ * legível e editável — "é bom dar detalhes pra saber o que é"), e a colisão
+ * ganha `_2`, `_3`… O sufixo é estável enquanto a ordem de ingestão for estável.
+ *
+ * @param existentes ids que já estão no catálogo (+ os desta leva).
+ */
+export function resolveId(base, existentes) {
+  if (!existentes.has(base)) return base
+  for (let i = 2; i < 1000; i++) {
+    const cand = `${base}_${i}`
+    if (!existentes.has(cand)) return cand
+  }
+  throw new Error(`resolveId: 1000 colisões em "${base}" — algo está errado`)
+}
