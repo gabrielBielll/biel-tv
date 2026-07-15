@@ -113,10 +113,23 @@ for (const p of PLANO) {
       // preto do fim ⇒ mantém o nome original. Só peça de compilado sem nome dele
       // ganha rótulo genérico, e mesmo assim legível.
       const aparo = p.pecas.length === 1 && pc.ini < 2 && pc.fim > duration * 0.6
-      const nome = pc.nome ?? (aparo ? String(row.titulo ?? row.id) : `${p.canal} · trecho ${fmtT(pc.ini)}`)
-      // aparo gera id igual ao do original (mesmo nome) → resolveId daria _2, que
-      // não diz nada. '_cortado' explica por que existem dois.
-      const base = aparo ? `${row.id}_cortado` : `com_${slug(p.canal)}_${slug(nome)}`
+      // ⚠️ SEM NOME ⇒ HERDA O TÍTULO DA FONTE, nunca "trecho 0m01".
+      // Saiu `com_disney_channel_disney_channel_trecho_0m01` pra uma peça que é
+      // "OS PADRINHOS MÁGICOS, NO DISNEY CHANNEL" — a fonte tinha o nome certo o
+      // tempo todo e eu inventei um rótulo que não diz nada. O Gabriel marca por
+      // cima de peça JÁ NOMEADA (é o fluxo de polir): o título dela é a melhor
+      // informação disponível, não o timestamp de onde ele começou a marcar.
+      // Só cai no genérico quando a fonte também não tem título.
+      const herdado = String(row.titulo ?? '').trim()
+      const nome = pc.nome ?? (herdado && herdado !== row.id ? herdado : `${p.canal} · trecho ${fmtT(pc.ini)}`)
+
+      // ⚠️ id a partir do NOME LIMPO, sem empilhar sufixo.
+      // Saiu `com_cartoon_network_curtas_cn_jo_cortado_cortado` e
+      // `com_jetix_pucca_2_cortado`: cada rodada grudava mais um `_cortado`/`_N`
+      // no id ANTERIOR. Como ele repoli a mesma peça várias vezes (é o fluxo),
+      // o id crescia a cada volta. Partir do nome mantém estável: a Pucca
+      // repolida 5× continua `com_jetix_pucca`, e a aposentadoria tira a velha.
+      const base = `com_${slug(p.canal)}_${slug(nome)}`
       // ⚠️ APOSENTAR a geração anterior desta MESMA peça, em vez de empilhar.
       // Regra do Gabriel (2026-07-15): "ele deve desativar o vídeo antigo pra não
       // ficar vários iguais na programação".
