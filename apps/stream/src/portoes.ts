@@ -171,3 +171,89 @@ export async function portaoSemantico(env: Env, transcricao: string): Promise<Ve
     provedor: out.provedor,
   }
 }
+
+// ── nomeação das peças ─────────────────────────────────────────────────────
+
+export type Acervo = { canais: string[]; programas: string[] }
+
+/**
+ * O acervo do Gabriel (2026-07-15). Vocabulário FECHADO pra corrigir o que o
+ * whisper erra em nome próprio de época.
+ *
+ * ⚠️ TODO: derivar do D1 (as séries do catálogo) em vez de hardcode — assim
+ * cresce sozinho quando ele sobe um desenho novo. Hardcoded por ora porque a
+ * primeira leva de recorte precisa disto antes da fábrica existir.
+ */
+export const ACERVO: Acervo = {
+  canais: ['Jetix', 'Cartoon Network', 'Disney Channel'],
+  programas: [
+    'Os Padrinhos Mágicos', 'Yin Yang Yo!', 'Power Rangers: Galáxia Perdida',
+    'Power Rangers: O Resgate', 'Pucca', 'Beyblade',
+    'Madagascar: Perseguidos por um Cupcake Gigante',
+    'Super Esquadrão dos Macacos Robôs Hiperforça Já!',
+    'O Show dos Looney Tunes', 'A Vida e Aventuras de Juniper Lee',
+    'Martin Mystery', 'Hey Arnold!', 'Danny Phantom',
+    'Jake Long: O Dragão Ocidental',
+  ],
+}
+
+const SCHEMA_NOME = {
+  type: 'object',
+  properties: {
+    nome: { type: 'string' },
+    tipo: { type: 'string', enum: ['anuncio', 'vinheta', 'chamada'] },
+    refere_a: { type: 'string' },
+    fora_do_acervo: { type: 'boolean' },
+    completa: { type: 'boolean' },
+  },
+  required: ['nome', 'tipo', 'refere_a', 'fora_do_acervo', 'completa'],
+}
+
+/**
+ * Nomeia uma peça recortada. Pedido do Gabriel: *"é bom dar nomes certos pra
+ * esses comerciais partidos para ficar mais fácil de identificar"*.
+ *
+ * ⚠️ Sem o vocabulário, o LLM HERDA o erro do whisper e batiza o arquivo errado
+ * PRA SEMPRE — e nome errado é pior que nome genérico, porque parece confiável.
+ * Medido no acervo real: "Chamada Sinascópio Yohasa" (whisper errando
+ * "Cinescópio" e "Yoh Asakura"), "Mega Man Anity 2000X". Com o vocabulário:
+ * "Shaman King", "Mega Man", "Cinescópio".
+ *
+ * ⚠️ E a regra do NÃO-FORÇAR é o que faz isto ser seguro: os compilados são
+ * intervalos de época INTEIROS e a maior parte do que passa neles não está no
+ * acervo (Cinescópio, Mega Man, os filmes — 7 de 8 peças medidas). Obrigar o
+ * encaixe na lista faria "Mega Man" virar "Beyblade" (o mais próximo) — um erro
+ * confiante, que é o pior tipo. A lista corrige o que conhece; o resto sai como
+ * o modelo entender, marcado `fora_do_acervo`.
+ */
+export async function nomeiaPeca(
+  env: Env,
+  transcricao: string,
+  durSeg: number,
+  acervo: Acervo = ACERVO,
+): Promise<{ nome: string; tipo: string; refereA: string; foraDoAcervo: boolean; completa: boolean } | null> {
+  if (transcricao.trim().length < 8) return null // peça muda: o nome sai da imagem, não daqui
+
+  const system =
+    'Você cataloga peças de intervalo de TV brasileira dos anos 2000 (canais retrô). ' +
+    'Recebe a transcrição de UMA peça.\n' +
+    'A transcrição é AUTOMÁTICA e erra nomes próprios (ex.: escreve "Sinascópio" onde se diz "Cinescópio").\n' +
+    `CANAIS do acervo: ${acervo.canais.join(' | ')}\n` +
+    `PROGRAMAS do acervo: ${acervo.programas.join(' | ')}\n` +
+    'REGRA: se a peça se referir a um item das listas (mesmo mal transcrito), use a GRAFIA EXATA da lista.\n' +
+    'Se NÃO estiver nas listas, NÃO force nada da lista — use o nome que você entender e marque fora_do_acervo=true.\n' +
+    'Responda em json com as chaves: nome (string, max 6 palavras), tipo ("anuncio"|"vinheta"|"chamada"), ' +
+    'refere_a (string: item do acervo, ou ""), fora_do_acervo (boolean), completa (boolean).'
+  const user = `Peça de ${durSeg.toFixed(0)}s. Transcrição:\n"""${transcricao.slice(0, 1500)}"""\nResponda em json.`
+
+  const out = await pedeJson(env, system, user, SCHEMA_NOME)
+  if (!out) return null
+  const j = out.json
+  return {
+    nome: String(j.nome ?? '').trim(),
+    tipo: String(j.tipo ?? ''),
+    refereA: String(j.refere_a ?? ''),
+    foraDoAcervo: Boolean(j.fora_do_acervo),
+    completa: Boolean(j.completa),
+  }
+}
