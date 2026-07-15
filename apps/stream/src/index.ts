@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { SEGMENT_DURATION, SQL_EPG_OVERLAP, type EpgRowWithMedia } from '@bieltv/db'
 import { buildLivePlaylist } from './playlist'
+import { revisao } from './revisao'
 import { admin } from './admin'
 import { votaton } from './votaton'
 import { reconcileAndRepair, runScheduler } from './scheduler'
@@ -20,6 +21,14 @@ type Bindings = {
 const app = new Hono<{ Bindings: Bindings }>()
 
 app.route('/admin', admin)
+// bancada de revisão das peças recortadas (ideia do Gabriel, 2026-07-15):
+// pública e read-only — o /media/* que ela consome já é aberto. As AÇÕES
+// (tirar do ar) batem em /admin/media/:id/status, que exige o token.
+app.route('/revisao', revisao)
+// /r é o mesmo sub-app: o Gabriel digita a URL na mão no celular/TV e o
+// domínio workers.dev já é longo demais — cada caractere do path conta.
+// (o m3u8 usa caminho ABSOLUTO /media/*, então funciona igual pelos dois)
+app.route('/r', revisao)
 // Votaton (fase 10c): público de propósito — é a experiência do telespectador
 app.route('/votaton', votaton)
 
