@@ -28,6 +28,7 @@
     "verify:editorial": "node scripts/verify-editorial.mjs",
     "verify:votaton": "node scripts/verify-votaton.mjs",
     "verify:nomear": "node scripts/verify-nomear.mjs",
+    "verify:marcador": "node scripts/verify-marcador.mjs",
     "verify:link": "node scripts/verify-link.mjs",
     "verify:playlist": "node scripts/verify-playlist.mjs"
   },

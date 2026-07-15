@@ -15,11 +15,16 @@
 // início, fim e seek — coisas que o live não tem por construção.
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { MARCADOR } from './marcador'
 
-type Bindings = { DB: D1Database }
+type Bindings = { DB: D1Database; ADMIN_TOKEN?: string }
 
 export const revisao = new Hono<{ Bindings: Bindings }>()
 revisao.use('*', cors())
+
+/** As categorias do veredito. Cada uma aponta pra uma parte ESPECÍFICA do motor
+ *  — é isso que torna a nota acionável (ver 0016_revisao_notas.sql). */
+const CATEGORIAS = ['corte_no_meio', 'pedaco_vizinho', 'nao_e_peca', 'nome_errado', 'preto_demais', 'outro']
 
 const SEG = 10 // s por segmento — a regra de ouro do pipeline
 const pad5 = (n: number) => String(n).padStart(5, '0')
@@ -30,13 +35,133 @@ revisao.get('/lista', async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT m.id, m.status, m.duracao_seg, m.segment_count, m.created_at,
             COALESCE(json_extract(m.metadata,'$.title'), json_extract(m.metadata,'$.titulo'), m.id) AS titulo,
-            mc.channel_id AS canal
+            mc.channel_id AS canal,
+            n.veredito, n.categoria, n.motivo
      FROM media_items m
      LEFT JOIN media_channels mc ON mc.media_id = m.id
+     LEFT JOIN revisao_notas n ON n.media_id = m.id
      WHERE m.tipo = 'comercial'
      ORDER BY m.created_at DESC, m.id`,
   ).all()
   return c.json(results)
+})
+
+/**
+ * O veredito do Gabriel sobre uma peça — o gabarito, gerado enquanto ele revisa.
+ *
+ * Escreve, então exige o token (o resto da bancada é público e read-only).
+ * `ruim` também tira do ar na mesma tacada: ele já estava fazendo os dois passos
+ * na mão, e separá-los só criaria peça marcada como ruim que continua no ar.
+ */
+revisao.post('/:id/nota', async (c) => {
+  const token = c.req.header('authorization')?.replace(/^Bearer\s+/i, '')
+  if (!c.env.ADMIN_TOKEN || token !== c.env.ADMIN_TOKEN) return c.json({ error: 'não autorizado' }, 401)
+
+  const b = await c.req.json<{ veredito?: string; categoria?: string; motivo?: string }>().catch(() => null)
+  if (!b) return c.json({ error: 'JSON inválido' }, 400)
+  const veredito = b.veredito === 'boa' ? 'boa' : b.veredito === 'ruim' ? 'ruim' : null
+  if (!veredito) return c.json({ error: "veredito tem que ser 'boa' ou 'ruim'" }, 400)
+  const categoria = veredito === 'ruim' && CATEGORIAS.includes(b.categoria ?? '') ? b.categoria! : null
+  const motivo = String(b.motivo ?? '').slice(0, 500)
+
+  const id = c.req.param('id')
+  const existe = await c.env.DB.prepare('SELECT id FROM media_items WHERE id = ?1').bind(id).first()
+  if (!existe) return c.json({ error: 'peça não existe' }, 404)
+
+  await c.env.DB.prepare(
+    `INSERT INTO revisao_notas (media_id, veredito, categoria, motivo)
+     VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT(media_id) DO UPDATE SET
+       veredito = ?2, categoria = ?3, motivo = ?4, updated_at = unixepoch()`,
+  ).bind(id, veredito, categoria, motivo).run()
+
+  // ruim ⇒ fora do ar; boa ⇒ garante no ar (ele pode ter tirado e se arrependido)
+  await c.env.DB.prepare('UPDATE media_items SET status = ?2 WHERE id = ?1')
+    .bind(id, veredito === 'ruim' ? 'disabled' : 'ready').run()
+
+  return c.json({ ok: true, veredito, categoria })
+})
+
+/** Os compilados que esperam marcação — os intervalos longos do acervo. */
+revisao.get('/compilados', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT m.id, m.duracao_seg, m.status,
+            COALESCE(json_extract(m.metadata,'$.title'), json_extract(m.metadata,'$.titulo'), m.id) AS titulo,
+            cm.pecas, cm.status AS corte_status, cm.n_pecas
+     FROM media_items m
+     LEFT JOIN cortes_marcados cm ON cm.compilado_id = m.id
+     WHERE m.tipo = 'comercial' AND m.duracao_seg >= 120
+     ORDER BY m.duracao_seg DESC`,
+  ).all()
+  return c.json(results)
+})
+
+/**
+ * As peças que o Gabriel marcou assistindo — {ini, fim, nome} cada uma.
+ *
+ * ⚠️ Isto é o gabarito, não uma sugestão: 6 sinais automáticos foram medidos
+ * contra o que ele anotou à mão e o melhor (cena) acerta 5/6 mas dispara 138×.
+ * Quem manda aqui é ele; o motor virou opinião opcional.
+ *
+ * O buraco entre uma peça e a seguinte é INTENCIONAL — é o lixo que ele mandou
+ * descartar ("o resto é lixo só recortes"). Por isso peça tem fim próprio em vez
+ * de terminar onde a próxima começa (ver 0017_cortes_pecas.sql).
+ */
+revisao.post('/:id/pecas', async (c) => {
+  const token = c.req.header('authorization')?.replace(/^Bearer\s+/i, '')
+  if (!c.env.ADMIN_TOKEN || token !== c.env.ADMIN_TOKEN) return c.json({ error: 'não autorizado' }, 401)
+  const b = await c.req.json<{ pecas?: { ini?: number; fim?: number; nome?: string }[] }>().catch(() => null)
+  if (!b || !Array.isArray(b.pecas)) return c.json({ error: 'pecas tem que ser um array de {ini, fim, nome}' }, 400)
+  if (!b.pecas.length) return c.json({ error: 'marque pelo menos uma peça' }, 400)
+
+  const id = c.req.param('id')
+  const m = await c.env.DB.prepare('SELECT duracao_seg FROM media_items WHERE id = ?1')
+    .bind(id).first<{ duracao_seg: number }>()
+  if (!m) return c.json({ error: 'compilado não existe' }, 404)
+
+  const pecas = b.pecas
+    .map((p) => ({
+      ini: Math.round(Number(p.ini) * 100) / 100,
+      fim: Math.round(Number(p.fim) * 100) / 100,
+      // nome vazio ⇒ null: é o contrato do PLANO (`pc.nome ?? fallback`) — quem
+      // não foi nomeado por ele é nomeado pelo LLM, e '' não diz isso.
+      nome: String(p.nome ?? '').trim().slice(0, 120) || null,
+    }))
+    .sort((x, y) => x.ini - y.ini)
+
+  for (const [i, p] of pecas.entries()) {
+    if (!Number.isFinite(p.ini) || !Number.isFinite(p.fim)) return c.json({ error: `peça ${i + 1}: ini/fim não é número` }, 400)
+    if (p.ini < 0 || p.fim > m.duracao_seg + 0.5) return c.json({ error: `peça ${i + 1}: cai fora do compilado (0–${m.duracao_seg}s)` }, 400)
+    // 0.5s: abaixo disso é escorregão de tecla, não peça — e o cortador gastaria
+    // um ingest inteiro pra produzir lixo
+    if (p.fim - p.ini < 0.5) return c.json({ error: `peça ${i + 1}: dura ${(p.fim - p.ini).toFixed(2)}s — fim tem que vir depois do início` }, 400)
+    // encostar (fim == ini da próxima) é normal e comum: no acervo dele o
+    // Batalhão termina exatamente onde o Medabots começa (473.0). Sobrepor não:
+    // geraria o mesmo trecho em duas peças.
+    if (i > 0 && p.ini < pecas[i - 1].fim - 0.01) return c.json({ error: `peça ${i + 1} sobrepõe a ${i}` }, 400)
+  }
+
+  await c.env.DB.prepare(
+    `INSERT INTO cortes_marcados (compilado_id, pecas, status) VALUES (?1, ?2, 'marcado')
+     ON CONFLICT(compilado_id) DO UPDATE SET pecas = ?2, status = 'marcado', updated_at = unixepoch()`,
+  ).bind(id, JSON.stringify(pecas)).run()
+  return c.json({ ok: true, pecas })
+})
+
+/** O placar, pra eu ler e saber ONDE o motor erra — não SE erra. */
+revisao.get('/notas', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT n.media_id, n.veredito, n.categoria, n.motivo, m.duracao_seg,
+            COALESCE(json_extract(m.metadata,'$.title'), m.id) AS titulo
+     FROM revisao_notas n JOIN media_items m ON m.id = n.media_id
+     ORDER BY n.updated_at DESC`,
+  ).all()
+  const porCat: Record<string, number> = {}
+  for (const r of results as any[]) {
+    const k = r.veredito === 'boa' ? 'boa' : (r.categoria ?? 'sem_categoria')
+    porCat[k] = (porCat[k] ?? 0) + 1
+  }
+  return c.json({ total: results.length, porCategoria: porCat, notas: results })
 })
 
 /**
@@ -115,9 +240,20 @@ const PAGINA = `<!doctype html>
   input{background:var(--card);border:1px solid var(--line);color:var(--txt);padding:6px 9px;border-radius:6px;font-size:12px;width:200px}
   .tag{font-size:10px;padding:1px 6px;border-radius:4px;background:#232936;color:var(--dim)}
   .tag.off{background:#3a1f26;color:var(--no)}
+  .tag.v-boa{background:#16332a;color:var(--ok)}
+  .tag.v-ruim{background:#3a1f26;color:var(--no)}
+  .veredito{border:1px solid var(--line);border-radius:8px;padding:12px;max-width:640px;background:#11151d}
+  .lin{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+  .ou{font-size:12px;color:var(--dim)}
+  button.boa{background:var(--ok);border-color:var(--ok);color:#06231a;font-weight:600}
+  .cats button{font-size:12px;padding:5px 10px}
+  .cats button.on{background:var(--no);border-color:var(--no);color:#2a0d0d;font-weight:600}
+  textarea{width:100%;background:var(--card);border:1px solid var(--line);color:var(--txt);
+    padding:8px;border-radius:6px;font:13px system-ui;resize:vertical;margin-bottom:8px}
 </style></head><body>
 <header>
-  <h1>🎞 Bancada — peças recortadas</h1>
+  <h1>🎞 Bancada</h1>
+  <a href="/r/cortar" style="color:#4ea1ff;text-decoration:none;font-size:13px">✂️ marcar cortes →</a>
   <span class="cont" id="cont">carregando…</span>
   <button id="bPre">⤓ pré-carregar tudo</button>
   <span class="cont" id="pre"></span>
@@ -135,7 +271,16 @@ const PAGINA = `<!doctype html>
         <button class="pri" id="bIni">⏮ ver o início</button>
         <button class="pri" id="bFim">⏭ ver o fim (−3s)</button>
         <button id="bRe">↻ de novo</button>
-        <button class="dang" id="bOff">✖ tirar do ar</button>
+      </div>
+      <div class="veredito">
+        <div class="lin">
+          <button class="boa" id="bBoa">👍 boa — deixa no ar</button>
+          <span class="ou">ou marque o que deu errado:</span>
+        </div>
+        <div class="lin cats" id="cats"></div>
+        <textarea id="obs" rows="2" placeholder="o que exatamente ficou ruim? (opcional, mas é o que me ensina)"></textarea>
+        <div class="lin"><button class="dang" id="bRuim">✖ ruim — tira do ar e registra</button>
+          <span class="cont" id="jaTem"></span></div>
       </div>
       <div class="meta" id="meta"></div>
     </div>
@@ -151,12 +296,15 @@ $('#tok').value = localStorage.getItem('tk') ?? ''
 async function carrega(){
   itens = await (await fetch('/revisao/lista')).json()
   const no = itens.filter(i=>i.status==='ready').length
-  $('#cont').textContent = itens.length+' peças · '+no+' no ar'
+  const rev = itens.filter(i=>i.veredito).length
+  $('#cont').textContent = itens.length+' peças · '+no+' no ar · '+rev+' revisadas'
   $('#lista').innerHTML = itens.map((i,n)=>
     '<div class="it '+(i.status!=='ready'?'off':'')+'" data-n="'+n+'">'+
       '<span class="dur">'+fmt(i.duracao_seg)+'</span>'+
       '<span class="nm">'+i.titulo.replace(/</g,'&lt;')+
-        (i.status!=='ready'?' <span class="tag off">fora do ar</span>':'')+
+        (i.veredito==='boa'?' <span class="tag v-boa">👍</span>':'')+
+        (i.veredito==='ruim'?' <span class="tag v-ruim">✖ '+(i.categoria??'ruim').replace(/_/g,' ')+'</span>':'')+
+        (i.status!=='ready'&&!i.veredito?' <span class="tag off">fora do ar</span>':'')+
         '<br><span class="id">'+i.id+'</span></span>'+
     '</div>').join('')
   document.querySelectorAll('.it').forEach(e=>e.onclick=()=>abre(+e.dataset.n))
@@ -205,6 +353,11 @@ function abre(n){
     'estado <b>'+(sel.status==='ready'?'no ar':'fora do ar')+'</b>'+
     '<br><span style="color:#ffb454">⚠ o pipeline pada tudo pra múltiplo de 10s com PRETO — '+
     'se sobrar preto no fim, é a regra dos 10s, não corte errado.</span>'
+  // o que ele já disse desta peça — senão revisa duas vezes sem saber
+  $('#jaTem').textContent = sel.veredito
+    ? '— já marcada: '+(sel.veredito==='boa'?'👍 boa':'✖ '+(sel.categoria??'ruim').replace(/_/g,' '))+
+      (sel.motivo?' ("'+sel.motivo+'")':'')
+    : ''
   preVizinhos(n)
 }
 $('#bIni').onclick=()=>{const v=$('#v');v.currentTime=0;v.play()}
@@ -212,15 +365,41 @@ $('#bIni').onclick=()=>{const v=$('#v');v.currentTime=0;v.play()}
 // entra um pedaço do vizinho, é aqui que aparece.
 $('#bFim').onclick=()=>{const v=$('#v');v.currentTime=Math.max(0,(sel?.duracao_seg??v.duration)-3);v.play()}
 $('#bRe').onclick=()=>{const v=$('#v');v.currentTime=0;v.play()}
-$('#bOff').onclick=async()=>{
+// Cada categoria aponta pra uma parte ESPECÍFICA do motor — é isso que me deixa
+// consertar o lugar certo em vez de adivinhar. Texto livre eu leio, mas não
+// conto; categoria eu conto e vejo qual erro domina.
+const CATS=[
+  ['corte_no_meio','✂️ cortada no meio','o corte caiu dentro da peça — faltou um limite'],
+  ['pedaco_vizinho','🔗 tem pedaço do vizinho','entrou sobra do comercial de antes/depois'],
+  ['nao_e_peca','📺 não é peça','é bloco, programa ou trecho solto'],
+  ['nome_errado','🏷 nome errado','o nome não bate com o conteúdo'],
+  ['preto_demais','⬛ preto demais','a regra dos 10s pesou (arquitetural)'],
+  ['outro','… outro','descreva embaixo'],
+]
+let cat=null
+$('#cats').innerHTML=CATS.map(([k,r,t])=>'<button data-k="'+k+'" title="'+t+'">'+r+'</button>').join('')
+document.querySelectorAll('#cats button').forEach(b=>b.onclick=()=>{
+  cat = cat===b.dataset.k ? null : b.dataset.k
+  document.querySelectorAll('#cats button').forEach(x=>x.classList.toggle('on',x.dataset.k===cat))
+})
+async function nota(veredito){
   if(!sel) return
-  const t=tok(); if(!t) return alert('cole o ADMIN_TOKEN no topo pra poder tirar do ar')
-  const novo = sel.status==='ready' ? 'disabled' : 'ready'
-  const r=await fetch('/admin/media/'+encodeURIComponent(sel.id)+'/status',
-    {method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+t},body:JSON.stringify({status:novo})})
-  if(!r.ok) return alert('falhou ('+r.status+'): '+(await r.text()).slice(0,120))
-  await carrega(); alert(novo==='disabled'?'tirada do ar':'de volta ao ar')
+  const t=tok(); if(!t) return alert('cole o ADMIN_TOKEN no topo — sem ele não dá pra registrar')
+  if(veredito==='ruim' && !cat && !$('#obs').value.trim())
+    return alert('marque uma categoria ou escreva o motivo — é isso que me ensina o que consertar')
+  const r=await fetch('/revisao/'+encodeURIComponent(sel.id)+'/nota',{method:'POST',
+    headers:{'content-type':'application/json',authorization:'Bearer '+t},
+    body:JSON.stringify({veredito,categoria:cat,motivo:$('#obs').value.trim()})})
+  if(!r.ok) return alert('falhou ('+r.status+'): '+(await r.text()).slice(0,140))
+  const n=itens.indexOf(sel)
+  await carrega()
+  $('#obs').value=''; cat=null
+  document.querySelectorAll('#cats button').forEach(x=>x.classList.remove('on'))
+  // vai direto pra próxima: ele está varrendo a lista, não quer clicar de novo
+  if(n+1<itens.length) abre(n+1)
 }
+$('#bBoa').onclick=()=>nota('boa')
+$('#bRuim').onclick=()=>nota('ruim')
 // Varredura sequencial: ~51 peças × 2-8MB seria uma enxurrada se disparasse
 // tudo de uma vez. Uma por vez mantém a banda livre pro que está tocando.
 $('#bPre').onclick=async()=>{
@@ -236,3 +415,5 @@ carrega()
 </script></body></html>`
 
 revisao.get('/', (c) => c.html(PAGINA))
+// a etapa de ajuste: ele marca onde cada peça termina, o ffmpeg corta ali
+revisao.get('/cortar', (c) => c.html(MARCADOR))

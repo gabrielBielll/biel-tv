@@ -361,6 +361,47 @@ que cair pro `filter` **sozinha** (sem `forcarFiltro`) e sair sincronizada — o
 buraco de cobertura que deixou o bug passar (o teste antigo só forçava o filter
 via `{ forcarFiltro: true }`, nunca exercitava a detecção automática).
 
+## Telas com vídeo (`/r`, `/r/cortar`)
+
+**`<video controls>` ROUBA o teclado, e o `preventDefault()` chega tarde.**
+O controle nativo do Chrome vive num shadow DOM e trata a tecla no próprio
+listener ANTES do evento bubblar até o `document` — então um
+`addEventListener('keydown')` na página não consegue cancelar o
+comportamento dele: os dois acontecem e SOMAM. Medido na página no ar
+(playwright, `/r/cortar`): depois de clicar no player, `←` andava **−7.19s**
+em vez de −1s (nosso −1 + o −5 nativo + drift), e `espaço` não fazia nada
+(nós dávamos play, o nativo dava pause em seguida). Se a tela tem atalho
+próprio, **não use `controls`** — desenhe a régua/transporte na mão
+(pointer events); sem controle nativo não há foco pra roubar. Foi a causa
+raiz do "mudei o momento do vídeo e a marcação sai" que o Gabriel reportou.
+
+**Seta com `<select>` focado troca a opção — e leva o estado da tela junto.**
+O padrão `if (e.target.tagName === 'SELECT') return` no handler global parece
+proteger, mas faz o contrário do que aparenta: ele só desiste de tratar a
+tecla, e aí o comportamento NATIVO do select roda inteiro — muda o valor,
+dispara `change`, e o `onchange` recarrega tudo. Na v1 do marcador isso
+trocava de compilado e **apagava todas as marcas**, sem aviso e sem desfazer;
+como escolher o compilado no dropdown é a primeira coisa que se faz na tela, o
+foco já estava lá. Resultado: a tabela `cortes_marcados` ficou VAZIA em
+produção por dias — ele marcava, perdia, e nunca chegava a salvar. Fixes que
+valem juntos: `blur()` no `change`, e **rascunho em `localStorage`** por item,
+que torna a troca (proposital ou não) barata em vez de fatal.
+
+**Campo de texto na tela come os atalhos — e some com a ação, calado.**
+Com um `<input>` de nome por linha, o mesmo guard (`if target === 'INPUT'
+return`) faz o `I`/`F` virarem LETRA dentro do campo: o nome sai "Tempestade
+Ninjaif" e a marcação seguinte simplesmente não acontece, sem erro nenhum.
+Sempre dar a saída explícita: `Enter`/`Esc` → `blur()`. Achado pelo teste, não
+pela leitura — e ele *passou* na primeira rodada por acidente (a asserção
+casava com um buraco que já existia por outro motivo).
+
+**`el.style.display = ''` cai no `display:none` do CSS, não em "visível".**
+Limpar o estilo inline devolve o controle pra folha de estilo — e se a regra
+declara `display:none` como default (caso do `#ab`, o bloco da peça aberta), o
+elemento continua invisível com `left`/`width` perfeitamente calculados.
+Modelo certo, tela muda: nenhum teste de estado pega isso, só olhar o pixel
+(ou `getComputedStyle`). Use `'block'` explícito.
+
 ## Scripts de verificação (`scripts/verify-*.mjs`)
 
 **`d1()` (spawnSync de `wrangler d1 execute`) bloqueia o event loop por
@@ -395,6 +436,21 @@ NÃO funciona: o heredoc vira o stdin (é de onde o python lê o script), então
 o pipe é descartado e `sys.stdin.read()` volta vazio. Ou passa os dados por
 argumento/arquivo, ou embute no script. Custou dois "vigias" de background
 imprimindo lixo em silêncio.
+
+**`waitUntil: 'networkidle'` é roleta em página com HLS.** O hls.js fica
+baixando segmento continuamente (`maxBufferLength: 300` = dezenas de MB), então
+"rede parada por 500ms" pode não chegar nunca — o `goto` do
+`verify-marcador.mjs` passava local e estourava contra produção, de forma
+intermitente. Use `domcontentloaded` + um `waitForFunction` num sinal do
+**próprio app** (ex.: `typeof cur !== 'undefined' && cur`).
+
+**`boundingBox()` medido antes do vídeo carregar aponta pro lugar errado.**
+Até o `<video>` saber a própria proporção ele não tem altura; quando o
+metadata chega, tudo abaixo dele escorrega — e um clique/arrasto em coordenada
+velha erra o alvo e falha por motivo nenhum. Sintoma exato que isso deu: o
+teste da régua acusou "arrastar não busca" enquanto o clique (feito 1s antes,
+com a mesma box) passava. Fix: `waitForFunction(() => $('#v').readyState >= 1)`
+antes de medir, e remedir a box a cada gesto.
 
 **Playwright: `innerText` devolve o texto RENDERIZADO — inclusive
 `text-transform: uppercase` do CSS.** Os `h2` dos cards do admin usam
