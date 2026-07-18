@@ -14,7 +14,7 @@ const W = 1280
 const H = 720
 const MAX_PRELUDE = 2.5
 const TITLE_FONT = fileURLToPath(new URL('../assets/LiberationSansNarrow-Bold.ttf', import.meta.url))
-const DISNEY_FONT = fileURLToPath(new URL('../assets/UbuntuSans.ttf', import.meta.url))
+const DISNEY_FONT = fileURLToPath(new URL('../assets/Anton-Regular.ttf', import.meta.url))
 
 async function run(bin, args) {
   await execFileAsync(bin, args, BUF)
@@ -57,13 +57,16 @@ function parseBox(raw) {
 function textStyle(canal) {
   if (canal === 'disney_channel') {
     return {
-      box: { x: 820, y: 54, w: 390, h: 105 },
+      box: { x: 70, y: 54, w: 410, h: 112 },
       font: DISNEY_FONT,
-      family: 'Ubuntu Sans',
-      anchor: 'end',
-      titleSize: 31,
-      subtitleSize: 25,
-      titleY: 88,
+      family: 'Anton',
+      anchor: 'start',
+      weight: 400,
+      stretch: 'normal',
+      strokeWidth: 1.9,
+      titleSize: 40,
+      subtitleSize: 32,
+      titleY: 91,
       subtitleY: 38,
       titleFill: '#ffffff',
       titleStroke: '#3a0b67',
@@ -78,6 +81,9 @@ function textStyle(canal) {
     font: TITLE_FONT,
     family: 'Liberation Sans Narrow',
     anchor: 'start',
+    weight: 700,
+    stretch: 'normal',
+    strokeWidth: 1.2,
     titleSize: 43,
     subtitleSize: 34,
     titleY: 43,
@@ -118,10 +124,10 @@ function makeSvgTextOverlay(titulo, subtitulo, textoBox, canal, outFile) {
   const titleFit = svgFit(titulo, style.titleSize, box.w)
   const subtitleFit = svgFit(subtitulo, style.subtitleSize, box.w)
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
-  <text x="${titleX + 2}" y="${titleY + 3}" text-anchor="${style.anchor}" font-family="${style.family}" font-size="${style.titleSize}" font-weight="700" letter-spacing="0" fill="${style.titleShadow}"${titleFit}>${title}</text>
-  <text x="${titleX}" y="${titleY}" text-anchor="${style.anchor}" font-family="${style.family}" font-size="${style.titleSize}" font-weight="700" letter-spacing="0" fill="${style.titleFill}" stroke="${style.titleStroke}" stroke-width="1.2" paint-order="stroke"${titleFit}>${title}</text>
-  <text x="${titleX + 2}" y="${subtitleY + 3}" text-anchor="${style.anchor}" font-family="${style.family}" font-size="${style.subtitleSize}" font-weight="700" letter-spacing="0" fill="${style.subtitleShadow}"${subtitleFit}>${subtitle}</text>
-  <text x="${titleX}" y="${subtitleY}" text-anchor="${style.anchor}" font-family="${style.family}" font-size="${style.subtitleSize}" font-weight="700" letter-spacing="0" fill="${style.subtitleFill}" stroke="${style.subtitleStroke}" stroke-width="1.2" paint-order="stroke"${subtitleFit}>${subtitle}</text>
+  <text x="${titleX + 2}" y="${titleY + 3}" text-anchor="${style.anchor}" font-family="${style.family}" font-size="${style.titleSize}" font-weight="${style.weight}" font-stretch="${style.stretch}" letter-spacing="0" fill="${style.titleShadow}"${titleFit}>${title}</text>
+  <text x="${titleX}" y="${titleY}" text-anchor="${style.anchor}" font-family="${style.family}" font-size="${style.titleSize}" font-weight="${style.weight}" font-stretch="${style.stretch}" letter-spacing="0" fill="${style.titleFill}" stroke="${style.titleStroke}" stroke-width="${style.strokeWidth}" paint-order="stroke"${titleFit}>${title}</text>
+  <text x="${titleX + 2}" y="${subtitleY + 3}" text-anchor="${style.anchor}" font-family="${style.family}" font-size="${style.subtitleSize}" font-weight="${style.weight}" font-stretch="${style.stretch}" letter-spacing="0" fill="${style.subtitleShadow}"${subtitleFit}>${subtitle}</text>
+  <text x="${titleX}" y="${subtitleY}" text-anchor="${style.anchor}" font-family="${style.family}" font-size="${style.subtitleSize}" font-weight="${style.weight}" font-stretch="${style.stretch}" letter-spacing="0" fill="${style.subtitleFill}" stroke="${style.subtitleStroke}" stroke-width="${style.strokeWidth}" paint-order="stroke"${subtitleFit}>${subtitle}</text>
 </svg>`
   const png = new Resvg(svg, {
     font: { fontFiles: [style.font], loadSystemFonts: false },

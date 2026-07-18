@@ -109,8 +109,8 @@ chutado. A frase é o gancho sobre a imagem; o card é a ficha com o quê/quando
   sem avançar sobre a janela diagonal do vídeo, e cada molde pode sobrescrevê-lo
   com `texto_box`.
 - **Variação por canal:** a Jetix usa a cartela condensada no canto inferior
-  esquerdo. A Disney Channel usa `Ubuntu Sans`, mais arredondada, com o horário
-  na primeira linha e o nome na segunda, ambos alinhados ao topo direito da
+  esquerdo. A Disney Channel usa `Anton`, condensada e extra-bold, com o
+  horário na primeira linha e o nome na segunda, ambos no topo esquerdo da
   imagem. O molde escolhido decide o estilo automaticamente.
 - **Música:** a cama enviada com o molde tem prioridade e substitui totalmente o
   áudio da amostra; se o molde não tiver música, a fábrica usa a faixa original
