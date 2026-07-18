@@ -42,16 +42,18 @@ Uma vinheta = **ÁUDIO montado** + **VÍDEO montado**, casados, registrados **po
 
 ### 1. Banco de falas concatenável (a sacada nova)
 
-Cinco categorias de clipe; horário, frequência e assinatura são gravados UMA vez e servem TODOS
-os programas — é o que faz virar *fábrica* em vez de montagem manual:
+Cinco categorias de clipe; horário, frequência e assinatura são gravados UMA vez
+**por canal** e servem todos os programas daquele canal — é o que faz virar
+*fábrica* em vez de montagem manual. Cada canal mantém seus próprios narradores:
+uma fala Disney nunca entra em uma vinheta Jetix, por exemplo.
 
 | Categoria | Exemplos | Quantidade | Escopo |
 |---|---|---|---|
-| **horario** | "às seis da manhã", "ao meio-dia", "às quatro da tarde" | finito | global (reusa em todo programa) |
-| **frequencia** | "todos os dias", "de segunda a sexta", "às segundas" | finito (7 dias + combos) | global |
-| **nome** | "Power Rangers Força Animal" | 1 por programa | por `series_id` |
-| **frase** | "uma equipe destemida pronta pra enfrentar o mal…" (+ variações) | N por programa | por `series_id` |
-| **conector** | "Na Jetix" | 1 por canal/assinatura | global (`chave=encerramento`) |
+| **horario** | "às seis da manhã", "ao meio-dia", "às quatro da tarde" | finito | por canal (reusa em seus programas) |
+| **frequencia** | "todos os dias", "de segunda a sexta", "às segundas" | finito (7 dias + combos) | por canal |
+| **nome** | "Power Rangers Força Animal" | 1 por programa | por `canal` + `series_id` |
+| **frase** | "uma equipe destemida pronta pra enfrentar o mal…" (+ variações) | N por programa | por `canal` + `series_id` |
+| **conector** | "Na Jetix" | 1 por canal/assinatura | por canal (`chave=encerramento`) |
 
 **Ordem da locução** (fixa):
 ```
@@ -69,6 +71,9 @@ só, saem **três coisas** (sem transcrição, sem erro de casamento):
 1. qual clipe de **frequência** pegar (`[1..5]` → chave `seg-sex` → "de segunda a sexta");
 2. qual clipe de **horário** pegar (`"16:00"` → "às quatro da tarde");
 3. o **texto na tela** embaixo do molde (`"SEG A SEX · 16H"`).
+
+O canal vem do molde escolhido. Esse valor também filtra todos os cinco clipes
+antes da montagem, preservando a identidade do narrador em cada rede.
 
 Fuso sempre `America/Sao_Paulo` num lugar só (mesma regra da fase 12).
 
@@ -146,6 +151,7 @@ montada nasce fidedigna porque a sequência dos 3 nomes É a da grade.
 -- banco de falas reutilizáveis (a fábrica concatena)
 CREATE TABLE IF NOT EXISTS voice_clips (
   id         TEXT PRIMARY KEY,          -- vc_<hex>
+  canal      TEXT NOT NULL,             -- identidade/narrador que pode usar o clipe
   categoria  TEXT NOT NULL,             -- 'horario'|'frequencia'|'nome'|'frase' (fase 1)
                                         --   + 'conector' (assinatura da fase 1 e conectores da fase 2)
   series_id  TEXT,                      -- p/ 'nome'|'frase'; NULL p/ genéricos
@@ -176,7 +182,8 @@ cortador): payload `{ molde_id, series_id, slot:{dias,hora}, frase_id? }`
 
 ## O montador (na fábrica — tudo ffmpeg)
 
-1. **Resolver clipes:** `nome(series_id)`, `frase(sorteada|frase_id)`,
+1. **Resolver clipes:** pelo `canal` do molde, buscar `nome(series_id)`,
+   `frase(sorteada|frase_id)`,
    `frequencia(slot.dias→chave)`, `horario(slot.hora→chave)`,
    `conector(encerramento)`. Falta um → **erro
    legível** na fila (não monta pela metade).
@@ -225,18 +232,18 @@ e a chave cadastradas no painel.
 
 | Peça a cadastrar | Cadastro necessário | Reuso |
 |---|---|---|
-| Horário | categoria `horario`, chave exata `HH:MM` (ex.: `14:00`) | todos os programas |
-| Frequência | categoria `frequencia`, chave canônica (ex.: `seg-sex`) | todos os programas |
-| Nome | categoria `nome`, associado à série | uma vez por programa |
-| Chamadas | categoria `frase`, associada à série | duas ou mais variações por programa |
-| Assinatura | categoria `conector`, chave `encerramento` | por canal/identidade |
+| Horário | categoria `horario`, canal e chave exata `HH:MM` (ex.: `14:00`) | todos os programas do canal |
+| Frequência | categoria `frequencia`, canal e chave canônica (ex.: `seg-sex`) | todos os programas do canal |
+| Nome | categoria `nome`, canal e série | uma vez por programa/canal |
+| Chamadas | categoria `frase`, canal e série | duas ou mais variações por programa/canal |
+| Assinatura | categoria `conector`, canal e chave `encerramento` | por canal/identidade |
 | Amostra | vídeo associado à série | uma ou mais cenas por programa |
 | Molde | PNG e, opcionalmente, música associados ao canal | um ou mais por canal |
 
 ### Ordem recomendada de cadastro
 
 1. Criar o molde do canal, com o PNG e a cama musical.
-2. Cadastrar a biblioteca global de horários e frequências que a grade usa.
+2. Para cada canal, cadastrar sua biblioteca de horários e frequências.
 3. Cadastrar a assinatura do canal, como "Na Jetix".
 4. Para cada programa, cadastrar seu nome gravado, duas ou três frases de
    chamada e uma ou duas amostras de vídeo.
@@ -247,6 +254,14 @@ O Diretor informa o slot estruturado, por exemplo `{ dias: [1,2,3,4,5], hora:
 `SEG A SEX · 14H` e publica o comercial no canal do molde. Se uma peça ainda
 não existir, o job para com uma mensagem objetiva indicando a categoria/chave
 que falta; ele nunca publica uma vinheta incompleta.
+
+### Organização local de materiais
+
+Enquanto os arquivos ainda estão sendo preparados, eles ficam separados em
+`assets/comerciais/<canal>/`: `falas/`, `moldes/` e `amostras/`. A Jetix já está
+organizada dessa forma e o PNG inicial da Disney está em
+`assets/comerciais/disney_channel/moldes/`. O cadastro pelo painel continua
+sendo a etapa que envia esses materiais ao R2 e registra suas categorias.
 
 ## Cuidados / gotchas antecipados
 

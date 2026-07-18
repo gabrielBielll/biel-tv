@@ -131,7 +131,7 @@ const clipFile = ref<File | null>(null)
 const sampleFile = ref<File | null>(null)
 const moldeFile = ref<File | null>(null)
 const musicaFile = ref<File | null>(null)
-const clipForm = ref({ categoria: 'frase', series_id: '', chave: '', rotulo: '' })
+const clipForm = ref({ canal: 'jetix', categoria: 'frase', series_id: '', chave: '', rotulo: '' })
 const sampleForm = ref({ series_id: '', rotulo: '' })
 const moldeForm = ref({ nome: 'Molde Jetix — horário', canal: 'jetix' })
 const buildForm = ref({
@@ -149,7 +149,12 @@ const DIAS_FAB = [
   { n: 5, label: 'sex' }, { n: 6, label: 'sáb' }, { n: 7, label: 'dom' },
 ]
 const fabJobsAtivos = computed(() => fabrica.value.jobs.filter((j) => j.status === 'queued' || j.status === 'processing'))
-const clipsDaSerie = computed(() => fabrica.value.voice_clips.filter((c) => c.series_id === buildForm.value.series_id))
+const canalDoMolde = computed(() =>
+  fabrica.value.moldes.find((m) => m.id === buildForm.value.molde_id)?.canal ?? '',
+)
+const clipsDaSerie = computed(() => fabrica.value.voice_clips.filter((c) =>
+  c.canal === canalDoMolde.value && c.series_id === buildForm.value.series_id,
+))
 const frasesDaSerie = computed(() => clipsDaSerie.value.filter((c) => c.categoria === 'frase'))
 const samplesDaSerie = computed(() => fabrica.value.samples.filter((s) => s.series_id === buildForm.value.series_id))
 const fabStatus: Record<string, string> = { queued: 'na fila', processing: 'montando', done: 'pronto', error: 'erro' }
@@ -161,6 +166,7 @@ async function carregaFabrica() {
   try {
     fabrica.value = await (await api('/fabrica-comerciais')).json()
     if (!buildForm.value.molde_id && fabrica.value.moldes[0]) buildForm.value.molde_id = fabrica.value.moldes[0].id
+    if (!channels.value.some((c) => c.id === clipForm.value.canal)) clipForm.value.canal = channels.value[0]?.id ?? ''
   } catch { /* poll cobre */ }
 }
 
@@ -304,6 +310,7 @@ type Aba = 'enviar' | 'playlist' | 'fabrica' | 'fila' | 'catalogo' | 'promessas'
 const ABA_KEY = 'bieltv_admin_aba'
 const aba = ref<Aba>((localStorage.getItem(ABA_KEY) as Aba) || 'enviar')
 watch(aba, (v) => localStorage.setItem(ABA_KEY, v))
+watch(() => buildForm.value.molde_id, () => { buildForm.value.frase_id = '' })
 // modo god desligado no meio → sai da aba do Diretor pra não ficar tela vazia
 watch(god, (v) => { if (!v && aba.value === 'diretor') aba.value = 'fila' })
 
@@ -1594,6 +1601,11 @@ onBeforeUnmount(() => clearInterval(poll))
             <h3>Clipes de fala</h3>
             <div class="form">
               <div class="row">
+                <label>Canal
+                  <select v-model="clipForm.canal">
+                    <option v-for="c in channels" :key="c.id" :value="c.id">{{ c.nome }}</option>
+                  </select>
+                </label>
                 <label>Categoria
                   <select v-model="clipForm.categoria">
                     <option value="frase">frase</option>
@@ -1603,8 +1615,8 @@ onBeforeUnmount(() => clearInterval(poll))
                     <option value="conector">conector</option>
                   </select>
                 </label>
-                <label>Série <input v-model="clipForm.series_id" placeholder="só nome/frase" /></label>
               </div>
+              <label>Série <input v-model="clipForm.series_id" placeholder="só nome/frase" /></label>
               <label>Chave <input v-model="clipForm.chave" placeholder="16:00, seg-sex, todos..." /></label>
               <label>Rótulo falado <input v-model="clipForm.rotulo" placeholder="às quatro da tarde" /></label>
               <input type="file" accept="audio/*,video/*" @change="onClipFile" />
@@ -1612,7 +1624,7 @@ onBeforeUnmount(() => clearInterval(poll))
             </div>
             <div class="fab-list">
               <div v-for="c in fabrica.voice_clips.slice(0, 14)" :key="c.id" class="fab-mini">
-                <span class="mono">{{ c.categoria }}</span>
+                <span class="mono">{{ c.canal }} · {{ c.categoria }}</span>
                 <span class="dim grow">{{ c.series_id || c.chave }} · {{ c.rotulo }}</span>
                 <button class="ghost" title="remover clipe" @click="apagarFab('voice-clips', c.id)">✕</button>
               </div>

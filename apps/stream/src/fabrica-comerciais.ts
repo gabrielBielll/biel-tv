@@ -11,6 +11,7 @@ type Bindings = {
 
 type ClipRow = {
   id: string
+  canal: string
   categoria: string
   series_id: string | null
   chave: string | null
@@ -176,21 +177,21 @@ async function resolvePayload(env: Bindings, job: BuildJobRow) {
   if (!sample) throw new Error(`cadastre uma amostra de vídeo para ${job.series_id}`)
 
   const frase = job.frase_id
-    ? await env.DB.prepare("SELECT * FROM voice_clips WHERE id = ?1 AND categoria = 'frase' AND series_id = ?2")
-      .bind(job.frase_id, job.series_id).first<ClipRow>()
-    : await env.DB.prepare("SELECT * FROM voice_clips WHERE categoria = 'frase' AND series_id = ?1 ORDER BY RANDOM() LIMIT 1")
-      .bind(job.series_id).first<ClipRow>()
-  const nome = await clip(env.DB, "categoria = 'nome' AND series_id = ?1", job.series_id)
-  const frequencia = await clip(env.DB, "categoria = 'frequencia' AND chave = ?1", fk)
-  const horario = await clip(env.DB, "categoria = 'horario' AND chave = ?1", hora)
-  const assinatura = await clip(env.DB, "categoria = 'conector' AND chave = 'encerramento'")
+    ? await env.DB.prepare("SELECT * FROM voice_clips WHERE id = ?1 AND categoria = 'frase' AND series_id = ?2 AND canal = ?3")
+      .bind(job.frase_id, job.series_id, molde.canal).first<ClipRow>()
+    : await env.DB.prepare("SELECT * FROM voice_clips WHERE categoria = 'frase' AND series_id = ?1 AND canal = ?2 ORDER BY RANDOM() LIMIT 1")
+      .bind(job.series_id, molde.canal).first<ClipRow>()
+  const nome = await clip(env.DB, "categoria = 'nome' AND series_id = ?1 AND canal = ?2", job.series_id, molde.canal)
+  const frequencia = await clip(env.DB, "categoria = 'frequencia' AND chave = ?1 AND canal = ?2", fk, molde.canal)
+  const horario = await clip(env.DB, "categoria = 'horario' AND chave = ?1 AND canal = ?2", hora, molde.canal)
+  const assinatura = await clip(env.DB, "categoria = 'conector' AND chave = 'encerramento' AND canal = ?1", molde.canal)
 
   const faltando = [
-    !frase && `frase de ${job.series_id}`,
-    !nome && `nome de ${job.series_id}`,
-    !frequencia && `frequência ${fk}`,
-    !horario && `horário ${hora}`,
-    !assinatura && 'assinatura final do canal',
+    !frase && `frase de ${job.series_id} (${molde.canal})`,
+    !nome && `nome de ${job.series_id} (${molde.canal})`,
+    !frequencia && `frequência ${fk} (${molde.canal})`,
+    !horario && `horário ${hora} (${molde.canal})`,
+    !assinatura && `assinatura final (${molde.canal})`,
   ].filter(Boolean)
   if (faltando.length) throw new Error(`faltam clipes de fala: ${faltando.join(', ')}`)
 
@@ -226,7 +227,7 @@ async function resolvePayload(env: Bindings, job: BuildJobRow) {
 
 fabricaComerciais.get('/', async (c) => {
   const [voice, moldes, samples, jobs, series] = await Promise.all([
-    c.env.DB.prepare('SELECT * FROM voice_clips ORDER BY categoria, series_id, chave, created_at DESC').all(),
+    c.env.DB.prepare('SELECT * FROM voice_clips ORDER BY canal, categoria, series_id, chave, created_at DESC').all(),
     c.env.DB.prepare('SELECT * FROM moldes ORDER BY created_at DESC').all(),
     c.env.DB.prepare('SELECT * FROM program_samples ORDER BY series_id, created_at DESC').all(),
     c.env.DB.prepare('SELECT * FROM commercial_build_jobs ORDER BY created_at DESC LIMIT 50').all(),
@@ -255,6 +256,8 @@ fabricaComerciais.post('/voice-clips', async (c) => {
   if (!b) return c.json({ error: 'JSON inválido' }, 400)
   const categoria = String(b.categoria ?? '')
   if (!CATEGORIAS.includes(categoria)) return c.json({ error: 'categoria inválida' }, 400)
+  const canal = slugify(String(b.canal ?? ''))
+  if (!SLUG.test(canal) || !(await canalExiste(c.env.DB, canal))) return c.json({ error: 'canal desconhecido' }, 400)
   const seriesId = b.series_id ? slugify(String(b.series_id)) : ''
   if ((categoria === 'nome' || categoria === 'frase') && !SLUG.test(seriesId)) {
     return c.json({ error: 'nome/frase exigem uma série válida' }, 400)
@@ -276,10 +279,10 @@ fabricaComerciais.post('/voice-clips', async (c) => {
   }
   const clipSeries = categoria === 'nome' || categoria === 'frase' ? seriesId : null
   await c.env.DB.prepare(
-    `INSERT INTO voice_clips (id, categoria, series_id, chave, rotulo, audio_key)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
-  ).bind(id, categoria, clipSeries, chave || null, rotulo, audioKey).run()
-  return c.json({ ok: true, id, audio_key: audioKey }, 201)
+    `INSERT INTO voice_clips (id, canal, categoria, series_id, chave, rotulo, audio_key)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+  ).bind(id, canal, categoria, clipSeries, chave || null, rotulo, audioKey).run()
+  return c.json({ ok: true, id, canal, audio_key: audioKey }, 201)
 })
 
 fabricaComerciais.delete('/voice-clips/:id', async (c) => {
