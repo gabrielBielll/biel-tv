@@ -389,6 +389,7 @@ async function tickFabricaComerciais() {
       moldePng: molde,
       musicaFile: musica,
       clips,
+      tituloTela: job.slot.titulo_tela,
       textoTela: job.slot.texto_tela,
       textoBox: job.molde.texto_box,
       outFile: out,

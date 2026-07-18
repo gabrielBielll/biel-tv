@@ -96,8 +96,10 @@ chutado. A frase é o gancho sobre a imagem; o card é a ficha com o quê/quando
   vídeo** — o recorte fica exato mesmo torto, de graça. Unifica com a spec
   construtor (que assumia buraco já vazado/alpha): só troca "acha o alpha" por
   "acha o preto" (`colorkey`/threshold + `cropdetect` pro bbox).
-- **Texto:** `drawtext` na área azul de baixo (bbox `texto_box` do molde). Exige
-  um **fontfile** no repo (a fazer — escolher fonte de época legível).
+- **Texto:** cartela em duas linhas na área azul de baixo: **nome do programa em
+  branco** e, abaixo, **frequência + horário em vermelho**. O fallback local
+  desenha os glifos retrô sem depender de `drawtext`/libfreetype; quando houver
+  `fontfile`, mantém a mesma posição, cores e hierarquia.
 - **Música:** `amix(locução, música)` + **`sidechaincompress`** (a música abaixa
   quando o locutor fala e volta quando cala) — soa como comercial de verdade.
 - **Por canal:** a vinheta montada entra em `media_channels` do canal do molde.

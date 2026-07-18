@@ -73,21 +73,27 @@ function parseBox(raw) {
 }
 
 function defaultTextBox() {
-  return { x: 70, y: 590, w: 1140, h: 86 }
+  return { x: 84, y: 494, w: 1010, h: 126 }
 }
 
-function drawTextFilter(input, output, text, textoBox, enableAt) {
+function drawTextFilter(input, output, titulo, subtitulo, textoBox, enableAt) {
   const box = parseBox(textoBox) ?? defaultTextBox()
   const fontFile = process.env.COMERCIAL_FONT || '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
   const font = existsSync(fontFile)
     ? `fontfile='${escFilterPath(fontFile)}'`
     : "font='Sans'"
-  const fontSize = Math.max(30, Math.min(48, Math.floor((box.w / Math.max(16, text.length)) * 1.55)))
-  const x = `${Math.round(box.x)}+(${Math.round(box.w)}-text_w)/2`
-  const y = `${Math.round(box.y)}+(${Math.round(box.h)}-text_h)/2`
-  return `[${input}]drawtext=${font}:text='${escDrawText(text)}':fontcolor=white:fontsize=${fontSize}:` +
-    `borderw=2:bordercolor=black@0.7:shadowx=2:shadowy=2:shadowcolor=black@0.55:` +
-    `x=${x}:y=${y}:enable='gte(t,${enableAt.toFixed(3)})'[${output}]`
+  const titleSize = Math.max(30, Math.min(52, Math.floor(box.w / Math.max(16, titulo.length) * 1.45)))
+  const subtitleSize = Math.max(28, Math.min(44, Math.floor(box.w / Math.max(16, subtitulo.length) * 1.4)))
+  const x = Math.round(box.x)
+  const titleY = Math.round(box.y)
+  const subtitleY = Math.round(box.y + Math.max(58, box.h * 0.54))
+  const enabled = `enable='gte(t,${enableAt.toFixed(3)})'`
+  return `[${input}]drawtext=${font}:text='${escDrawText(titulo)}':fontcolor=white:fontsize=${titleSize}:` +
+    `borderw=2:bordercolor=0x12284c:shadowx=3:shadowy=4:shadowcolor=0x07152b@0.9:` +
+    `x=${x}:y=${titleY}:${enabled}[title];` +
+    `[title]drawtext=${font}:text='${escDrawText(subtitulo)}':fontcolor=0xef4046:fontsize=${subtitleSize}:` +
+    `borderw=2:bordercolor=0x54051c:shadowx=3:shadowy=4:shadowcolor=0x24000d@0.9:` +
+    `x=${x}:y=${subtitleY}:${enabled}[${output}]`
 }
 
 const GLYPHS = {
@@ -129,19 +135,8 @@ const GLYPHS = {
   9: ['01110', '10001', '10001', '01111', '00001', '00001', '01110'],
 }
 
-function makeTextOverlay(text, textoBox, outFile) {
+function makeTextOverlay(titulo, subtitulo, textoBox, outFile) {
   const box = parseBox(textoBox) ?? defaultTextBox()
-  const normalized = String(text).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/·/g, '-')
-  const chars = [...normalized].filter((ch) => ch === ' ' || ch === '-' || GLYPHS[ch])
-  const units = chars.reduce((sum, ch) => sum + (ch === ' ' ? 3 : ch === '-' ? 3 : 6), -1)
-  const scale = Math.max(4, Math.min(14, Math.floor(Math.min(box.w / Math.max(1, units), box.h / 9))))
-  // O fallback roda nas imagens de produção sem drawtext/libfreetype. Mantemos
-  // os glifos locais, mas com inclinação e camadas coloridas de chamada de TV.
-  const italic = Math.max(1, Math.round(scale * 0.24))
-  const textW = units * scale + italic * 6
-  const textH = 7 * scale
-  let x = Math.round(box.x + (box.w - textW) / 2)
-  const y = Math.round(box.y + (box.h - textH) / 2)
   const buf = Buffer.alloc(W * H * 3, 0)
   const put = (px, py, color) => {
     if (px < 0 || px >= W || py < 0 || py >= H) return
@@ -151,31 +146,50 @@ function makeTextOverlay(text, textoBox, outFile) {
   const rect = (rx, ry, rw, rh, color) => {
     for (let yy = ry; yy < ry + rh; yy++) for (let xx = rx; xx < rx + rw; xx++) put(xx, yy, color)
   }
-  const drawGlyph = (glyph, gx, gy, color, pad = 0) => {
-    for (let row = 0; row < glyph.length; row++) {
-      for (let col = 0; col < glyph[row].length; col++) {
-        if (glyph[row][col] !== '1') continue
-        const slant = (glyph.length - 1 - row) * italic
-        rect(gx + col * scale + slant - pad, gy + row * scale - pad, scale + pad * 2, scale + pad * 2, color)
+
+  const drawLine = ({ text, x, y, w, h, fill, outline, shadow, italic = 0 }) => {
+    const normalized = String(text).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/·/g, '-')
+    const chars = [...normalized].filter((ch) => ch === ' ' || ch === '-' || GLYPHS[ch])
+    const units = Math.max(1, chars.reduce((sum, ch) => sum + (ch === ' ' ? 3 : ch === '-' ? 3 : 6), -1))
+    const scale = Math.max(4, Math.min(14, Math.floor(Math.min(w / units, h / 9))))
+    const slant = Math.round(scale * italic)
+    const drawGlyph = (glyph, gx, gy, color, pad = 0, offsetX = 0, offsetY = 0) => {
+      for (let row = 0; row < glyph.length; row++) {
+        for (let col = 0; col < glyph[row].length; col++) {
+          if (glyph[row][col] !== '1') continue
+          const skew = (glyph.length - 1 - row) * slant
+          rect(gx + col * scale + skew - pad + offsetX, gy + row * scale - pad + offsetY, scale + pad * 2, scale + pad * 2, color)
+        }
       }
     }
-  }
-  for (const ch of chars) {
-    if (ch === ' ') { x += 3 * scale; continue }
-    if (ch === '-') {
-      const hyphenX = x + 3 * italic
-      rect(hyphenX + 5, y + 3 * scale + 5, 3 * scale + 6, scale + 6, [36, 8, 78])
-      rect(hyphenX, y + 3 * scale, 3 * scale + 4, scale + 4, [0, 132, 255])
-      rect(hyphenX + 2, y + 3 * scale + 2, 3 * scale, scale, [255, 218, 25])
-      x += 4 * scale
-      continue
+    let cursor = Math.round(x)
+    for (const ch of chars) {
+      if (ch === ' ') { cursor += 3 * scale; continue }
+      if (ch === '-') {
+        const hyphenX = cursor + 3 * slant
+        rect(hyphenX + 3, y + 3 * scale + 4, 3 * scale + 4, scale + 4, shadow)
+        rect(hyphenX, y + 3 * scale, 3 * scale + 2, scale + 2, outline)
+        rect(hyphenX + 1, y + 3 * scale + 1, 3 * scale, scale, fill)
+        cursor += 4 * scale
+        continue
+      }
+      const glyph = GLYPHS[ch]
+      drawGlyph(glyph, cursor, y, shadow, Math.max(2, Math.floor(scale / 3)), 3, 4)
+      drawGlyph(glyph, cursor, y, outline, Math.max(1, Math.floor(scale / 5)))
+      drawGlyph(glyph, cursor, y, fill)
+      cursor += 6 * scale
     }
-    const glyph = GLYPHS[ch]
-    drawGlyph(glyph, x + 6, y + 7, [38, 7, 82], Math.max(2, Math.floor(scale / 3)))
-    drawGlyph(glyph, x, y, [0, 128, 255], Math.max(1, Math.floor(scale / 4)))
-    drawGlyph(glyph, x, y, [255, 218, 25])
-    x += 6 * scale
   }
+
+  // Fallback sem libfreetype: mantém a estética retrô do canal em duas linhas.
+  drawLine({
+    text: titulo, x: box.x, y: box.y, w: box.w, h: Math.floor(box.h * 0.43),
+    fill: [255, 255, 255], outline: [18, 48, 88], shadow: [5, 19, 43], italic: 0,
+  })
+  drawLine({
+    text: subtitulo, x: box.x, y: box.y + Math.floor(box.h * 0.54), w: box.w, h: Math.floor(box.h * 0.43),
+    fill: [239, 64, 70], outline: [103, 7, 31], shadow: [42, 0, 14], italic: 0.18,
+  })
   writeFileSync(outFile, Buffer.concat([Buffer.from(`P6\n${W} ${H}\n255\n`), buf]))
   return outFile
 }
@@ -288,7 +302,7 @@ function videoBase(total) {
   ]
 }
 
-function animatedVideoGraph({ total, tFaseB, trans, hole, textoTela, textoBox, textInputIndex }) {
+function animatedVideoGraph({ total, tFaseB, trans, hole, tituloTela, textoTela, textoBox, textInputIndex }) {
   const animStart = Math.max(0, tFaseB - trans)
   const p = `clip((t-${animStart.toFixed(3)})/${trans.toFixed(3)},0,1)`
   const w = even(hole.w)
@@ -300,13 +314,13 @@ function animatedVideoGraph({ total, tFaseB, trans, hole, textoTela, textoBox, t
     `[1:v]format=rgba,fade=t=in:st=${animStart.toFixed(3)}:d=${trans.toFixed(3)}:alpha=1,setpts=PTS-STARTPTS[molde]`,
     `[v0][molde]overlay=0:0:enable='gte(t,${animStart.toFixed(3)})'[v1]`,
     textInputIndex == null
-      ? drawTextFilter('v1', 'vout', textoTela, textoBox, tFaseB)
+      ? drawTextFilter('v1', 'vout', tituloTela, textoTela, textoBox, tFaseB)
       : overlayTextImageFilter('v1', 'vout', textInputIndex, tFaseB),
   ]
   return parts.join(';')
 }
 
-function staticVideoGraph({ total, tFaseB, hole, textoTela, textoBox, textInputIndex }) {
+function staticVideoGraph({ total, tFaseB, hole, tituloTela, textoTela, textoBox, textInputIndex }) {
   const w = even(hole.w)
   const h = even(hole.h)
   const parts = [
@@ -318,7 +332,7 @@ function staticVideoGraph({ total, tFaseB, hole, textoTela, textoBox, textInputI
     `[1:v]format=rgba,setpts=PTS-STARTPTS[molde]`,
     `[v1][molde]overlay=0:0:enable='gte(t,${tFaseB.toFixed(3)})'[v2]`,
     textInputIndex == null
-      ? drawTextFilter('v2', 'vout', textoTela, textoBox, tFaseB)
+      ? drawTextFilter('v2', 'vout', tituloTela, textoTela, textoBox, tFaseB)
       : overlayTextImageFilter('v2', 'vout', textInputIndex, tFaseB),
   ]
   return parts.join(';')
@@ -351,6 +365,7 @@ export async function montaComercialPrograma({
   moldePng,
   musicaFile = null,
   clips,
+  tituloTela = '',
   textoTela,
   textoBox = null,
   outFile,
@@ -370,20 +385,20 @@ export async function montaComercialPrograma({
   const moldeAlpha = join(workdir, 'molde-alpha.png')
   await preparaMolde(moldePng, moldeAlpha)
   const hole = await detectaBuraco(moldeAlpha)
-  const textOverlay = await hasDrawtext() ? null : makeTextOverlay(textoTela, textoBox, join(workdir, 'texto.ppm'))
+  const textOverlay = await hasDrawtext() ? null : makeTextOverlay(tituloTela || textoTela, textoTela, textoBox, join(workdir, 'texto.ppm'))
   const textInputIndex = textOverlay ? (musicaFile ? 4 : 3) : null
   // A amostra define as imagens do programa. Sua faixa original pode ter fala
   // ou abertura muito alta, então só uma trilha cadastrada no molde entra no
   // mix. Assim a locução da fábrica sempre chega limpa ao comercial final.
   const musicaOrigem = musicaFile ? 'external' : null
   const aGraph = audioGraph(loc.total, musicaOrigem)
-  const animated = `${animatedVideoGraph({ total: loc.total, tFaseB, trans, hole, textoTela, textoBox, textInputIndex })};${aGraph}`
+  const animated = `${animatedVideoGraph({ total: loc.total, tFaseB, trans, hole, tituloTela: tituloTela || textoTela, textoTela, textoBox, textInputIndex })};${aGraph}`
   let fallback = false
   try {
     await render({ sampleVideo, moldeAlphaPng: moldeAlpha, locucaoWav: locucao, musicaFile, textOverlayFile: textOverlay, filter: animated, total: loc.total, outFile })
   } catch (e) {
     fallback = true
-    const stat = `${staticVideoGraph({ total: loc.total, tFaseB, hole, textoTela, textoBox, textInputIndex })};${aGraph}`
+    const stat = `${staticVideoGraph({ total: loc.total, tFaseB, hole, tituloTela: tituloTela || textoTela, textoTela, textoBox, textInputIndex })};${aGraph}`
     await render({ sampleVideo, moldeAlphaPng: moldeAlpha, locucaoWav: locucao, musicaFile, textOverlayFile: textOverlay, filter: stat, total: loc.total, outFile })
   }
 
