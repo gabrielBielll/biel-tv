@@ -97,11 +97,15 @@ chutado. A frase é o gancho sobre a imagem; o card é a ficha com o quê/quando
   construtor (que assumia buraco já vazado/alpha): só troca "acha o alpha" por
   "acha o preto" (`colorkey`/threshold + `cropdetect` pro bbox).
 - **Texto:** cartela em duas linhas na área azul de baixo: **nome do programa em
-  branco** e, abaixo, **frequência + horário em vermelho**. O fallback local
-  desenha os glifos retrô sem depender de `drawtext`/libfreetype; quando houver
-  `fontfile`, mantém a mesma posição, cores e hierarquia.
-- **Música:** `amix(locução, música)` + **`sidechaincompress`** (a música abaixa
-  quando o locutor fala e volta quando cala) — soa como comercial de verdade.
+  branco** e, abaixo, **frequência + horário em vermelho**. O render usa a
+  `Liberation Sans Narrow Bold` versionada no projeto, convertida para PNG
+  transparente por `@resvg/resvg-js`; não depende das fontes instaladas na
+  máquina da fábrica. O box padrão fica contido no canto inferior esquerdo,
+  sem avançar sobre a janela diagonal do vídeo, e cada molde pode sobrescrevê-lo
+  com `texto_box`.
+- **Música:** `amix(locução, música)` com a cama do molde em volume reduzido
+  (`0.28`) e a voz limitada à frente. A música acompanha o comercial inteiro
+  sem competir com o narrador.
 - **Por canal:** a vinheta montada entra em `media_channels` do canal do molde.
 
 ## Fase 2 — vinheta "a seguir" (MESMO motor, re-parametrizado)
@@ -183,8 +187,9 @@ cortador): payload `{ molde_id, series_id, slot:{dias,hora}, frase_id? }`
    (`detectBlack`, reusa cortador). Duração ≥ `t_total` (loop/apara pra caber).
 4. **Montar o vídeo:** `[0,t_faseB)` tela cheia (só a frase) → transição encolhendo
    pro bbox do buraco (molde entra por cima) → `[t_faseB,t_total]` vídeo no buraco +
-   molde (alpha do preto) por cima + `drawtext` do horário no `texto_box`.
-5. **Áudio:** `amix(locução, música)` + `sidechaincompress`.
+   molde (alpha do preto) por cima + PNG de texto em duas linhas no `texto_box`.
+5. **Áudio:** `amix(locução, música)`, com música de fundo atenuada e locução em
+   primeiro plano.
 6. **Fechar:** render → master → **pipeline normal** (pad p/ múltiplo de 10 —
    regra de ouro intacta — segmenta, R2, D1). `media_channels = molde.canal`;
    metadata com `series_id`; nasce **fidedigna por construção** como promessa
@@ -206,6 +211,37 @@ cortador): payload `{ molde_id, series_id, slot:{dias,hora}, frase_id? }`
 2. **Montador** (concatena locução + 2 fases de vídeo + texto + música).
 3. **UI do painel:** cadastrar clipes por categoria; escolher programa + slot e
    "montar vinheta".
+
+## Operação em produção: como povoar a base
+
+O painel da **Fábrica de Comerciais** é a entrada normal de produção. O nome do
+arquivo ajuda a organização, mas o que determina o uso automático é a categoria
+e a chave cadastradas no painel.
+
+| Peça a cadastrar | Cadastro necessário | Reuso |
+|---|---|---|
+| Horário | categoria `horario`, chave exata `HH:MM` (ex.: `14:00`) | todos os programas |
+| Frequência | categoria `frequencia`, chave canônica (ex.: `seg-sex`) | todos os programas |
+| Nome | categoria `nome`, associado à série | uma vez por programa |
+| Chamadas | categoria `frase`, associada à série | duas ou mais variações por programa |
+| Assinatura | categoria `conector`, chave `encerramento` | por canal/identidade |
+| Amostra | vídeo associado à série | uma ou mais cenas por programa |
+| Molde | PNG e, opcionalmente, música associados ao canal | um ou mais por canal |
+
+### Ordem recomendada de cadastro
+
+1. Criar o molde do canal, com o PNG e a cama musical.
+2. Cadastrar a biblioteca global de horários e frequências que a grade usa.
+3. Cadastrar a assinatura do canal, como "Na Jetix".
+4. Para cada programa, cadastrar seu nome gravado, duas ou três frases de
+   chamada e uma ou duas amostras de vídeo.
+5. No painel, escolher **molde + programa + dias + horário** e mandar montar.
+
+O Diretor informa o slot estruturado, por exemplo `{ dias: [1,2,3,4,5], hora:
+"14:00" }`. A fábrica resolve `seg-sex`, encontra os cinco clipes, gera o texto
+`SEG A SEX · 14H` e publica o comercial no canal do molde. Se uma peça ainda
+não existir, o job para com uma mensagem objetiva indicando a categoria/chave
+que falta; ele nunca publica uma vinheta incompleta.
 
 ## Cuidados / gotchas antecipados
 
