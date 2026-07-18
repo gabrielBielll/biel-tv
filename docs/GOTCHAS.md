@@ -149,6 +149,29 @@ escrever testes ou debugar "por que X ainda está na grade", **sempre
 verificar primeiro se não há um evento ativo cobrindo aquele horário** antes
 de suspeitar de bug na exclusão.
 
+**Grade em BLOCOS: episódios da mesma série saem emendados, séries em
+rodízio.** Em `scheduler.ts`, `montaBlocos()` agrupa os conteúdos por
+`series_id` em pedaços de até `episodios_por_bloco` episódios (em ordem de id)
+e intercala as séries com um guloso (a cada passo, o próximo pedaço da série
+com mais pedaços restantes que não seja a última — espalha a série longa em
+vez de empilhá-la no fim). É o pedido do Gabriel: em vez de 1 episódio de um
+desenho pingando às 10h/12h/15h, ele passa 2–4 seguidos e só então troca.
+Coisas a saber: (1) **canal SEM `series_id` nos episódios → grade idêntica ao
+comportamento antigo** (cada avulso é bloco de 1, sai na mesma ordem
+menos-tocado-primeiro de antes) — por isso o agrupamento só "aparece" nas
+séries realmente agrupadas no catálogo; (2) `episodios_por_bloco` é **por
+canal** (coluna nova, migration 0018, default 2; 1 desliga o agrupamento),
+editável no admin (painel "Identidades editoriais") — trocar replaneja o
+canal na hora, igual ao `comerciais_fieis`; (3) maratona/evento **não** usa
+blocos (tem a própria emenda, caminho intocado); (4) a lógica pura é
+testada isolada: `pnpm verify:blocos` (roda o `.ts` direto, sem servidor).
+**Migration 0018 (`ALTER ADD COLUMN`) não é idempotente — aplicar 1× local e
+1× remoto.** O agendador tolera a falta da coluna (`?? 2` → cai no default,
+grupa de 2 mesmo sem migration), mas **editar o tamanho do bloco no admin
+quebra sem ela** (UPDATE numa coluna inexistente). Ou seja: sem aplicar em
+prod, prod já agrupa de 2, mas o seletor por canal só funciona depois da
+migration.
+
 **O LLM (principalmente o DeepSeek, usado como fallback) às vezes ignora a
 instrução de "uma ação `excluir_serie` só" e enumera `excluir_media` um por
 um.** O resultado prático é o mesmo (todos saem da grade), mas cria N

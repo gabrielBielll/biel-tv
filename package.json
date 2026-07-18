@@ -20,6 +20,7 @@
     "factory": "node scripts/factory-local.mjs",
     "verify:admin": "node scripts/verify-admin.mjs",
     "verify:canais": "node scripts/verify-canais.mjs",
+    "verify:blocos": "node scripts/verify-blocos.mjs",
     "verify:diretor": "node scripts/verify-diretor.mjs",
     "verify:uploads": "node scripts/verify-uploads.mjs",
     "verify:promessas": "node scripts/verify-promessas.mjs",

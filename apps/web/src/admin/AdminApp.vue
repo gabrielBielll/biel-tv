@@ -869,6 +869,20 @@ async function saveIdentidade(ch: any) {
   identSaving.value = ''
 }
 
+// quantos episódios da mesma série o diretor emenda em sequência na grade
+// (muda o pool → o backend replaneja o canal na hora)
+const blocoSaving = ref('')
+async function saveBloco(ch: any, valor: string) {
+  const n = Number(valor)
+  ch.episodios_por_bloco = n
+  blocoSaving.value = ch.id
+  await postJson(`/channels/${ch.id}`, { episodios_por_bloco: n })
+  blocoSaving.value = ''
+  msg.value = n === 1
+    ? `✔ ${ch.nome}: episódios sem agrupar — grade replanejada`
+    : `✔ ${ch.nome}: agrupando até ${n} episódios seguidos por série — grade replanejada`
+}
+
 async function replanejar() {
   msg.value = '… replanejando a grade de todos os canais'
   await postJson('/schedule/run', { rebuild: true })
@@ -1618,6 +1632,17 @@ onBeforeUnmount(() => clearInterval(poll))
         <button class="ghost" :disabled="identSaving === ch.id" @click="saveIdentidade(ch)">
           {{ identSaving === ch.id ? 'salvando…' : 'salvar identidade' }}
         </button>
+        <label class="bloco-row" title="quantos episódios da mesma série o diretor emenda em sequência antes de trocar de programa (as séries entram em rodízio)">
+          <span>episódios seguidos por série:</span>
+          <select :value="ch.episodios_por_bloco ?? 2" :disabled="blocoSaving === ch.id"
+                  @change="saveBloco(ch, ($event.target as HTMLSelectElement).value)">
+            <option :value="1">1 · sem agrupar</option>
+            <option :value="2">2 seguidos</option>
+            <option :value="3">3 seguidos</option>
+            <option :value="4">4 seguidos</option>
+          </select>
+          <span v-if="blocoSaving === ch.id" class="dim">salvando…</span>
+        </label>
       </div>
       </section>
     </main>
@@ -1723,6 +1748,9 @@ button.ghost:hover { color: var(--text); }
 .ident { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
 .ident h3 { font-size: 14px; }
 .ident button { align-self: start; }
+.bloco-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); }
+.bloco-row select { font: inherit; padding: 3px 6px; border-radius: 6px;
+  border: 1px solid var(--line); background: transparent; color: var(--text); }
 
 .link-row { margin-top: 8px; }
 .link-row input { font-size: 13px; }

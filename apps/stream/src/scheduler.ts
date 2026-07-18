@@ -51,6 +51,54 @@ function shuffled<T>(arr: T[], rnd: () => number): T[] {
   return a
 }
 
+// Agrupa os conteúdos em BLOCOS pra grade: episódios da mesma série saem
+// emendados em pedaços de até `maxLen` (em ordem de episódio), e as séries
+// entram em rodízio — um pedaço de cada por rodada. Assim um desenho passa um
+// blocão e só volta depois dos outros, em vez de pingar 1 episódio às 10h,
+// outro às 12h, outro às 15h (pedido do Gabriel: retém melhor a audiência).
+// Fairness no nível da série: a menos-tocada lidera, empates embaralhados pela
+// seed do dia. Conteúdo avulso (sem series_id) é um bloco de 1, como sempre.
+// maxLen = 1 desliga o agrupamento (volta ao rodízio 1-a-1 de antes) — e, num
+// canal onde nenhum episódio tem série, o resultado já é idêntico ao de antes.
+// Exportada: coberta por teste unitário (scripts/verify-blocos.mjs).
+export function montaBlocos(contents: MediaRow[], maxLen: number, rnd: () => number): MediaRow[][] {
+  const porSerie = new Map<string, MediaRow[]>()
+  for (const m of contents) {
+    const chave = m.series_id ?? ` avulso:${m.id}` // avulso = série de si mesmo
+    const arr = porSerie.get(chave)
+    if (arr) arr.push(m)
+    else porSerie.set(chave, [m])
+  }
+  // cada série vira uma fila de pedaços (episódios em ordem; pedaços de até
+  // maxLen) + "frescor" (menos-tocada = menor last_played, null conta como 0)
+  const series = [...porSerie.entries()].map(([chave, eps]) => {
+    const ord = [...eps].sort((a, b) => a.id.localeCompare(b.id))
+    const chunks: MediaRow[][] = []
+    for (let i = 0; i < ord.length; i += maxLen) chunks.push(ord.slice(i, i + maxLen))
+    return { chave, chunks, i: 0, frescor: Math.min(...eps.map((m) => m.last_played_at ?? 0)) }
+  })
+  // prioridade base: menos-tocada primeiro; empates embaralhados pela seed do dia
+  const ordem = shuffled(series, rnd).sort((a, b) => a.frescor - b.frescor)
+  // intercala guloso: a cada passo emite o próximo pedaço da série com MAIS
+  // pedaços restantes que não seja a última emitida — espalha a série longa em
+  // vez de empilhá-la no fim; empate mantém a prioridade base (sort estável). Só
+  // repete a última série se for a única com pedaços sobrando (aí não dá pra
+  // separar). Tudo avulso: cada um é sua própria série, idêntico ao rodízio antigo.
+  const rest = (s: (typeof ordem)[number]) => s.chunks.length - s.i
+  const blocos: MediaRow[][] = []
+  let ultima: string | null = null
+  for (;;) {
+    const vivas = ordem.filter((s) => rest(s) > 0)
+    if (vivas.length === 0) break
+    const elegiveis = vivas.filter((s) => s.chave !== ultima)
+    const pool = elegiveis.length > 0 ? elegiveis : vivas
+    const escolhida = pool.reduce((best, s) => (rest(s) > rest(best) ? s : best), pool[0])
+    blocos.push(escolhida.chunks[escolhida.i++])
+    ultima = escolhida.chave
+  }
+  return blocos
+}
+
 export async function scheduleChannel(
   env: Env,
   canal: string,
@@ -58,7 +106,7 @@ export async function scheduleChannel(
   rebuild = false,
 ): Promise<ScheduleReport> {
   const chan = await env.DB.prepare('SELECT * FROM channels WHERE id = ?1')
-    .bind(canal).first<{ break_target_seg: number; comerciais_fieis: number | null }>()
+    .bind(canal).first<{ break_target_seg: number; comerciais_fieis: number | null; episodios_por_bloco: number | null }>()
   if (!chan) return { canal, added: 0, skipped: 'canal não existe' }
 
   const { results: mediaTodas } = await env.DB.prepare(
@@ -194,14 +242,15 @@ export async function scheduleChannel(
   if (t >= target) return { canal, added: 0, until: t }
 
   const rnd = mulberry32(hashStr(canal + new Date().toISOString().slice(0, 10)))
-  // rotação: menos-tocado primeiro; empates embaralhados pela seed do dia
-  const queue = shuffled(contents, rnd).sort(
-    (a, b) => (a.last_played_at ?? 0) - (b.last_played_at ?? 0),
-  )
+  // rotação em BLOCOS: episódios da mesma série emendados (até N seguidos),
+  // séries alternando em rodízio; menos-tocada lidera, empates pela seed do dia
+  const blocoMax = Math.max(1, chan.episodios_por_bloco ?? 2)
+  const blocos = montaBlocos(contents, blocoMax, rnd)
   const adPool = shuffled(ads, rnd)
   let ai = 0
   let vi = 0
-  let qi = 0
+  let bi = 0 // qual bloco
+  let ei = 0 // qual episódio dentro do bloco atual
   let lastAd = ''
   const rows: Array<[string, string, number, number, number]> = []
   const playedAt: Record<string, number> = {}
@@ -297,11 +346,15 @@ export async function scheduleChannel(
   // ela faz o papel da vinheta de abertura.
   let asIdx = 0
   let ultimaSerie: string | null = null
-  const podEntrePrograma = (proxima: MediaRow): boolean => {
-    // entre dois episódios SEGUIDOS da mesma série, o intervalo continua
-    // "dentro do universo" dela — o bumper de permanência pode abrir
-    const mesmaSerie = ultimaSerie && proxima.series_id === ultimaSerie ? ultimaSerie : null
+  const podEntrePrograma = (proxima: MediaRow, continuacao: boolean): boolean => {
+    // continuacao = próximo episódio do MESMO bloco (mesma série, emendado): é
+    // permanência dentro do universo dela — o bumper "você está vendo X" pode
+    // abrir o pod e NÃO se anuncia "a seguir" (o próximo é a mesma coisa).
+    const mesmaSerie = continuacao
+      ? proxima.series_id
+      : ultimaSerie && proxima.series_id === ultimaSerie ? ultimaSerie : null
     breakPod(mesmaSerie)
+    if (continuacao) return false
     const promoIds = proxima.series_id ? aSeguirDe.get(proxima.series_id) ?? [] : []
     const promo = promoIds.length > 0 ? porId.get(promoIds[asIdx++ % promoIds.length]) : undefined
     if (!promo) return false
@@ -334,15 +387,28 @@ export async function scheduleChannel(
     // maratona agendada cobrindo este instante? o evento manda na grade
     const ev = eventos.find((e) => t >= e.start_at - 300 && t < e.end_at)
     const evMedia = ev ? proximoDaMaratona(ev) : undefined
-    const prox = evMedia ?? queue[qi % queue.length]
-    if (!evMedia) qi++
+
+    let prox: MediaRow
+    let continuacao = false
+    if (evMedia) {
+      prox = evMedia // a maratona cuida da própria emenda; não mexe no cursor de blocos
+    } else {
+      const bloco = blocos[bi % blocos.length]
+      prox = bloco[ei]
+      // continuação = não é o 1º do bloco E emenda a mesma série que saiu agora;
+      // se um evento entrou no meio do bloco, ultimaSerie muda e o bloco reabre
+      continuacao = ei > 0 && prox.series_id != null && prox.series_id === ultimaSerie
+      ei++
+      if (ei >= bloco.length) { bi++; ei = 0 }
+    }
 
     let fechouComASeguir = false
-    if (!primeiroBloco) fechouComASeguir = podEntrePrograma(prox)
+    if (!primeiroBloco) fechouComASeguir = podEntrePrograma(prox, continuacao)
     primeiroBloco = false
 
-    // maratona emenda episódios sem vinheta; "a seguir" dispensa a abertura
-    if (!evMedia && !fechouComASeguir && vins.length > 0) {
+    // vinheta de abertura só quando começa um bloco NOVO: maratona emenda sem
+    // vinheta, episódio-continuação do mesmo bloco também, e "a seguir" já abre
+    if (!evMedia && !continuacao && !fechouComASeguir && vins.length > 0) {
       const v = vins[vi++ % vins.length]
       push(v.id, t, t + v.duracao_seg, 0)
       t += v.duracao_seg

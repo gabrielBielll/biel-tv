@@ -920,12 +920,16 @@ admin.post('/channels/:id', async (c) => {
   if (typeof b.identidade === 'string') campos.push(['identidade', b.identidade])
   if (typeof b.break_target_seg === 'number') campos.push(['break_target_seg', b.break_target_seg])
   if (typeof b.comerciais_fieis === 'number') campos.push(['comerciais_fieis', b.comerciais_fieis ? 1 : 0])
+  // episódios por bloco: 1 (sem agrupar) a 8 (blocão); fora disso, fixa no limite
+  if (typeof b.episodios_por_bloco === 'number')
+    campos.push(['episodios_por_bloco', Math.max(1, Math.min(8, Math.round(b.episodios_por_bloco)))])
   if (campos.length === 0) return c.json({ error: 'nada pra atualizar' }, 400)
   const sets = campos.map(([k], i) => `${k} = ?${i + 2}`).join(', ')
   await c.env.DB.prepare(`UPDATE channels SET ${sets} WHERE id = ?1`)
     .bind(id, ...campos.map(([, v]) => v)).run()
-  // trocar o modo fiel/livre muda o pool de comerciais — replaneja o canal já
-  if (campos.some(([k]) => k === 'comerciais_fieis')) await scheduleChannel(c.env, id, 48, true)
+  // trocar o modo fiel/livre ou o tamanho do bloco muda a grade — replaneja já
+  if (campos.some(([k]) => k === 'comerciais_fieis' || k === 'episodios_por_bloco'))
+    await scheduleChannel(c.env, id, 48, true)
   return c.json({ ok: true })
 })
 

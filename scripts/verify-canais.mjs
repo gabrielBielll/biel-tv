@@ -146,5 +146,21 @@ for (let i = 0; i < 5 && !voltou; i++) {
 }
 check('mídia restaurada volta pra grade', voltou)
 
+// ── 8. blocos por série: config por canal chega no agendador ────────────────
+// A LÓGICA de agrupar (montar blocos, séries em rodízio) tem teste unitário
+// dedicado: `pnpm verify:blocos`. Aqui só o fio integrado: o admin aceita o
+// tamanho do bloco, persiste, e o canal é replanejado sem quebrar a grade.
+const setBloco = (n) => post('/admin/channels/jetix', { episodios_por_bloco: n })
+await (await setBloco(4)).json()
+const chJ = (await fetch(`${BASE}/admin/channels`, { headers: auth }).then((r) => r.json())).find((c) => c.id === 'jetix')
+check('admin persiste episodios_por_bloco por canal', chJ?.episodios_por_bloco === 4, `= ${chJ?.episodios_por_bloco}`)
+const nowBl = Math.floor(Date.now() / 1000)
+const grade = d1(`SELECT COUNT(*) c FROM epg_virtual WHERE canal='jetix' AND end_time_virtual > ${nowBl}`)[0].c
+check('trocar o bloco replaneja o Jetix sem esvaziar a grade', grade > 0, `${grade} blocos futuros`)
+const clamp = await (await setBloco(99)).json() // fora do range → fixa no limite (8)
+const chJ2 = (await fetch(`${BASE}/admin/channels`, { headers: auth }).then((r) => r.json())).find((c) => c.id === 'jetix')
+check('valor absurdo é limitado (1..8), não explode', clamp.ok === true && chJ2.episodios_por_bloco === 8, `= ${chJ2?.episodios_por_bloco}`)
+await (await setBloco(2)).json() // volta ao padrão
+
 console.log(`\n${fail === 0 ? '🎉' : '💥'} ${pass}/${pass + fail} checagens passaram`)
 process.exit(fail === 0 ? 0 : 1)
