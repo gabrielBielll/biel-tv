@@ -2,15 +2,17 @@
 // amostra em tela cheia -> encolhe para o buraco do molde -> ficha com horário.
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { Resvg } from '@resvg/resvg-js'
 import { FFMPEG, FFPROBE } from './ffmpeg.mjs'
 
 const execFileAsync = promisify(execFile)
 const BUF = { maxBuffer: 64 * 1024 * 1024 }
 const W = 1280
 const H = 720
-let drawtextCache = null
+const TITLE_FONT = fileURLToPath(new URL('../assets/LiberationSansNarrow-Bold.ttf', import.meta.url))
 
 async function run(bin, args) {
   await execFileAsync(bin, args, BUF)
@@ -34,28 +36,6 @@ function escConcatPath(file) {
   return resolve(file).replace(/'/g, "'\\''")
 }
 
-function escDrawText(text) {
-  return String(text)
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'")
-    .replace(/:/g, '\\:')
-    .replace(/%/g, '\\%')
-    .replace(/\[/g, '\\[')
-    .replace(/\]/g, '\\]')
-    .replace(/,/g, '\\,')
-}
-
-function escFilterPath(file) {
-  return String(file).replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'")
-}
-
-async function hasDrawtext() {
-  if (drawtextCache !== null) return drawtextCache
-  const { stdout } = await execFileAsync(FFMPEG(), ['-hide_banner', '-filters'], BUF)
-  drawtextCache = /^\s*T?\.?\s+drawtext\s+/m.test(stdout)
-  return drawtextCache
-}
-
 function even(n) {
   return Math.max(2, Math.round(n / 2) * 2)
 }
@@ -73,129 +53,51 @@ function parseBox(raw) {
 }
 
 function defaultTextBox() {
-  return { x: 84, y: 494, w: 1010, h: 126 }
+  return { x: 84, y: 501, w: 700, h: 110 }
 }
 
-function drawTextFilter(input, output, titulo, subtitulo, textoBox, enableAt) {
+function escSvg(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+}
+
+function svgFit(text, size, maxWidth) {
+  // A largura aproximada evita que títulos longos avancem sobre a janela do vídeo.
+  return [...String(text)].length * size * 0.5 > maxWidth
+    ? ` textLength="${Math.round(maxWidth)}" lengthAdjust="spacingAndGlyphs"`
+    : ''
+}
+
+function makeSvgTextOverlay(titulo, subtitulo, textoBox, outFile) {
   const box = parseBox(textoBox) ?? defaultTextBox()
-  const fontFile = process.env.COMERCIAL_FONT || '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
-  const font = existsSync(fontFile)
-    ? `fontfile='${escFilterPath(fontFile)}'`
-    : "font='Sans'"
-  const titleSize = Math.max(30, Math.min(52, Math.floor(box.w / Math.max(16, titulo.length) * 1.45)))
-  const subtitleSize = Math.max(28, Math.min(44, Math.floor(box.w / Math.max(16, subtitulo.length) * 1.4)))
-  const x = Math.round(box.x)
-  const titleY = Math.round(box.y)
-  const subtitleY = Math.round(box.y + Math.max(58, box.h * 0.54))
-  const enabled = `enable='gte(t,${enableAt.toFixed(3)})'`
-  return `[${input}]drawtext=${font}:text='${escDrawText(titulo)}':fontcolor=white:fontsize=${titleSize}:` +
-    `borderw=2:bordercolor=0x12284c:shadowx=3:shadowy=4:shadowcolor=0x07152b@0.9:` +
-    `x=${x}:y=${titleY}:${enabled}[title];` +
-    `[title]drawtext=${font}:text='${escDrawText(subtitulo)}':fontcolor=0xef4046:fontsize=${subtitleSize}:` +
-    `borderw=2:bordercolor=0x54051c:shadowx=3:shadowy=4:shadowcolor=0x24000d@0.9:` +
-    `x=${x}:y=${subtitleY}:${enabled}[${output}]`
-}
-
-const GLYPHS = {
-  A: ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
-  B: ['11110', '10001', '10001', '11110', '10001', '10001', '11110'],
-  C: ['01111', '10000', '10000', '10000', '10000', '10000', '01111'],
-  D: ['11110', '10001', '10001', '10001', '10001', '10001', '11110'],
-  E: ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
-  F: ['11111', '10000', '10000', '11110', '10000', '10000', '10000'],
-  G: ['01111', '10000', '10000', '10011', '10001', '10001', '01110'],
-  H: ['10001', '10001', '10001', '11111', '10001', '10001', '10001'],
-  I: ['11111', '00100', '00100', '00100', '00100', '00100', '11111'],
-  J: ['00111', '00010', '00010', '00010', '10010', '10010', '01100'],
-  K: ['10001', '10010', '10100', '11000', '10100', '10010', '10001'],
-  L: ['10000', '10000', '10000', '10000', '10000', '10000', '11111'],
-  M: ['10001', '11011', '10101', '10101', '10001', '10001', '10001'],
-  N: ['10001', '11001', '10101', '10011', '10001', '10001', '10001'],
-  O: ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
-  P: ['11110', '10001', '10001', '11110', '10000', '10000', '10000'],
-  Q: ['01110', '10001', '10001', '10001', '10101', '10010', '01101'],
-  R: ['11110', '10001', '10001', '11110', '10100', '10010', '10001'],
-  S: ['01111', '10000', '10000', '01110', '00001', '00001', '11110'],
-  T: ['11111', '00100', '00100', '00100', '00100', '00100', '00100'],
-  U: ['10001', '10001', '10001', '10001', '10001', '10001', '01110'],
-  V: ['10001', '10001', '10001', '10001', '10001', '01010', '00100'],
-  W: ['10001', '10001', '10001', '10101', '10101', '10101', '01010'],
-  X: ['10001', '10001', '01010', '00100', '01010', '10001', '10001'],
-  Y: ['10001', '10001', '01010', '00100', '00100', '00100', '00100'],
-  Z: ['11111', '00001', '00010', '00100', '01000', '10000', '11111'],
-  0: ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
-  1: ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
-  2: ['01110', '10001', '00001', '00010', '00100', '01000', '11111'],
-  3: ['11110', '00001', '00001', '01110', '00001', '00001', '11110'],
-  4: ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
-  5: ['11111', '10000', '10000', '11110', '00001', '00001', '11110'],
-  6: ['01110', '10000', '10000', '11110', '10001', '10001', '01110'],
-  7: ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
-  8: ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
-  9: ['01110', '10001', '10001', '01111', '00001', '00001', '01110'],
-}
-
-function makeTextOverlay(titulo, subtitulo, textoBox, outFile) {
-  const box = parseBox(textoBox) ?? defaultTextBox()
-  const buf = Buffer.alloc(W * H * 3, 0)
-  const put = (px, py, color) => {
-    if (px < 0 || px >= W || py < 0 || py >= H) return
-    const i = (py * W + px) * 3
-    buf[i] = color[0]; buf[i + 1] = color[1]; buf[i + 2] = color[2]
-  }
-  const rect = (rx, ry, rw, rh, color) => {
-    for (let yy = ry; yy < ry + rh; yy++) for (let xx = rx; xx < rx + rw; xx++) put(xx, yy, color)
-  }
-
-  const drawLine = ({ text, x, y, w, h, fill, outline, shadow, italic = 0 }) => {
-    const normalized = String(text).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/·/g, '-')
-    const chars = [...normalized].filter((ch) => ch === ' ' || ch === '-' || GLYPHS[ch])
-    const units = Math.max(1, chars.reduce((sum, ch) => sum + (ch === ' ' ? 3 : ch === '-' ? 3 : 6), -1))
-    const scale = Math.max(4, Math.min(14, Math.floor(Math.min(w / units, h / 9))))
-    const slant = Math.round(scale * italic)
-    const drawGlyph = (glyph, gx, gy, color, pad = 0, offsetX = 0, offsetY = 0) => {
-      for (let row = 0; row < glyph.length; row++) {
-        for (let col = 0; col < glyph[row].length; col++) {
-          if (glyph[row][col] !== '1') continue
-          const skew = (glyph.length - 1 - row) * slant
-          rect(gx + col * scale + skew - pad + offsetX, gy + row * scale - pad + offsetY, scale + pad * 2, scale + pad * 2, color)
-        }
-      }
-    }
-    let cursor = Math.round(x)
-    for (const ch of chars) {
-      if (ch === ' ') { cursor += 3 * scale; continue }
-      if (ch === '-') {
-        const hyphenX = cursor + 3 * slant
-        rect(hyphenX + 3, y + 3 * scale + 4, 3 * scale + 4, scale + 4, shadow)
-        rect(hyphenX, y + 3 * scale, 3 * scale + 2, scale + 2, outline)
-        rect(hyphenX + 1, y + 3 * scale + 1, 3 * scale, scale, fill)
-        cursor += 4 * scale
-        continue
-      }
-      const glyph = GLYPHS[ch]
-      drawGlyph(glyph, cursor, y, shadow, Math.max(2, Math.floor(scale / 3)), 3, 4)
-      drawGlyph(glyph, cursor, y, outline, Math.max(1, Math.floor(scale / 5)))
-      drawGlyph(glyph, cursor, y, fill)
-      cursor += 6 * scale
-    }
-  }
-
-  // Fallback sem libfreetype: mantém a estética retrô do canal em duas linhas.
-  drawLine({
-    text: titulo, x: box.x, y: box.y, w: box.w, h: Math.floor(box.h * 0.43),
-    fill: [255, 255, 255], outline: [18, 48, 88], shadow: [5, 19, 43], italic: 0,
-  })
-  drawLine({
-    text: subtitulo, x: box.x, y: box.y + Math.floor(box.h * 0.54), w: box.w, h: Math.floor(box.h * 0.43),
-    fill: [239, 64, 70], outline: [103, 7, 31], shadow: [42, 0, 14], italic: 0.18,
-  })
-  writeFileSync(outFile, Buffer.concat([Buffer.from(`P6\n${W} ${H}\n255\n`), buf]))
+  const title = escSvg(titulo)
+  const subtitle = escSvg(String(subtitulo).toUpperCase())
+  const titleSize = 43
+  const subtitleSize = 34
+  const titleX = Math.round(box.x)
+  const titleY = Math.round(box.y + 43)
+  const subtitleY = Math.round(box.y + 93)
+  const titleFit = svgFit(titulo, titleSize, box.w)
+  const subtitleFit = svgFit(subtitulo, subtitleSize, box.w)
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+  <text x="${titleX + 2}" y="${titleY + 3}" font-family="Liberation Sans Narrow" font-size="${titleSize}" font-weight="700" letter-spacing="0" fill="#07152b"${titleFit}>${title}</text>
+  <text x="${titleX}" y="${titleY}" font-family="Liberation Sans Narrow" font-size="${titleSize}" font-weight="700" letter-spacing="0" fill="#ffffff" stroke="#193861" stroke-width="1.2" paint-order="stroke"${titleFit}>${title}</text>
+  <text x="${titleX + 2}" y="${subtitleY + 3}" font-family="Liberation Sans Narrow" font-size="${subtitleSize}" font-weight="700" letter-spacing="0" fill="#350310"${subtitleFit}>${subtitle}</text>
+  <text x="${titleX}" y="${subtitleY}" font-family="Liberation Sans Narrow" font-size="${subtitleSize}" font-weight="700" letter-spacing="0" fill="#e53b43" stroke="#7a0b24" stroke-width="1.2" paint-order="stroke"${subtitleFit}>${subtitle}</text>
+</svg>`
+  const png = new Resvg(svg, {
+    font: { fontFiles: [TITLE_FONT], loadSystemFonts: false },
+  }).render().asPng()
+  writeFileSync(outFile, png)
   return outFile
 }
 
 function overlayTextImageFilter(input, output, textInputIndex, enableAt) {
-  return `[${textInputIndex}:v]format=rgb24,colorkey=0x000000:0.01:0.0[txt];` +
+  return `[${textInputIndex}:v]format=rgba[txt];` +
     `[${input}][txt]overlay=0:0:enable='gte(t,${enableAt.toFixed(3)})'[${output}]`
 }
 
@@ -313,9 +215,7 @@ function animatedVideoGraph({ total, tFaseB, trans, hole, tituloTela, textoTela,
     `[base][anim]overlay=x='${Math.round(hole.x)}*${p}':y='${Math.round(hole.y)}*${p}'[v0]`,
     `[1:v]format=rgba,fade=t=in:st=${animStart.toFixed(3)}:d=${trans.toFixed(3)}:alpha=1,setpts=PTS-STARTPTS[molde]`,
     `[v0][molde]overlay=0:0:enable='gte(t,${animStart.toFixed(3)})'[v1]`,
-    textInputIndex == null
-      ? drawTextFilter('v1', 'vout', tituloTela, textoTela, textoBox, tFaseB)
-      : overlayTextImageFilter('v1', 'vout', textInputIndex, tFaseB),
+    overlayTextImageFilter('v1', 'vout', textInputIndex, tFaseB),
   ]
   return parts.join(';')
 }
@@ -331,9 +231,7 @@ function staticVideoGraph({ total, tFaseB, hole, tituloTela, textoTela, textoBox
     `[v0][mini]overlay=${Math.round(hole.x)}:${Math.round(hole.y)}:enable='gte(t,${tFaseB.toFixed(3)})'[v1]`,
     `[1:v]format=rgba,setpts=PTS-STARTPTS[molde]`,
     `[v1][molde]overlay=0:0:enable='gte(t,${tFaseB.toFixed(3)})'[v2]`,
-    textInputIndex == null
-      ? drawTextFilter('v2', 'vout', tituloTela, textoTela, textoBox, tFaseB)
-      : overlayTextImageFilter('v2', 'vout', textInputIndex, tFaseB),
+    overlayTextImageFilter('v2', 'vout', textInputIndex, tFaseB),
   ]
   return parts.join(';')
 }
@@ -385,8 +283,8 @@ export async function montaComercialPrograma({
   const moldeAlpha = join(workdir, 'molde-alpha.png')
   await preparaMolde(moldePng, moldeAlpha)
   const hole = await detectaBuraco(moldeAlpha)
-  const textOverlay = await hasDrawtext() ? null : makeTextOverlay(tituloTela || textoTela, textoTela, textoBox, join(workdir, 'texto.ppm'))
-  const textInputIndex = textOverlay ? (musicaFile ? 4 : 3) : null
+  const textOverlay = makeSvgTextOverlay(tituloTela || textoTela, textoTela, textoBox, join(workdir, 'texto.png'))
+  const textInputIndex = musicaFile ? 4 : 3
   // A amostra define as imagens do programa. Sua faixa original pode ter fala
   // ou abertura muito alta, então só uma trilha cadastrada no molde entra no
   // mix. Assim a locução da fábrica sempre chega limpa ao comercial final.
@@ -406,7 +304,7 @@ export async function montaComercialPrograma({
     duration: loc.total,
     t_fase_b: tFaseB,
     transition: fallback ? 'static-fallback' : 'shrink',
-    text_renderer: textOverlay ? 'bitmap-overlay' : 'drawtext',
+    text_renderer: 'svg-overlay',
     music_source: musicaOrigem ?? 'none',
     hole,
     offsets: loc.offsets,

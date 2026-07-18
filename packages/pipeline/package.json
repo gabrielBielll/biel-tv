@@ -5,6 +5,7 @@
   "type": "module",
   "description": "CLI de ingestão: normaliza → segmenta → cue points → R2 → D1",
   "dependencies": {
+    "@resvg/resvg-js": "2.6.2",
     "aws4fetch": "^1.0.20"
   }
 }
