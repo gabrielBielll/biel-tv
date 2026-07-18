@@ -7,10 +7,11 @@ import { spawn } from 'node:child_process'
 import { createWriteStream, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { pipeline as streamPipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { FFMPEG, concatParts, extraiTrecho, detectSilence, detectBlack, detectScene, probe } from '../packages/pipeline/src/ffmpeg.mjs'
 import { achaBuracos, ancoraCorte, fundePelaGrade, classificaPeca } from '../packages/pipeline/src/cortador.mjs'
+import { montaComercialPrograma } from '../packages/pipeline/src/comerciais.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8787'
@@ -43,6 +44,19 @@ async function post(path, body, tries = 3) {
       await new Promise((r) => setTimeout(r, 800 * i))
     }
   }
+}
+
+async function postJson(path, body, tries = 3) {
+  const res = await post(path, body, tries)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
+  return data
+}
+
+async function baixaR2Key(key, dest) {
+  const res = await fetch(`${BASE}/admin/staging/${encodeURIComponent(key)}`, { headers: HDR })
+  if (!res.ok) throw new Error(`download de asset ${key} HTTP ${res.status}`)
+  await streamPipeline(Readable.fromWeb(res.body), createWriteStream(dest))
 }
 
 // Cookies do YouTube (fase 11d): busca UMA vez os cookies self-service do
@@ -308,12 +322,14 @@ async function transcreveComTempo(file, workdir) {
 }
 
 /** Ingere UM arquivo já em disco pelo pipeline de sempre. */
-async function ingerePeca(file, { id, title, canais }) {
+async function ingerePeca(file, { id, title, canais, series, noTranscript = false }) {
   const args = [
     '--dns-result-order=ipv4first',
     join(ROOT, 'packages/pipeline/src/cli.mjs'), 'ingest', file,
     '--id', id, '--tipo', 'comercial', '--title', title,
+    ...(series ? ['--series', series] : []),
     ...(canais ? ['--canais', canais] : []),
+    ...(noTranscript ? ['--no-transcript'] : []),
     '--target', TARGET,
     ...(TARGET === 'remote' ? ['--base-url', ''] : []),
   ]
@@ -331,6 +347,82 @@ async function ingerePeca(file, { id, title, canais }) {
       fail(new Error(linhas.filter((l) => l.includes('✖') || /error/i.test(l)).at(-1) ?? linhas.at(-1) ?? 'pipeline falhou'))
     })
   })
+}
+
+function extDeKey(key, fallback) {
+  const ext = extname(String(key ?? '').split('?')[0] ?? '').toLowerCase()
+  return ext && ext.length <= 8 ? ext : fallback
+}
+
+async function tickFabricaComerciais() {
+  const res = await fetch(`${BASE}/admin/fabrica-comerciais/claim`, { method: 'POST', headers: HDR })
+  if (res.status === 204) return false
+  if (res.status === 404) return false
+  if (!res.ok) throw new Error(`fábrica de comerciais claim HTTP ${res.status}`)
+  const job = await res.json()
+  const workdir = join(ROOT, '.ingest-work', `fabcom_${job.id}`)
+  mkdirSync(workdir, { recursive: true })
+  try {
+    log(`montando comercial "${job.media_id}" (${job.series_id} · ${job.slot.texto_tela})`)
+    await postJson(`/admin/fabrica-comerciais/${job.id}/progress`, { pct: 5 }, 1).catch(() => {})
+
+    const sample = join(workdir, `sample${extDeKey(job.sample.video_key, '.mp4')}`)
+    const molde = join(workdir, `molde${extDeKey(job.molde.molde_key, '.png')}`)
+    const musica = job.molde.musica_key
+      ? join(workdir, `musica${extDeKey(job.molde.musica_key, '.mp3')}`)
+      : null
+    await baixaR2Key(job.sample.video_key, sample)
+    await baixaR2Key(job.molde.molde_key, molde)
+    if (job.molde.musica_key && musica) await baixaR2Key(job.molde.musica_key, musica)
+
+    const clips = []
+    for (const [i, c] of job.clips.entries()) {
+      const file = join(workdir, `clip_${i}_${c.papel}${extDeKey(c.audio_key, '.wav')}`)
+      await baixaR2Key(c.audio_key, file)
+      clips.push({ ...c, file })
+    }
+    await postJson(`/admin/fabrica-comerciais/${job.id}/progress`, { pct: 25 }, 1).catch(() => {})
+
+    const out = join(workdir, `${job.media_id}.mp4`)
+    const render = await montaComercialPrograma({
+      sampleVideo: sample,
+      moldePng: molde,
+      musicaFile: musica,
+      clips,
+      textoTela: job.slot.texto_tela,
+      textoBox: job.molde.texto_box,
+      outFile: out,
+      workdir,
+    })
+    await postJson(`/admin/fabrica-comerciais/${job.id}/progress`, { pct: 70 }, 1).catch(() => {})
+
+    await ingerePeca(out, {
+      id: job.media_id,
+      title: job.title,
+      canais: job.canal,
+      series: job.series_id,
+      noTranscript: true,
+    })
+    await postJson(`/admin/fabrica-comerciais/${job.id}/done`, {
+      media_id: job.media_id,
+      transcript: job.transcript,
+      proposta: {
+        tipo: 'bloco_horario',
+        series_id: job.series_id,
+        descricao: `${job.title} (${job.slot.texto_tela})`,
+        confianca: 1,
+      },
+      render,
+    })
+    log(`✔ ${job.media_id}: comercial montado (${render.duration.toFixed(1)}s, ${render.transition})`)
+  } catch (e) {
+    await postJson(`/admin/fabrica-comerciais/${job.id}/error`, { error: String(e.message ?? e).slice(0, 500) }, 1)
+      .catch(() => log('não consegui nem marcar o erro da fábrica de comerciais — worker fora do ar?'))
+    log(`✖ ${job.id} falhou: ${e.message}`)
+  } finally {
+    rmSync(workdir, { recursive: true, force: true })
+  }
+  return true
 }
 
 async function tickComercial() {
@@ -454,6 +546,9 @@ async function tick() {
   // análise de playlist tem prioridade: é rápida (só lista os títulos) e
   // destrava a revisão no painel antes dos downloads pesados
   if (await tickPlaylist()) return true
+  // comerciais GERADOS são jobs leves o bastante para passar antes do cortador:
+  // destravam rápido uma peça pronta do canal e ainda caem no pipeline normal.
+  if (await tickFabricaComerciais()) return true
   // o cortador vem antes dos jobs pesados: transcrever 600s leva ~3min, mas
   // enfileira N peças de uma vez — quanto antes começar, antes a fila anda
   if (await tickComercial()) return true

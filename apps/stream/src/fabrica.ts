@@ -34,5 +34,13 @@ export async function dispatchFabrica(env: Env): Promise<void> {
 export async function dispatchSeTemFila(env: Env): Promise<void> {
   const row = await env.DB.prepare("SELECT COUNT(*) c FROM ingest_jobs WHERE status = 'queued'")
     .first<{ c: number }>()
-  if ((row?.c ?? 0) > 0) await dispatchFabrica(env)
+  let comerciais = 0
+  try {
+    const row2 = await env.DB.prepare("SELECT COUNT(*) c FROM commercial_build_jobs WHERE status = 'queued'")
+      .first<{ c: number }>()
+    comerciais = row2?.c ?? 0
+  } catch {
+    // migration da fábrica de comerciais pode ainda não existir em algum ambiente
+  }
+  if ((row?.c ?? 0) + comerciais > 0) await dispatchFabrica(env)
 }

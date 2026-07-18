@@ -4,6 +4,7 @@ import { runScheduler, scheduleChannel, reconcileAndRepair } from './scheduler'
 import { chatDiretor, estadoDiretor, type ChatMsg } from './diretor'
 import { uploads } from './uploads'
 import { dispatchFabrica } from './fabrica'
+import { fabricaComerciais } from './fabrica-comerciais'
 import { extraiPromessa, salvaTranscript, type Proposta } from './promessas'
 import { planejaEditorial } from './editorial'
 import { pedeJson } from './llm'
@@ -57,6 +58,7 @@ async function channelIds(db: D1Database): Promise<string[]> {
 
 // sessões multipart retomáveis (o cors+token acima cobrem o sub-app)
 admin.route('/uploads', uploads)
+admin.route('/fabrica-comerciais', fabricaComerciais)
 
 admin.post('/upload', async (c) => {
   const raw = c.req.query('name') ?? 'upload.bin'

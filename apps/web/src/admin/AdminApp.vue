@@ -103,6 +103,7 @@ async function refresh() {
     pendentes.value = await (await api('/uploads')).json()
     promessas.value = await (await api('/promessas')).json()
     await carregaAnalises()
+    await carregaFabrica()
   } catch {
     /* sem pânico em polling */
   }
@@ -121,8 +122,185 @@ const tituloPromessa = (p: any) => { try { return JSON.parse(p.metadata).title ?
 const promPendentes = computed(() => promessas.value.filter((p) => p.status === 'pendente'))
 const promDecididas = computed(() => promessas.value.filter((p) => p.status === 'confirmada' || p.status === 'ignorar'))
 
+// ── fábrica de comerciais (fala + amostra + molde) ─────────────────────────
+const fabrica = ref<{ voice_clips: any[]; moldes: any[]; samples: any[]; jobs: any[]; series: any[] }>({
+  voice_clips: [], moldes: [], samples: [], jobs: [], series: [],
+})
+const fabBusy = ref(false)
+const clipFile = ref<File | null>(null)
+const sampleFile = ref<File | null>(null)
+const moldeFile = ref<File | null>(null)
+const musicaFile = ref<File | null>(null)
+const clipForm = ref({ categoria: 'frase', series_id: '', chave: '', rotulo: '' })
+const sampleForm = ref({ series_id: '', rotulo: '' })
+const moldeForm = ref({ nome: 'Molde Jetix — horário', canal: 'jetix' })
+const buildForm = ref({
+  molde_id: '',
+  series_id: '',
+  dias: [1, 2, 3, 4, 5] as number[],
+  hora: '16:00',
+  sample_id: '',
+  frase_id: '',
+  media_id: '',
+  title: '',
+})
+const DIAS_FAB = [
+  { n: 1, label: 'seg' }, { n: 2, label: 'ter' }, { n: 3, label: 'qua' }, { n: 4, label: 'qui' },
+  { n: 5, label: 'sex' }, { n: 6, label: 'sáb' }, { n: 7, label: 'dom' },
+]
+const fabJobsAtivos = computed(() => fabrica.value.jobs.filter((j) => j.status === 'queued' || j.status === 'processing'))
+const clipsDaSerie = computed(() => fabrica.value.voice_clips.filter((c) => c.series_id === buildForm.value.series_id))
+const frasesDaSerie = computed(() => clipsDaSerie.value.filter((c) => c.categoria === 'frase'))
+const samplesDaSerie = computed(() => fabrica.value.samples.filter((s) => s.series_id === buildForm.value.series_id))
+const fabStatus: Record<string, string> = { queued: 'na fila', processing: 'montando', done: 'pronto', error: 'erro' }
+const slugFab = (s: string) =>
+  s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+
+async function carregaFabrica() {
+  try {
+    fabrica.value = await (await api('/fabrica-comerciais')).json()
+    if (!buildForm.value.molde_id && fabrica.value.moldes[0]) buildForm.value.molde_id = fabrica.value.moldes[0].id
+  } catch { /* poll cobre */ }
+}
+
+async function uploadAsset(f: File): Promise<string> {
+  const res = await api(`/upload?name=${encodeURIComponent(f.name)}`, { method: 'POST', body: f })
+  const body = await res.json()
+  if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+  return body.staging_key
+}
+
+function onClipFile(ev: Event) { clipFile.value = ((ev.target as HTMLInputElement).files ?? [])[0] ?? null }
+function onSampleFile(ev: Event) { sampleFile.value = ((ev.target as HTMLInputElement).files ?? [])[0] ?? null }
+function onMoldeFile(ev: Event) { moldeFile.value = ((ev.target as HTMLInputElement).files ?? [])[0] ?? null }
+function onMusicaFile(ev: Event) { musicaFile.value = ((ev.target as HTMLInputElement).files ?? [])[0] ?? null }
+
+async function salvarClip() {
+  if (!clipFile.value) { msg.value = '✖ escolha o áudio do clipe'; return }
+  fabBusy.value = true
+  try {
+    const staging = await uploadAsset(clipFile.value)
+    const res = await postJson('/fabrica-comerciais/voice-clips', {
+      ...clipForm.value,
+      staging_key: staging,
+      original_name: clipFile.value.name,
+    })
+    const body = await res.json()
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    msg.value = `✔ clipe salvo (${clipForm.value.categoria})`
+    clipFile.value = null
+    clipForm.value.rotulo = ''
+    await carregaFabrica()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  } finally {
+    fabBusy.value = false
+  }
+}
+
+async function salvarSample() {
+  if (!sampleFile.value) { msg.value = '✖ escolha o vídeo da amostra'; return }
+  fabBusy.value = true
+  try {
+    const staging = await uploadAsset(sampleFile.value)
+    const res = await postJson('/fabrica-comerciais/samples', {
+      ...sampleForm.value,
+      staging_key: staging,
+      original_name: sampleFile.value.name,
+    })
+    const body = await res.json()
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    msg.value = '✔ amostra salva'
+    sampleFile.value = null
+    await carregaFabrica()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  } finally {
+    fabBusy.value = false
+  }
+}
+
+async function salvarMolde() {
+  if (!moldeFile.value) { msg.value = '✖ escolha o PNG do molde'; return }
+  fabBusy.value = true
+  try {
+    const moldeStaging = await uploadAsset(moldeFile.value)
+    const musicaStaging = musicaFile.value ? await uploadAsset(musicaFile.value) : ''
+    const res = await postJson('/fabrica-comerciais/moldes', {
+      ...moldeForm.value,
+      molde_staging_key: moldeStaging,
+      molde_original_name: moldeFile.value.name,
+      musica_staging_key: musicaStaging,
+      musica_original_name: musicaFile.value?.name ?? '',
+    })
+    const body = await res.json()
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    msg.value = '✔ molde salvo'
+    moldeFile.value = null
+    musicaFile.value = null
+    buildForm.value.molde_id = body.id
+    await carregaFabrica()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  } finally {
+    fabBusy.value = false
+  }
+}
+
+function toggleDiaFab(n: number) {
+  const cur = buildForm.value.dias
+  buildForm.value.dias = cur.includes(n) ? cur.filter((x) => x !== n) : [...cur, n].sort((a, b) => a - b)
+}
+
+function sugereComercialId() {
+  const sid = slugFab(buildForm.value.series_id).slice(0, 20)
+  const h = buildForm.value.hora.replace(':', 'h')
+  if (sid && h) buildForm.value.media_id = `com_${sid}_${h}`
+}
+
+async function montarComercial() {
+  if (!buildForm.value.molde_id || !buildForm.value.series_id || buildForm.value.dias.length === 0) {
+    msg.value = '✖ escolha molde, programa e dias'
+    return
+  }
+  fabBusy.value = true
+  try {
+    const res = await postJson('/fabrica-comerciais/jobs', {
+      ...buildForm.value,
+      media_id: buildForm.value.media_id.trim() || undefined,
+      title: buildForm.value.title.trim() || undefined,
+      sample_id: buildForm.value.sample_id || undefined,
+      frase_id: buildForm.value.frase_id || undefined,
+    })
+    const body = await res.json()
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    msg.value = `✔ comercial ${body.media_id} entrou na fábrica`
+    await carregaFabrica()
+    refresh()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  } finally {
+    fabBusy.value = false
+  }
+}
+
+async function apagarFab(kind: 'voice-clips' | 'samples' | 'moldes', id: string) {
+  const res = await api(`/fabrica-comerciais/${kind}/${id}`, { method: 'DELETE' })
+  const body = await res.json().catch(() => ({} as { error?: string }))
+  msg.value = res.ok ? '✔ removido' : `✖ ${body.error ?? res.status}`
+  carregaFabrica()
+}
+
+async function retryFabJob(j: any) {
+  const res = await postJson(`/fabrica-comerciais/${j.id}/retry`, {})
+  const body = await res.json().catch(() => ({} as { error?: string }))
+  msg.value = res.ok ? `↻ ${j.media_id} voltou para a fábrica` : `✖ ${body.error ?? res.status}`
+  carregaFabrica()
+}
+
 // ── navegação por seções (painel = menu lateral, uma seção por vez) ─────────
-type Aba = 'enviar' | 'playlist' | 'fila' | 'catalogo' | 'promessas' | 'diretor'
+type Aba = 'enviar' | 'playlist' | 'fabrica' | 'fila' | 'catalogo' | 'promessas' | 'diretor'
 const ABA_KEY = 'bieltv_admin_aba'
 const aba = ref<Aba>((localStorage.getItem(ABA_KEY) as Aba) || 'enviar')
 watch(aba, (v) => localStorage.setItem(ABA_KEY, v))
@@ -1096,6 +1274,10 @@ onBeforeUnmount(() => clearInterval(poll))
         <span class="nav-ico">🎬</span> Playlist
         <span v-if="analisesRevisar" class="nav-badge" title="playlists aguardando revisão">{{ analisesRevisar }}</span>
       </button>
+      <button class="nav-item" :class="{ on: aba === 'fabrica' }" @click="aba = 'fabrica'">
+        <span class="nav-ico">🏭</span> Fábrica
+        <span v-if="fabJobsAtivos.length" class="nav-badge azul" title="comerciais em montagem">{{ fabJobsAtivos.length }}</span>
+      </button>
       <button class="nav-item" :class="{ on: aba === 'fila' }" @click="aba = 'fila'">
         <span class="nav-ico">⚙️</span> Fila
         <span v-if="jobsAtivos.length" class="nav-badge azul" title="processando/na fila">{{ jobsAtivos.length }}</span>
@@ -1351,6 +1533,145 @@ onBeforeUnmount(() => clearInterval(poll))
               baixar {{ plSelDe(pl.id).length }} episódio(s)
             </button>
           </template>
+        </div>
+      </section>
+
+      <section v-show="aba === 'fabrica'" class="card">
+        <h2>Fábrica de comerciais</h2>
+        <div class="fab-grid">
+          <div class="fab-panel fab-main">
+            <h3>Montar comercial</h3>
+            <div class="form">
+              <div class="row">
+                <label>Molde
+                  <select v-model="buildForm.molde_id">
+                    <option value="">escolha</option>
+                    <option v-for="m in fabrica.moldes" :key="m.id" :value="m.id">{{ m.nome }} · {{ nomeCanal(m.canal) }}</option>
+                  </select>
+                </label>
+                <label>Programa
+                  <select v-model="buildForm.series_id" @change="sugereComercialId">
+                    <option value="">escolha</option>
+                    <option v-for="s in fabrica.series" :key="s.sid" :value="s.sid">{{ s.titulo }} · {{ s.sid }}</option>
+                  </select>
+                </label>
+              </div>
+              <div class="row">
+                <label>Hora <input v-model="buildForm.hora" type="time" @change="sugereComercialId" /></label>
+                <label>ID final <input v-model="buildForm.media_id" placeholder="com_power_rangers_16h" /></label>
+              </div>
+              <div class="fab-days">
+                <button
+                  v-for="d in DIAS_FAB"
+                  :key="d.n"
+                  class="chip chip-btn"
+                  :class="{ 'chip-on': buildForm.dias.includes(d.n) }"
+                  @click="toggleDiaFab(d.n)"
+                >{{ d.label }}</button>
+              </div>
+              <div class="row">
+                <label>Amostra
+                  <select v-model="buildForm.sample_id">
+                    <option value="">automática</option>
+                    <option v-for="s in samplesDaSerie" :key="s.id" :value="s.id">{{ s.rotulo }}</option>
+                  </select>
+                </label>
+                <label>Frase
+                  <select v-model="buildForm.frase_id">
+                    <option value="">sortear/última cadastrada</option>
+                    <option v-for="f in frasesDaSerie" :key="f.id" :value="f.id">{{ f.rotulo }}</option>
+                  </select>
+                </label>
+              </div>
+              <label>Título no catálogo <input v-model="buildForm.title" placeholder="opcional" /></label>
+              <button class="primary" :disabled="fabBusy" @click="montarComercial">
+                {{ fabBusy ? 'trabalhando…' : 'montar comercial' }}
+              </button>
+            </div>
+          </div>
+
+          <div class="fab-panel">
+            <h3>Clipes de fala</h3>
+            <div class="form">
+              <div class="row">
+                <label>Categoria
+                  <select v-model="clipForm.categoria">
+                    <option value="frase">frase</option>
+                    <option value="nome">nome</option>
+                    <option value="frequencia">frequência</option>
+                    <option value="horario">horário</option>
+                    <option value="conector">conector</option>
+                  </select>
+                </label>
+                <label>Série <input v-model="clipForm.series_id" placeholder="só nome/frase" /></label>
+              </div>
+              <label>Chave <input v-model="clipForm.chave" placeholder="16:00, seg-sex, todos..." /></label>
+              <label>Rótulo falado <input v-model="clipForm.rotulo" placeholder="às quatro da tarde" /></label>
+              <input type="file" accept="audio/*,video/*" @change="onClipFile" />
+              <button class="ghost" :disabled="fabBusy" @click="salvarClip">salvar fala</button>
+            </div>
+            <div class="fab-list">
+              <div v-for="c in fabrica.voice_clips.slice(0, 14)" :key="c.id" class="fab-mini">
+                <span class="mono">{{ c.categoria }}</span>
+                <span class="dim grow">{{ c.series_id || c.chave }} · {{ c.rotulo }}</span>
+                <button class="ghost" title="remover clipe" @click="apagarFab('voice-clips', c.id)">✕</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="fab-panel">
+            <h3>Amostras</h3>
+            <div class="form">
+              <label>Série <input v-model="sampleForm.series_id" placeholder="power_rangers_forca_animal" /></label>
+              <label>Rótulo <input v-model="sampleForm.rotulo" placeholder="cortes de ação 01" /></label>
+              <input type="file" accept="video/*" @change="onSampleFile" />
+              <button class="ghost" :disabled="fabBusy" @click="salvarSample">salvar amostra</button>
+            </div>
+            <div class="fab-list">
+              <div v-for="s in fabrica.samples.slice(0, 10)" :key="s.id" class="fab-mini">
+                <span class="mono">{{ s.series_id }}</span>
+                <span class="dim grow">{{ s.rotulo }}</span>
+                <button class="ghost" title="remover amostra" @click="apagarFab('samples', s.id)">✕</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="fab-panel">
+            <h3>Moldes</h3>
+            <div class="form">
+              <label>Nome <input v-model="moldeForm.nome" /></label>
+              <label>Canal
+                <select v-model="moldeForm.canal">
+                  <option v-for="c in channels" :key="c.id" :value="c.id">{{ c.nome }}</option>
+                </select>
+              </label>
+              <input type="file" accept="image/png" @change="onMoldeFile" />
+              <input type="file" accept="audio/*" @change="onMusicaFile" />
+              <button class="ghost" :disabled="fabBusy" @click="salvarMolde">salvar molde</button>
+            </div>
+            <div class="fab-list">
+              <div v-for="m in fabrica.moldes" :key="m.id" class="fab-mini">
+                <span class="mono">{{ m.canal }}</span>
+                <span class="dim grow">{{ m.nome }}{{ m.musica_key ? ' · música' : '' }}</span>
+                <button class="ghost" title="remover molde" @click="apagarFab('moldes', m.id)">✕</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <h2 class="mt">Jobs da fábrica</h2>
+        <p v-if="fabrica.jobs.length === 0" class="dim">nenhum comercial montado por aqui ainda</p>
+        <div v-for="j in fabrica.jobs" :key="j.id" class="job-row fab-job">
+          <span class="mono">{{ j.media_id }}</span>
+          <span class="dim grow">{{ j.title }}</span>
+          <span v-if="j.status === 'processing' && j.progress > 0" class="mini-bar">
+            <span class="mini-bar-fill" :style="{ width: j.progress + '%' }" />
+          </span>
+          <span class="chip" :class="`st-${j.status}`">
+            {{ j.status === 'processing' && j.progress > 0 ? `montando ${j.progress}%` : (fabStatus[j.status] ?? j.status) }}
+          </span>
+          <button v-if="j.status === 'error'" class="ghost" title="tentar de novo" @click="retryFabJob(j)">↻</button>
+          <span v-if="j.error" class="err small">{{ j.error }}</span>
         </div>
       </section>
 
@@ -1829,4 +2150,26 @@ button.ghost:hover { color: var(--text); }
 .pl-revisar { color: #ffb020; border-color: rgba(255, 176, 32, 0.5); }
 .pl-confirmado { color: var(--ok); border-color: rgba(56, 217, 122, 0.5); }
 .pl-error { color: #ff6b6b; border-color: rgba(255, 107, 107, 0.5); }
+
+/* fábrica de comerciais */
+.fab-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; align-items: start; min-width: 0; }
+.fab-panel { min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--panel-2); }
+.fab-main { grid-row: span 2; }
+.fab-panel h3 { font-size: 12px; color: var(--text); margin-bottom: 8px; }
+.fab-panel .row > label { min-width: 0; }
+.fab-days { display: flex; flex-wrap: wrap; gap: 6px; }
+.fab-list { margin-top: 10px; max-height: 220px; overflow: auto; }
+.fab-mini { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.fab-mini .grow { min-width: 0; }
+.fab-mini:last-child { border-bottom: 0; }
+@media (max-width: 980px) {
+  .fab-grid { grid-template-columns: 1fr; }
+  .fab-main { grid-row: auto; }
+}
+@media (max-width: 620px) {
+  .fab-panel .row { flex-direction: column; align-items: stretch; }
+  .fab-mini { flex-wrap: wrap; }
+  .fab-mini .grow { white-space: normal; }
+  .fab-job { flex-wrap: wrap; }
+}
 </style>
