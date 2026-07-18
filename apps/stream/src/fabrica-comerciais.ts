@@ -37,6 +37,7 @@ type SampleRow = {
   series_id: string
   rotulo: string
   video_key: string
+  source_url: string | null
   created_at: number
 }
 
@@ -133,6 +134,19 @@ function assetKey(kind: string, id: string, original: string): string {
   return `fabrica/${kind}/${id}/${safeName(original)}`
 }
 
+function youtubeUrl(raw: unknown): string | null {
+  const value = String(raw ?? '').trim()
+  if (!value) return null
+  try {
+    const url = new URL(value)
+    const host = url.hostname.toLowerCase().replace(/^www\./, '')
+    if (url.protocol !== 'https:' || !['youtube.com', 'm.youtube.com', 'youtu.be'].includes(host)) return null
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+
 async function copiaAsset(env: Bindings, stagingKey: unknown, destKey: string): Promise<void> {
   const key = String(stagingKey ?? '').trim()
   if (!key) throw new Error('staging_key é obrigatório')
@@ -174,7 +188,7 @@ async function resolvePayload(env: Bindings, job: BuildJobRow) {
       .bind(job.sample_id, job.series_id).first<SampleRow>()
     : await env.DB.prepare('SELECT * FROM program_samples WHERE series_id = ?1 ORDER BY created_at DESC LIMIT 1')
       .bind(job.series_id).first<SampleRow>()
-  if (!sample) throw new Error(`cadastre uma amostra de vídeo para ${job.series_id}`)
+  if (!sample) throw new Error(`cadastre uma amostra de vídeo ou link do YouTube para ${job.series_id}`)
 
   const frase = job.frase_id
     ? await env.DB.prepare("SELECT * FROM voice_clips WHERE id = ?1 AND categoria = 'frase' AND series_id = ?2 AND canal = ?3")
@@ -301,17 +315,27 @@ fabricaComerciais.post('/samples', async (c) => {
   const seriesId = slugify(String(b.series_id ?? ''))
   if (!SLUG.test(seriesId)) return c.json({ error: 'série inválida' }, 400)
   const rotulo = String(b.rotulo ?? '').trim().slice(0, 160) || `amostra ${seriesId}`
+  const stagingKey = String(b.staging_key ?? '').trim()
+  const rawUrl = String(b.source_url ?? '').trim()
+  const sourceUrl = youtubeUrl(rawUrl)
+  if (!stagingKey && !rawUrl) return c.json({ error: 'envie um vídeo ou cole um link do YouTube' }, 400)
+  if (stagingKey && rawUrl) return c.json({ error: 'escolha vídeo enviado ou link do YouTube, não os dois' }, 400)
+  if (rawUrl && !sourceUrl) return c.json({ error: 'link do YouTube inválido' }, 400)
+
   const id = `ps_${hex()}`
-  const videoKey = assetKey('samples', id, String(b.original_name ?? 'amostra.mp4'))
-  try {
-    await copiaAsset(c.env, b.staging_key, videoKey)
-  } catch (e) {
-    return c.json({ error: (e as Error).message }, 400)
+  let videoKey = ''
+  if (stagingKey) {
+    videoKey = assetKey('samples', id, String(b.original_name ?? 'amostra.mp4'))
+    try {
+      await copiaAsset(c.env, stagingKey, videoKey)
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 400)
+    }
   }
   await c.env.DB.prepare(
-    'INSERT INTO program_samples (id, series_id, rotulo, video_key) VALUES (?1, ?2, ?3, ?4)',
-  ).bind(id, seriesId, rotulo, videoKey).run()
-  return c.json({ ok: true, id, video_key: videoKey }, 201)
+    'INSERT INTO program_samples (id, series_id, rotulo, video_key, source_url) VALUES (?1, ?2, ?3, ?4, ?5)',
+  ).bind(id, seriesId, rotulo, videoKey, sourceUrl).run()
+  return c.json({ ok: true, id, video_key: videoKey, source_url: sourceUrl }, 201)
 })
 
 fabricaComerciais.delete('/samples/:id', async (c) => {
@@ -319,7 +343,7 @@ fabricaComerciais.delete('/samples/:id', async (c) => {
   const row = await c.env.DB.prepare('SELECT video_key FROM program_samples WHERE id = ?1')
     .bind(id).first<{ video_key: string }>()
   if (!row) return c.json({ error: 'amostra não encontrada' }, 404)
-  await c.env.MEDIA.delete(row.video_key)
+  if (row.video_key) await c.env.MEDIA.delete(row.video_key)
   await c.env.DB.prepare('DELETE FROM program_samples WHERE id = ?1').bind(id).run()
   return c.json({ ok: true })
 })

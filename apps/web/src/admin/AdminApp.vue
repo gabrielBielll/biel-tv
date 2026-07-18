@@ -132,7 +132,7 @@ const sampleFile = ref<File | null>(null)
 const moldeFile = ref<File | null>(null)
 const musicaFile = ref<File | null>(null)
 const clipForm = ref({ canal: 'jetix', categoria: 'frase', series_id: '', chave: '', rotulo: '' })
-const sampleForm = ref({ series_id: '', rotulo: '' })
+const sampleForm = ref({ series_id: '', rotulo: '', source_url: '' })
 const moldeForm = ref({ nome: 'Molde Jetix — horário', canal: 'jetix' })
 const buildForm = ref({
   molde_id: '',
@@ -206,19 +206,22 @@ async function salvarClip() {
 }
 
 async function salvarSample() {
-  if (!sampleFile.value) { msg.value = '✖ escolha o vídeo da amostra'; return }
+  const sourceUrl = sampleForm.value.source_url.trim()
+  if (!sampleFile.value && !sourceUrl) { msg.value = '✖ escolha o vídeo ou cole um link do YouTube'; return }
   fabBusy.value = true
   try {
-    const staging = await uploadAsset(sampleFile.value)
+    const staging = sampleFile.value ? await uploadAsset(sampleFile.value) : ''
     const res = await postJson('/fabrica-comerciais/samples', {
       ...sampleForm.value,
-      staging_key: staging,
-      original_name: sampleFile.value.name,
+      staging_key: staging || undefined,
+      source_url: sourceUrl || undefined,
+      original_name: sampleFile.value?.name ?? '',
     })
     const body = await res.json()
     if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
     msg.value = '✔ amostra salva'
     sampleFile.value = null
+    sampleForm.value.source_url = ''
     await carregaFabrica()
   } catch (e) {
     msg.value = `✖ ${(e as Error).message}`
@@ -1636,13 +1639,14 @@ onBeforeUnmount(() => clearInterval(poll))
             <div class="form">
               <label>Série <input v-model="sampleForm.series_id" placeholder="power_rangers_forca_animal" /></label>
               <label>Rótulo <input v-model="sampleForm.rotulo" placeholder="cortes de ação 01" /></label>
-              <input type="file" accept="video/*" @change="onSampleFile" />
+              <label>Link do YouTube <input v-model="sampleForm.source_url" type="url" placeholder="https://youtube.com/watch?v=..." /></label>
+              <label>Vídeo local <input type="file" accept="video/*" @change="onSampleFile" /></label>
               <button class="ghost" :disabled="fabBusy" @click="salvarSample">salvar amostra</button>
             </div>
             <div class="fab-list">
               <div v-for="s in fabrica.samples.slice(0, 10)" :key="s.id" class="fab-mini">
                 <span class="mono">{{ s.series_id }}</span>
-                <span class="dim grow">{{ s.rotulo }}</span>
+                <span class="dim grow">{{ s.source_url ? 'YouTube · ' : '' }}{{ s.rotulo }}</span>
                 <button class="ghost" title="remover amostra" @click="apagarFab('samples', s.id)">✕</button>
               </div>
             </div>

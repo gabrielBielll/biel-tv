@@ -14,6 +14,7 @@ const W = 1280
 const H = 720
 const MAX_PRELUDE = 2.5
 const TITLE_FONT = fileURLToPath(new URL('../assets/LiberationSansNarrow-Bold.ttf', import.meta.url))
+const DISNEY_FONT = fileURLToPath(new URL('../assets/UbuntuSans.ttf', import.meta.url))
 
 async function run(bin, args) {
   await execFileAsync(bin, args, BUF)
@@ -53,8 +54,41 @@ function parseBox(raw) {
   return null
 }
 
-function defaultTextBox() {
-  return { x: 84, y: 501, w: 700, h: 110 }
+function textStyle(canal) {
+  if (canal === 'disney_channel') {
+    return {
+      box: { x: 820, y: 54, w: 390, h: 105 },
+      font: DISNEY_FONT,
+      family: 'Ubuntu Sans',
+      anchor: 'end',
+      titleSize: 31,
+      subtitleSize: 25,
+      titleY: 88,
+      subtitleY: 38,
+      titleFill: '#ffffff',
+      titleStroke: '#3a0b67',
+      titleShadow: '#200036',
+      subtitleFill: '#ffe85b',
+      subtitleStroke: '#6c188f',
+      subtitleShadow: '#2c0649',
+    }
+  }
+  return {
+    box: { x: 84, y: 501, w: 700, h: 110 },
+    font: TITLE_FONT,
+    family: 'Liberation Sans Narrow',
+    anchor: 'start',
+    titleSize: 43,
+    subtitleSize: 34,
+    titleY: 43,
+    subtitleY: 93,
+    titleFill: '#ffffff',
+    titleStroke: '#193861',
+    titleShadow: '#07152b',
+    subtitleFill: '#e53b43',
+    subtitleStroke: '#7a0b24',
+    subtitleShadow: '#350310',
+  }
 }
 
 function escSvg(text) {
@@ -73,25 +107,24 @@ function svgFit(text, size, maxWidth) {
     : ''
 }
 
-function makeSvgTextOverlay(titulo, subtitulo, textoBox, outFile) {
-  const box = parseBox(textoBox) ?? defaultTextBox()
+function makeSvgTextOverlay(titulo, subtitulo, textoBox, canal, outFile) {
+  const style = textStyle(canal)
+  const box = parseBox(textoBox) ?? style.box
   const title = escSvg(titulo)
   const subtitle = escSvg(String(subtitulo).toUpperCase())
-  const titleSize = 43
-  const subtitleSize = 34
-  const titleX = Math.round(box.x)
-  const titleY = Math.round(box.y + 43)
-  const subtitleY = Math.round(box.y + 93)
-  const titleFit = svgFit(titulo, titleSize, box.w)
-  const subtitleFit = svgFit(subtitulo, subtitleSize, box.w)
+  const titleX = Math.round(style.anchor === 'end' ? box.x + box.w : box.x)
+  const titleY = Math.round(box.y + style.titleY)
+  const subtitleY = Math.round(box.y + style.subtitleY)
+  const titleFit = svgFit(titulo, style.titleSize, box.w)
+  const subtitleFit = svgFit(subtitulo, style.subtitleSize, box.w)
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
-  <text x="${titleX + 2}" y="${titleY + 3}" font-family="Liberation Sans Narrow" font-size="${titleSize}" font-weight="700" letter-spacing="0" fill="#07152b"${titleFit}>${title}</text>
-  <text x="${titleX}" y="${titleY}" font-family="Liberation Sans Narrow" font-size="${titleSize}" font-weight="700" letter-spacing="0" fill="#ffffff" stroke="#193861" stroke-width="1.2" paint-order="stroke"${titleFit}>${title}</text>
-  <text x="${titleX + 2}" y="${subtitleY + 3}" font-family="Liberation Sans Narrow" font-size="${subtitleSize}" font-weight="700" letter-spacing="0" fill="#350310"${subtitleFit}>${subtitle}</text>
-  <text x="${titleX}" y="${subtitleY}" font-family="Liberation Sans Narrow" font-size="${subtitleSize}" font-weight="700" letter-spacing="0" fill="#e53b43" stroke="#7a0b24" stroke-width="1.2" paint-order="stroke"${subtitleFit}>${subtitle}</text>
+  <text x="${titleX + 2}" y="${titleY + 3}" text-anchor="${style.anchor}" font-family="${style.family}" font-size="${style.titleSize}" font-weight="700" letter-spacing="0" fill="${style.titleShadow}"${titleFit}>${title}</text>
+  <text x="${titleX}" y="${titleY}" text-anchor="${style.anchor}" font-family="${style.family}" font-size="${style.titleSize}" font-weight="700" letter-spacing="0" fill="${style.titleFill}" stroke="${style.titleStroke}" stroke-width="1.2" paint-order="stroke"${titleFit}>${title}</text>
+  <text x="${titleX + 2}" y="${subtitleY + 3}" text-anchor="${style.anchor}" font-family="${style.family}" font-size="${style.subtitleSize}" font-weight="700" letter-spacing="0" fill="${style.subtitleShadow}"${subtitleFit}>${subtitle}</text>
+  <text x="${titleX}" y="${subtitleY}" text-anchor="${style.anchor}" font-family="${style.family}" font-size="${style.subtitleSize}" font-weight="700" letter-spacing="0" fill="${style.subtitleFill}" stroke="${style.subtitleStroke}" stroke-width="1.2" paint-order="stroke"${subtitleFit}>${subtitle}</text>
 </svg>`
   const png = new Resvg(svg, {
-    font: { fontFiles: [TITLE_FONT], loadSystemFonts: false },
+    font: { fontFiles: [style.font], loadSystemFonts: false },
   }).render().asPng()
   writeFileSync(outFile, png)
   return outFile
@@ -268,6 +301,7 @@ export async function montaComercialPrograma({
   moldePng,
   musicaFile = null,
   clips,
+  canal = '',
   tituloTela = '',
   textoTela,
   textoBox = null,
@@ -296,7 +330,7 @@ export async function montaComercialPrograma({
   const moldeAlpha = join(workdir, 'molde-alpha.png')
   await preparaMolde(moldePng, moldeAlpha)
   const hole = await detectaBuraco(moldeAlpha)
-  const textOverlay = makeSvgTextOverlay(tituloTela || textoTela, textoTela, textoBox, join(workdir, 'texto.png'))
+  const textOverlay = makeSvgTextOverlay(tituloTela || textoTela, textoTela, textoBox, canal, join(workdir, 'texto.png'))
   const textInputIndex = musicaFile ? 4 : 3
   // Uma cama enviada com o molde substitui a trilha da amostra. Sem cama, a
   // abertura do próprio programa acompanha o comercial em volume baixo.

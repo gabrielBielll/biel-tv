@@ -85,12 +85,13 @@ async function cookieFile() {
   return cookiePathCache
 }
 
-// Baixa UMA URL com yt-dlp (720p mp4). Mesma receita da fase 11d: cliente de
-// TV + cookies do painel + Deno no PATH (resolvedor do "n challenge" do YouTube).
+// Baixa UMA URL com yt-dlp (720p mp4). O runtime Node já presente na fábrica
+// resolve o "n challenge" atual do YouTube; cookies seguem como plano B.
 async function baixarUrl(url, dest, cookies) {
   const { spawnSync: run } = await import('node:child_process')
   const r = run('yt-dlp', [
     '--no-playlist', '--force-overwrites',
+    '--js-runtimes', 'node',
     '-f', 'bv*[height<=720]+ba/b[height<=720]/b',
     '--merge-output-format', 'mp4',
     '--extractor-args', 'youtube:player_client=default,tv_simply,tv',
@@ -134,6 +135,7 @@ async function listaPlaylist(pl) {
   const { spawnSync: run } = await import('node:child_process')
   const r = run('yt-dlp', [
     '--flat-playlist', '--dump-single-json', '--no-warnings',
+    '--js-runtimes', 'node',
     ...(cookies ? ['--cookies', cookies] : []),
     pl.url,
   ], {
@@ -366,12 +368,19 @@ async function tickFabricaComerciais() {
     log(`montando comercial "${job.media_id}" (${job.series_id} · ${job.slot.texto_tela})`)
     await postJson(`/admin/fabrica-comerciais/${job.id}/progress`, { pct: 5 }, 1).catch(() => {})
 
-    const sample = join(workdir, `sample${extDeKey(job.sample.video_key, '.mp4')}`)
+    const sample = join(workdir, `sample${job.sample.source_url ? '.mp4' : extDeKey(job.sample.video_key, '.mp4')}`)
     const molde = join(workdir, `molde${extDeKey(job.molde.molde_key, '.png')}`)
     const musica = job.molde.musica_key
       ? join(workdir, `musica${extDeKey(job.molde.musica_key, '.mp3')}`)
       : null
-    await baixaR2Key(job.sample.video_key, sample)
+    if (job.sample.source_url) {
+      log(`baixando amostra do YouTube: ${job.sample.source_url.slice(0, 80)}…`)
+      const cookies = await cookieFile()
+      await baixarUrl(job.sample.source_url, sample, cookies)
+      await devolveCookies(cookies)
+    } else {
+      await baixaR2Key(job.sample.video_key, sample)
+    }
     await baixaR2Key(job.molde.molde_key, molde)
     if (job.molde.musica_key && musica) await baixaR2Key(job.molde.musica_key, musica)
 
@@ -389,6 +398,7 @@ async function tickFabricaComerciais() {
       moldePng: molde,
       musicaFile: musica,
       clips,
+      canal: job.canal,
       tituloTela: job.slot.titulo_tela,
       textoTela: job.slot.texto_tela,
       textoBox: job.molde.texto_box,

@@ -108,6 +108,10 @@ chutado. A frase é o gancho sobre a imagem; o card é a ficha com o quê/quando
   máquina da fábrica. O box padrão fica contido no canto inferior esquerdo,
   sem avançar sobre a janela diagonal do vídeo, e cada molde pode sobrescrevê-lo
   com `texto_box`.
+- **Variação por canal:** a Jetix usa a cartela condensada no canto inferior
+  esquerdo. A Disney Channel usa `Ubuntu Sans`, mais arredondada, com o horário
+  na primeira linha e o nome na segunda, ambos alinhados ao topo direito da
+  imagem. O molde escolhido decide o estilo automaticamente.
 - **Música:** a cama enviada com o molde tem prioridade e substitui totalmente o
   áudio da amostra; se o molde não tiver música, a fábrica usa a faixa original
   do vídeo da amostra. A fonte escolhida entra em `amix` em volume reduzido
@@ -174,6 +178,15 @@ CREATE TABLE IF NOT EXISTS moldes (
   texto_box   TEXT,                     -- JSON bbox da área do texto embaixo
   created_at  INTEGER NOT NULL DEFAULT (unixepoch())
 );
+
+CREATE TABLE IF NOT EXISTS program_samples (
+  id         TEXT PRIMARY KEY,         -- ps_<hex>
+  series_id  TEXT NOT NULL,
+  rotulo     TEXT NOT NULL,
+  video_key  TEXT NOT NULL,            -- trecho no R2 (vazio se for link)
+  source_url TEXT,                     -- abertura do YouTube baixada na montagem
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
 ```
 
 O job de montagem espelha o `ingest_job` (novo modo/coluna, como `corte` no
@@ -191,8 +204,10 @@ cortador): payload `{ molde_id, series_id, slot:{dias,hora}, frase_id? }`
    concat → `locucao.wav`; medir offsets (`t_faseB` = início do clipe de **nome**,
    i.e. fim da frase; `t_total`).
 3. **Amostra do desenho:** trecho pré-armazenado por série (1–2 amostras de
-   cenas/cortes) — ou, se não houver, `detectScene` evitando começo/fim/escuro
-   (`detectBlack`, reusa cortador). Duração ≥ `t_total` (loop/apara pra caber).
+   cenas/cortes) ou link de abertura do YouTube. Links são baixados por `yt-dlp`
+   somente no momento da montagem. O executor da fábrica precisa ter `yt-dlp`
+   disponível; o GitHub Actions já o instala. Duração ≥ `t_total`
+   (loop/apara pra caber).
 4. **Fechar a duração:** o montador calcula o próximo múltiplo de 10 segundos
    antes de renderizar. A sobra abre com até 2,5 s de vídeo+música antes da
    locução e permanece na ficha final com vídeo+música; assim o pipeline não
@@ -237,7 +252,7 @@ e a chave cadastradas no painel.
 | Nome | categoria `nome`, canal e série | uma vez por programa/canal |
 | Chamadas | categoria `frase`, canal e série | duas ou mais variações por programa/canal |
 | Assinatura | categoria `conector`, canal e chave `encerramento` | por canal/identidade |
-| Amostra | vídeo associado à série | uma ou mais cenas por programa |
+| Amostra | vídeo enviado ou link do YouTube associado à série | uma ou mais cenas por programa |
 | Molde | PNG e, opcionalmente, música associados ao canal | um ou mais por canal |
 
 ### Ordem recomendada de cadastro
@@ -246,7 +261,8 @@ e a chave cadastradas no painel.
 2. Para cada canal, cadastrar sua biblioteca de horários e frequências.
 3. Cadastrar a assinatura do canal, como "Na Jetix".
 4. Para cada programa, cadastrar seu nome gravado, duas ou três frases de
-   chamada e uma ou duas amostras de vídeo.
+   chamada e uma ou duas amostras de vídeo; uma amostra pode ser a abertura
+   oficial no YouTube.
 5. No painel, escolher **molde + programa + dias + horário** e mandar montar.
 
 O Diretor informa o slot estruturado, por exemplo `{ dias: [1,2,3,4,5], hora:
