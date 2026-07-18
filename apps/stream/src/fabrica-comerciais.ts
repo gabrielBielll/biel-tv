@@ -183,16 +183,18 @@ async function resolvePayload(env: Bindings, job: BuildJobRow) {
   const nome = await clip(env.DB, "categoria = 'nome' AND series_id = ?1", job.series_id)
   const frequencia = await clip(env.DB, "categoria = 'frequencia' AND chave = ?1", fk)
   const horario = await clip(env.DB, "categoria = 'horario' AND chave = ?1", hora)
+  const assinatura = await clip(env.DB, "categoria = 'conector' AND chave = 'encerramento'")
 
   const faltando = [
     !frase && `frase de ${job.series_id}`,
     !nome && `nome de ${job.series_id}`,
     !frequencia && `frequência ${fk}`,
     !horario && `horário ${hora}`,
+    !assinatura && 'assinatura final do canal',
   ].filter(Boolean)
   if (faltando.length) throw new Error(`faltam clipes de fala: ${faltando.join(', ')}`)
 
-  const transcript = [frase!.rotulo, nome!.rotulo, frequencia!.rotulo, horario!.rotulo]
+  const transcript = [frase!.rotulo, nome!.rotulo, frequencia!.rotulo, horario!.rotulo, assinatura!.rotulo]
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -211,6 +213,7 @@ async function resolvePayload(env: Bindings, job: BuildJobRow) {
       { papel: 'nome', ...nome! },
       { papel: 'frequencia', ...frequencia! },
       { papel: 'horario', ...horario! },
+      { papel: 'assinatura', ...assinatura! },
     ],
   }
 }

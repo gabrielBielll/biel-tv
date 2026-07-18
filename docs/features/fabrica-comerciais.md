@@ -3,7 +3,7 @@
 > Pedido do Gabriel em 2026-07-18. **Evolução** da
 > [construtor-comerciais.md](construtor-comerciais.md): em vez de trazer UMA
 > locução pronta por programa, o sistema **concatena** a locução a partir de um
-> **banco de falas reutilizáveis** (horário/frequência gravados uma vez servem
+> **banco de falas reutilizáveis** (horário/frequência/assinatura gravados uma vez servem
 > todos os programas) e monta o vídeo em duas fases dentro do molde do canal.
 > Estado: 🧱 V1 IMPLEMENTADA (2026-07-18): banco de falas/moldes/amostras,
 > painel admin, fila própria e montador ffmpeg que entrega `comercial` no
@@ -42,7 +42,7 @@ Uma vinheta = **ÁUDIO montado** + **VÍDEO montado**, casados, registrados **po
 
 ### 1. Banco de falas concatenável (a sacada nova)
 
-Quatro categorias de clipe; os dois primeiros são gravados UMA vez e servem TODOS
+Cinco categorias de clipe; horário, frequência e assinatura são gravados UMA vez e servem TODOS
 os programas — é o que faz virar *fábrica* em vez de montagem manual:
 
 | Categoria | Exemplos | Quantidade | Escopo |
@@ -51,13 +51,14 @@ os programas — é o que faz virar *fábrica* em vez de montagem manual:
 | **frequencia** | "todos os dias", "de segunda a sexta", "às segundas" | finito (7 dias + combos) | global |
 | **nome** | "Power Rangers Força Animal" | 1 por programa | por `series_id` |
 | **frase** | "uma equipe destemida pronta pra enfrentar o mal…" (+ variações) | N por programa | por `series_id` |
+| **conector** | "Na Jetix" | 1 por canal/assinatura | global (`chave=encerramento`) |
 
-**Ordem da locução** (fixa, como ele descreveu — frase primeiro, horário no fim):
+**Ordem da locução** (fixa):
 ```
-[frase sorteada] → [nome] → "de" [frequência] → "às" [horário]
+[frase sorteada] → [nome] → [frequência] → [horário] → [assinatura do canal]
 ```
 → *"...uma equipe destemida... **Power Rangers Força Animal**, **de segunda a
-sexta**, **às quatro da tarde**!"*
+sexta**, **às quatro da tarde**, **na Jetix**!"*
 
 ### 2. O "slot" estruturado manda em tudo (o pulo do gato)
 
@@ -78,8 +79,8 @@ Fuso sempre `America/Sao_Paulo` num lugar só (mesma regra da fase 12).
 - **Transição (~0.5s):** o vídeo **encolhe** e desliza pro bbox do buraco; o molde
   (PNG) entra por cima.
 - **Fase B — ficha:** vídeo reduzido dentro do buraco + molde por cima + **texto do
-  horário** embaixo, enquanto a locução fala **nome + frequência + horário**
-  (*"Power Rangers Força Animal, de segunda a sexta, às quatro da tarde"*).
+  horário** embaixo, enquanto a locução fala **nome + frequência + horário + assinatura**
+  (*"Power Rangers Força Animal, de segunda a sexta, às quatro da tarde, na Jetix"*).
 
 **Sincronia elegante:** como a fábrica concatenou e **mediu cada clipe**, ela sabe
 o instante exato em que a locução termina a *frase* e começa o *nome* (`t_faseB`) —
@@ -118,8 +119,8 @@ O que muda vs. fase 1 — tudo parâmetro, **nada de motor novo**:
 
 | Peça | Fase 1 | Fase 2 |
 |---|---|---|
-| Template da locução | frase → nome → freq → horário | conector→nome ×3 |
-| Clipes usados | frase + **nome** + freq + horário | **os mesmos `nome`** + `conector` novos |
+| Template da locução | frase → nome → freq → horário → assinatura | conector→nome ×3 |
+| Clipes usados | frase + **nome** + freq + horário + assinatura | **os mesmos `nome`** + `conector` novos |
 | Buracos no molde | 1 | 3 (o mesmo achador de buraco/alpha, N vezes) |
 | Amostras de vídeo | 1 (fase A→B) | 3 (uma por buraco; entram em sequência) |
 | Promessa (fase 12) | `bloco_horario` | **`a_seguir`** — a sequência É os 3 próximos da grade real |
@@ -139,7 +140,7 @@ montada nasce fidedigna porque a sequência dos 3 nomes É a da grade.
 CREATE TABLE IF NOT EXISTS voice_clips (
   id         TEXT PRIMARY KEY,          -- vc_<hex>
   categoria  TEXT NOT NULL,             -- 'horario'|'frequencia'|'nome'|'frase' (fase 1)
-                                        --   + 'conector' (fase 2: você está vendo/a seguir/e depois)
+                                        --   + 'conector' (assinatura da fase 1 e conectores da fase 2)
   series_id  TEXT,                      -- p/ 'nome'|'frase'; NULL p/ genéricos
   chave      TEXT,                      -- casamento por slot: horario='16:00',
                                         --   frequencia='seg-sex'; NULL p/ nome/frase
@@ -169,7 +170,8 @@ cortador): payload `{ molde_id, series_id, slot:{dias,hora}, frase_id? }`
 ## O montador (na fábrica — tudo ffmpeg)
 
 1. **Resolver clipes:** `nome(series_id)`, `frase(sorteada|frase_id)`,
-   `frequencia(slot.dias→chave)`, `horario(slot.hora→chave)`. Falta um → **erro
+   `frequencia(slot.dias→chave)`, `horario(slot.hora→chave)`,
+   `conector(encerramento)`. Falta um → **erro
    legível** na fila (não monta pela metade).
 2. **Concatenar a locução:** clipes já vêm normalizados no perfil de áudio →
    concat → `locucao.wav`; medir offsets (`t_faseB` = início do clipe de **nome**,

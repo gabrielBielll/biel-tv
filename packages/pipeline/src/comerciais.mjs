@@ -30,17 +30,6 @@ async function duration(file) {
   return n
 }
 
-async function temAudio(file) {
-  const { stdout } = await execFileAsync(FFPROBE(), [
-    '-v', 'error',
-    '-select_streams', 'a:0',
-    '-show_entries', 'stream=index',
-    '-of', 'csv=p=0',
-    file,
-  ], BUF)
-  return stdout.trim().length > 0
-}
-
 function escConcatPath(file) {
   return resolve(file).replace(/'/g, "'\\''")
 }
@@ -285,12 +274,13 @@ function audioGraph(total, musicaOrigem) {
     return `[2:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=1.6,alimiter=limit=0.96[aout]`
   }
   const musicaIn = musicaOrigem === 'sample' ? '0:a' : '3:a'
-  const volumeMusica = musicaOrigem === 'sample' ? 0.055 : 0.12
+  const volumeMusica = musicaOrigem === 'sample' ? 0.025 : 0.08
   return [
-    `[2:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=1.75,alimiter=limit=0.96[voice]`,
+    `[2:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=2.0,alimiter=limit=0.96[voice0]`,
+    '[voice0]asplit=2[voice_sc][voice_mix]',
     `[${musicaIn}]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=${volumeMusica}[music0]`,
-    '[music0][voice]sidechaincompress=threshold=0.018:ratio=20:attack=4:release=220[musicduck]',
-    '[voice][musicduck]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.96[aout]',
+    '[music0][voice_sc]sidechaincompress=threshold=0.018:ratio=20:attack=4:release=220[musicduck]',
+    '[voice_mix][musicduck]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.96[aout]',
   ].join(';')
 }
 
@@ -371,8 +361,8 @@ export async function montaComercialPrograma({
   workdir,
 }) {
   mkdirSync(workdir, { recursive: true })
-  if (!Array.isArray(clips) || clips.length !== 4) {
-    throw new Error('montaComercialPrograma exige 4 clipes: frase, nome, frequência, horário')
+  if (!Array.isArray(clips) || clips.length !== 5) {
+    throw new Error('montaComercialPrograma exige 5 clipes: frase, nome, frequência, horário, assinatura')
   }
 
   const locucao = join(workdir, 'locucao.wav')
@@ -386,7 +376,10 @@ export async function montaComercialPrograma({
   const hole = await detectaBuraco(moldeAlpha)
   const textOverlay = await hasDrawtext() ? null : makeTextOverlay(textoTela, textoBox, join(workdir, 'texto.ppm'))
   const textInputIndex = textOverlay ? (musicaFile ? 4 : 3) : null
-  const musicaOrigem = musicaFile ? 'external' : (await temAudio(sampleVideo) ? 'sample' : null)
+  // A amostra define as imagens do programa. Sua faixa original pode ter fala
+  // ou abertura muito alta, então só uma trilha cadastrada no molde entra no
+  // mix. Assim a locução da fábrica sempre chega limpa ao comercial final.
+  const musicaOrigem = musicaFile ? 'external' : null
   const aGraph = audioGraph(loc.total, musicaOrigem)
   const animated = `${animatedVideoGraph({ total: loc.total, tFaseB, trans, hole, textoTela, textoBox, textInputIndex })};${aGraph}`
   let fallback = false
