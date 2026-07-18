@@ -1645,8 +1645,8 @@ onBeforeUnmount(() => clearInterval(poll))
                   <option v-for="c in channels" :key="c.id" :value="c.id">{{ c.nome }}</option>
                 </select>
               </label>
-              <input type="file" accept="image/png" @change="onMoldeFile" />
-              <input type="file" accept="audio/*" @change="onMusicaFile" />
+              <label>PNG do molde <input type="file" accept="image/png" @change="onMoldeFile" /></label>
+              <label>Música de fundo <input type="file" accept="audio/*" @change="onMusicaFile" /></label>
               <button class="ghost" :disabled="fabBusy" @click="salvarMolde">salvar molde</button>
             </div>
             <div class="fab-list">

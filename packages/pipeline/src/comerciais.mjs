@@ -6,12 +6,13 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Resvg } from '@resvg/resvg-js'
-import { FFMPEG, FFPROBE } from './ffmpeg.mjs'
+import { SEG, FFMPEG, FFPROBE, probe } from './ffmpeg.mjs'
 
 const execFileAsync = promisify(execFile)
 const BUF = { maxBuffer: 64 * 1024 * 1024 }
 const W = 1280
 const H = 720
+const MAX_PRELUDE = 2.5
 const TITLE_FONT = fileURLToPath(new URL('../assets/LiberationSansNarrow-Bold.ttf', import.meta.url))
 
 async function run(bin, args) {
@@ -184,15 +185,19 @@ async function detectaBuraco(moldeAlphaPng) {
   return { x: 418, y: 0, w: 862, h: 480, fallback: true }
 }
 
-function audioGraph(total, musicaOrigem) {
+function audioGraph({ total, locucaoDuration, prelude, musicaOrigem }) {
   const t = total.toFixed(3)
-  if (!musicaOrigem) {
-    return `[2:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=1.6,alimiter=limit=0.96[aout]`
-  }
+  const delayMs = Math.round(prelude * 1000)
+  const voice = `[2:a]aresample=48000,atrim=duration=${locucaoDuration.toFixed(3)},` +
+    `asetpts=PTS-STARTPTS,volume=1.6,alimiter=limit=0.96` +
+    `${delayMs > 0 ? `,adelay=${delayMs}:all=1` : ''}[voice]`
+  if (!musicaOrigem) return `${voice};[voice]apad=whole_dur=${t},atrim=duration=${t}[aout]`
+
+  const musicInput = musicaOrigem === 'external' ? 3 : 0
   return [
-    `[2:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=1.6,alimiter=limit=0.96[voice]`,
-    `[3:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=0.28[music]`,
-    '[voice][music]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.96[aout]',
+    voice,
+    `[${musicInput}:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=0.28[music]`,
+    `[voice][music]amix=inputs=2:duration=longest:normalize=0,atrim=duration=${t},alimiter=limit=0.96[aout]`,
   ].join(';')
 }
 
@@ -276,32 +281,42 @@ export async function montaComercialPrograma({
 
   const locucao = join(workdir, 'locucao.wav')
   const loc = await concatenaLocucao(clips, workdir, locucao)
+  const sample = await probe(sampleVideo)
+  const total = Math.ceil((loc.total - 1e-6) / SEG) * SEG
+  const sobra = total - loc.total
+  // Abre com a cama musical antes do locutor e segura a ficha no final. Isso
+  // ocupa o múltiplo de 10 sem delegar ao pipeline um bloco preto perceptível.
+  const prelude = Math.min(MAX_PRELUDE, sobra)
+  const encerramento = sobra - prelude
   const frase = loc.offsets.find((o) => o.papel === 'frase')
-  const tFaseB = frase ? frase.start + frase.duration : loc.offsets[1]?.start ?? Math.min(3, loc.total)
-  const trans = Math.min(0.5, Math.max(0.2, loc.total - tFaseB > 0.3 ? 0.5 : 0.2))
+  const inicioFicha = frase ? frase.start + frase.duration : loc.offsets[1]?.start ?? Math.min(3, loc.total)
+  const tFaseB = prelude + inicioFicha
+  const trans = Math.min(0.5, Math.max(0.2, total - tFaseB > 0.3 ? 0.5 : 0.2))
 
   const moldeAlpha = join(workdir, 'molde-alpha.png')
   await preparaMolde(moldePng, moldeAlpha)
   const hole = await detectaBuraco(moldeAlpha)
   const textOverlay = makeSvgTextOverlay(tituloTela || textoTela, textoTela, textoBox, join(workdir, 'texto.png'))
   const textInputIndex = musicaFile ? 4 : 3
-  // A amostra define as imagens do programa. Sua faixa original pode ter fala
-  // ou abertura muito alta, então só uma trilha cadastrada no molde entra no
-  // mix. Assim a locução da fábrica sempre chega limpa ao comercial final.
-  const musicaOrigem = musicaFile ? 'external' : null
-  const aGraph = audioGraph(loc.total, musicaOrigem)
-  const animated = `${animatedVideoGraph({ total: loc.total, tFaseB, trans, hole, tituloTela: tituloTela || textoTela, textoTela, textoBox, textInputIndex })};${aGraph}`
+  // Uma cama enviada com o molde substitui a trilha da amostra. Sem cama, a
+  // abertura do próprio programa acompanha o comercial em volume baixo.
+  const musicaOrigem = musicaFile ? 'external' : sample.hasAudio ? 'video' : null
+  const aGraph = audioGraph({ total, locucaoDuration: loc.total, prelude, musicaOrigem })
+  const animated = `${animatedVideoGraph({ total, tFaseB, trans, hole, tituloTela: tituloTela || textoTela, textoTela, textoBox, textInputIndex })};${aGraph}`
   let fallback = false
   try {
-    await render({ sampleVideo, moldeAlphaPng: moldeAlpha, locucaoWav: locucao, musicaFile, textOverlayFile: textOverlay, filter: animated, total: loc.total, outFile })
+    await render({ sampleVideo, moldeAlphaPng: moldeAlpha, locucaoWav: locucao, musicaFile, textOverlayFile: textOverlay, filter: animated, total, outFile })
   } catch (e) {
     fallback = true
-    const stat = `${staticVideoGraph({ total: loc.total, tFaseB, hole, tituloTela: tituloTela || textoTela, textoTela, textoBox, textInputIndex })};${aGraph}`
-    await render({ sampleVideo, moldeAlphaPng: moldeAlpha, locucaoWav: locucao, musicaFile, textOverlayFile: textOverlay, filter: stat, total: loc.total, outFile })
+    const stat = `${staticVideoGraph({ total, tFaseB, hole, tituloTela: tituloTela || textoTela, textoTela, textoBox, textInputIndex })};${aGraph}`
+    await render({ sampleVideo, moldeAlphaPng: moldeAlpha, locucaoWav: locucao, musicaFile, textOverlayFile: textOverlay, filter: stat, total, outFile })
   }
 
   return {
-    duration: loc.total,
+    duration: total,
+    locucao_duration: loc.total,
+    prelude,
+    encerramento,
     t_fase_b: tFaseB,
     transition: fallback ? 'static-fallback' : 'shrink',
     text_renderer: 'svg-overlay',

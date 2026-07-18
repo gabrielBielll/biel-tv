@@ -103,9 +103,10 @@ chutado. A frase é o gancho sobre a imagem; o card é a ficha com o quê/quando
   máquina da fábrica. O box padrão fica contido no canto inferior esquerdo,
   sem avançar sobre a janela diagonal do vídeo, e cada molde pode sobrescrevê-lo
   com `texto_box`.
-- **Música:** `amix(locução, música)` com a cama do molde em volume reduzido
-  (`0.28`) e a voz limitada à frente. A música acompanha o comercial inteiro
-  sem competir com o narrador.
+- **Música:** a cama enviada com o molde tem prioridade e substitui totalmente o
+  áudio da amostra; se o molde não tiver música, a fábrica usa a faixa original
+  do vídeo da amostra. A fonte escolhida entra em `amix` em volume reduzido
+  (`0.28`) e a voz fica à frente.
 - **Por canal:** a vinheta montada entra em `media_channels` do canal do molde.
 
 ## Fase 2 — vinheta "a seguir" (MESMO motor, re-parametrizado)
@@ -185,12 +186,16 @@ cortador): payload `{ molde_id, series_id, slot:{dias,hora}, frase_id? }`
 3. **Amostra do desenho:** trecho pré-armazenado por série (1–2 amostras de
    cenas/cortes) — ou, se não houver, `detectScene` evitando começo/fim/escuro
    (`detectBlack`, reusa cortador). Duração ≥ `t_total` (loop/apara pra caber).
-4. **Montar o vídeo:** `[0,t_faseB)` tela cheia (só a frase) → transição encolhendo
-   pro bbox do buraco (molde entra por cima) → `[t_faseB,t_total]` vídeo no buraco +
-   molde (alpha do preto) por cima + PNG de texto em duas linhas no `texto_box`.
-5. **Áudio:** `amix(locução, música)`, com música de fundo atenuada e locução em
+4. **Fechar a duração:** o montador calcula o próximo múltiplo de 10 segundos
+   antes de renderizar. A sobra abre com até 2,5 s de vídeo+música antes da
+   locução e permanece na ficha final com vídeo+música; assim o pipeline não
+   precisa criar uma cauda preta perceptível.
+5. **Montar o vídeo:** `[0,t_faseB)` tela cheia → transição encolhendo pro bbox
+   do buraco (molde entra por cima) → `[t_faseB,t_total]` vídeo no buraco + molde
+   (alpha do preto) por cima + PNG de texto em duas linhas no `texto_box`.
+6. **Áudio:** `amix(locução, música)`, com música de fundo atenuada e locução em
    primeiro plano.
-6. **Fechar:** render → master → **pipeline normal** (pad p/ múltiplo de 10 —
+7. **Fechar:** render → master → **pipeline normal** (pad p/ múltiplo de 10 —
    regra de ouro intacta — segmenta, R2, D1). `media_channels = molde.canal`;
    metadata com `series_id`; nasce **fidedigna por construção** como promessa
    `bloco_horario` (o texto do slot É a promessa) — cai no rodízio do canal.
