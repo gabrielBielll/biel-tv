@@ -274,11 +274,9 @@ function audioGraph(total, musicaOrigem) {
     return `[2:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=1.6,alimiter=limit=0.96[aout]`
   }
   return [
-    `[2:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=2.0,alimiter=limit=0.96[voice0]`,
-    '[voice0]asplit=2[voice_sc][voice_mix]',
-    `[3:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=0.13[music0]`,
-    '[music0][voice_sc]sidechaincompress=threshold=0.045:ratio=5:attack=10:release=300[musicduck]',
-    '[voice_mix][musicduck]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.96[aout]',
+    `[2:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=1.6,alimiter=limit=0.96[voice]`,
+    `[3:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=0.28[music]`,
+    '[voice][music]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.96[aout]',
   ].join(';')
 }
 
