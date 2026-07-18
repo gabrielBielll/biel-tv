@@ -1,8 +1,8 @@
 // Upload dos segmentos para o R2 — local (simulado do wrangler) ou remoto (S3 API).
-import { spawnSync } from 'node:child_process'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { AwsClient } from 'aws4fetch'
+import { runWrangler, wranglerDetalhe } from './wrangler.mjs'
 
 export function listSegments(dir) {
   return readdirSync(dir).filter((f) => /^seg\d{5}\.ts$/.test(f)).sort()
@@ -13,11 +13,11 @@ export function uploadLocal(rootDir, dir, mediaId, onProgress) {
   const files = listSegments(dir)
   for (const [i, f] of files.entries()) {
     const key = `media/${mediaId}/${f}`
-    const r = spawnSync('npx', ['wrangler', 'r2', 'object', 'put', `biel-tv-media/${key}`, '--file', join(dir, f), '--local'], {
-      cwd: join(rootDir, 'apps', 'stream'),
-      stdio: 'ignore',
-    })
-    if (r.status !== 0) throw new Error(`falha no upload local de ${key}`)
+    const r = runWrangler(rootDir, ['r2', 'object', 'put', `biel-tv-media/${key}`, '--file', join(dir, f), '--local'])
+    if (r.status !== 0) {
+      const detalhe = wranglerDetalhe(r)
+      throw new Error(`falha no upload local de ${key}${detalhe ? `: ${detalhe}` : ''}`)
+    }
     onProgress?.(i + 1, files.length, key)
   }
   return files.length

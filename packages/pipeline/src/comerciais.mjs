@@ -30,6 +30,17 @@ async function duration(file) {
   return n
 }
 
+async function temAudio(file) {
+  const { stdout } = await execFileAsync(FFPROBE(), [
+    '-v', 'error',
+    '-select_streams', 'a:0',
+    '-show_entries', 'stream=index',
+    '-of', 'csv=p=0',
+    file,
+  ], BUF)
+  return stdout.trim().length > 0
+}
+
 function escConcatPath(file) {
   return resolve(file).replace(/'/g, "'\\''")
 }
@@ -135,7 +146,10 @@ function makeTextOverlay(text, textoBox, outFile) {
   const chars = [...normalized].filter((ch) => ch === ' ' || ch === '-' || GLYPHS[ch])
   const units = chars.reduce((sum, ch) => sum + (ch === ' ' ? 3 : ch === '-' ? 3 : 6), -1)
   const scale = Math.max(4, Math.min(14, Math.floor(Math.min(box.w / Math.max(1, units), box.h / 9))))
-  const textW = units * scale
+  // O fallback roda nas imagens de produção sem drawtext/libfreetype. Mantemos
+  // os glifos locais, mas com inclinação e camadas coloridas de chamada de TV.
+  const italic = Math.max(1, Math.round(scale * 0.24))
+  const textW = units * scale + italic * 6
   const textH = 7 * scale
   let x = Math.round(box.x + (box.w - textW) / 2)
   const y = Math.round(box.y + (box.h - textH) / 2)
@@ -152,20 +166,25 @@ function makeTextOverlay(text, textoBox, outFile) {
     for (let row = 0; row < glyph.length; row++) {
       for (let col = 0; col < glyph[row].length; col++) {
         if (glyph[row][col] !== '1') continue
-        rect(gx + col * scale - pad, gy + row * scale - pad, scale + pad * 2, scale + pad * 2, color)
+        const slant = (glyph.length - 1 - row) * italic
+        rect(gx + col * scale + slant - pad, gy + row * scale - pad, scale + pad * 2, scale + pad * 2, color)
       }
     }
   }
   for (const ch of chars) {
     if (ch === ' ') { x += 3 * scale; continue }
     if (ch === '-') {
-      rect(x, y + 3 * scale, 3 * scale, scale, [245, 245, 245])
+      const hyphenX = x + 3 * italic
+      rect(hyphenX + 5, y + 3 * scale + 5, 3 * scale + 6, scale + 6, [36, 8, 78])
+      rect(hyphenX, y + 3 * scale, 3 * scale + 4, scale + 4, [0, 132, 255])
+      rect(hyphenX + 2, y + 3 * scale + 2, 3 * scale, scale, [255, 218, 25])
       x += 4 * scale
       continue
     }
     const glyph = GLYPHS[ch]
-    drawGlyph(glyph, x, y, [8, 18, 34], Math.max(1, Math.floor(scale / 4)))
-    drawGlyph(glyph, x, y, [255, 255, 255])
+    drawGlyph(glyph, x + 6, y + 7, [38, 7, 82], Math.max(2, Math.floor(scale / 3)))
+    drawGlyph(glyph, x, y, [0, 128, 255], Math.max(1, Math.floor(scale / 4)))
+    drawGlyph(glyph, x, y, [255, 218, 25])
     x += 6 * scale
   }
   writeFileSync(outFile, Buffer.concat([Buffer.from(`P6\n${W} ${H}\n255\n`), buf]))
@@ -260,16 +279,18 @@ async function detectaBuraco(moldeAlphaPng) {
   return { x: 418, y: 0, w: 862, h: 480, fallback: true }
 }
 
-function audioGraph(total, temMusica) {
+function audioGraph(total, musicaOrigem) {
   const t = total.toFixed(3)
-  if (!temMusica) {
-    return `[2:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS[aout]`
+  if (!musicaOrigem) {
+    return `[2:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=1.6,alimiter=limit=0.96[aout]`
   }
+  const musicaIn = musicaOrigem === 'sample' ? '0:a' : '3:a'
+  const volumeMusica = musicaOrigem === 'sample' ? 0.055 : 0.12
   return [
-    `[2:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS[voice]`,
-    `[3:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=0.55[music0]`,
-    '[music0][voice]sidechaincompress=threshold=0.08:ratio=8:attack=20:release=450[musicduck]',
-    '[voice][musicduck]amix=inputs=2:duration=first,alimiter=limit=0.95[aout]',
+    `[2:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=1.75,alimiter=limit=0.96[voice]`,
+    `[${musicaIn}]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=${volumeMusica}[music0]`,
+    '[music0][voice]sidechaincompress=threshold=0.018:ratio=20:attack=4:release=220[musicduck]',
+    '[voice][musicduck]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.96[aout]',
   ].join(';')
 }
 
@@ -365,7 +386,8 @@ export async function montaComercialPrograma({
   const hole = await detectaBuraco(moldeAlpha)
   const textOverlay = await hasDrawtext() ? null : makeTextOverlay(textoTela, textoBox, join(workdir, 'texto.ppm'))
   const textInputIndex = textOverlay ? (musicaFile ? 4 : 3) : null
-  const aGraph = audioGraph(loc.total, Boolean(musicaFile))
+  const musicaOrigem = musicaFile ? 'external' : (await temAudio(sampleVideo) ? 'sample' : null)
+  const aGraph = audioGraph(loc.total, musicaOrigem)
   const animated = `${animatedVideoGraph({ total: loc.total, tFaseB, trans, hole, textoTela, textoBox, textInputIndex })};${aGraph}`
   let fallback = false
   try {
@@ -381,6 +403,7 @@ export async function montaComercialPrograma({
     t_fase_b: tFaseB,
     transition: fallback ? 'static-fallback' : 'shrink',
     text_renderer: textOverlay ? 'bitmap-overlay' : 'drawtext',
+    music_source: musicaOrigem ?? 'none',
     hole,
     offsets: loc.offsets,
   }

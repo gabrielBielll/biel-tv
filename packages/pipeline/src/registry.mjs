@@ -1,7 +1,7 @@
 // Registro da mídia no D1 (local ou remoto) via wrangler.
-import { spawnSync } from 'node:child_process'
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { runWrangler, wranglerDetalhe } from './wrangler.mjs'
 
 const esc = (s) => String(s).replaceAll("'", "''")
 
@@ -52,10 +52,9 @@ export function runD1(rootDir, sql, { local = true, label = 'registro' } = {}) {
   mkdirSync(dir, { recursive: true })
   const sqlPath = join(dir, `_${label}.sql`)
   writeFileSync(sqlPath, sql)
-  const r = spawnSync(
-    'npx',
-    ['wrangler', 'd1', 'execute', 'biel-tv-db', local ? '--local' : '--remote', '--file', sqlPath],
-    { cwd: join(rootDir, 'apps', 'stream'), stdio: ['ignore', 'ignore', 'inherit'] },
-  )
-  if (r.status !== 0) throw new Error(`wrangler d1 execute falhou (${label})`)
+  const r = runWrangler(rootDir, ['d1', 'execute', 'biel-tv-db', local ? '--local' : '--remote', '--file', sqlPath])
+  if (r.status !== 0) {
+    const detalhe = wranglerDetalhe(r)
+    throw new Error(`wrangler d1 execute falhou (${label})${detalhe ? `: ${detalhe}` : ''}`)
+  }
 }
