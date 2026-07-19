@@ -199,6 +199,16 @@ function bibliotecaBase(canal: string): BibItem[] {
   itens.push({ categoria: 'conector', chave: 'a_seguir', rotulo: 'a seguir', tts: 'a seguir...' })
   itens.push({ categoria: 'conector', chave: 'abertura', rotulo: 'você está vendo', tts: 'você está vendo' })
   itens.push({ categoria: 'conector', chave: 'depois', rotulo: 'e depois', tts: 'e depois...' })
+  // aberturas de EVENTO pontual: "Neste [dia]," — uma por dia da semana, usadas
+  // só na promo de MARATONA (evento único). Ali a frequência recorrente ("aos
+  // domingos") seria mentira, então a promo fala do dia único. Fragmentos
+  // finitos e reutilizáveis, assados uma vez como o resto da biblioteca.
+  for (const [n, nome] of Object.entries(DIA_NOME)) {
+    const artigo = n === '6' || n === '7' ? 'Neste' : 'Nesta' // sábado/domingo masc.
+    itens.push({ categoria: 'conector', chave: `evento_dia_${n}`, rotulo: `${artigo.toLowerCase()} ${nome}`, tts: `${artigo} ${nome},` })
+  }
+  // conector da promo de maratona: "maratona de [programa]"
+  itens.push({ categoria: 'conector', chave: 'maratona', rotulo: 'maratona de', tts: 'maratona de' })
   return itens
 }
 
@@ -272,35 +282,74 @@ async function resolvePayload(env: Bindings, job: BuildJobRow) {
       .bind(job.series_id).first<SampleRow>()
   if (!sample) throw new Error(`cadastre uma amostra de vídeo ou link do YouTube para ${job.series_id}`)
 
-  const frase = job.frase_id
-    ? await env.DB.prepare("SELECT * FROM voice_clips WHERE id = ?1 AND categoria = 'frase' AND series_id = ?2 AND canal = ?3")
-      .bind(job.frase_id, job.series_id, molde.canal).first<ClipRow>()
-    : await env.DB.prepare("SELECT * FROM voice_clips WHERE categoria = 'frase' AND series_id = ?1 AND canal = ?2 ORDER BY RANDOM() LIMIT 1")
-      .bind(job.series_id, molde.canal).first<ClipRow>()
+  // clipes comuns aos dois tipos de comercial (grade fixa e maratona)
   const nome = await clip(env.DB, "categoria = 'nome' AND series_id = ?1 AND canal = ?2", job.series_id, molde.canal)
-  const frequencia = await clip(env.DB, "categoria = 'frequencia' AND chave = ?1 AND canal = ?2", fk, molde.canal)
   const horario = await clip(env.DB, "categoria = 'horario' AND chave = ?1 AND canal = ?2", hora, molde.canal)
   const assinatura = await clip(env.DB, "categoria = 'conector' AND chave = 'encerramento' AND canal = ?1", molde.canal)
 
-  const faltando = [
-    !frase && `frase de ${job.series_id} (${molde.canal})`,
-    !nome && `nome de ${job.series_id} (${molde.canal})`,
-    !frequencia && `frequência ${fk} (${molde.canal})`,
-    !horario && `horário ${hora} (${molde.canal})`,
-    !assinatura && `assinatura final (${molde.canal})`,
-  ].filter(Boolean)
-  if (faltando.length) throw new Error(`faltam clipes de fala: ${faltando.join(', ')}`)
+  // A locução é uma LISTA de 5 fragmentos concatenados (o montador exige 5 e usa
+  // o clipe de papel 'frase' pra cronometrar a cartela). Duas montagens:
+  //  - EVENTO (maratona pontual): "Neste [dia], maratona de [nome], [horário],
+  //    [assinatura]" — fala do dia ÚNICO (não "aos domingos", que numa maratona
+  //    de um domingo só seria mentira) e anuncia MARATONA.
+  //  - GRADE (horário fixo): "[frase] [nome] [frequência] [horário] [assinatura]".
+  const evento = job.event_id != null
+  let clips: Array<{ papel: string } & ClipRow>
+  let transcriptParts: Array<ClipRow | null>
 
-  const transcript = [frase!.rotulo, nome!.rotulo, frequencia!.rotulo, horario!.rotulo, assinatura!.rotulo]
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  if (evento) {
+    const diaN = dias[0] // o slot do evento tem um único dia (o do start da maratona)
+    const nesteDia = await clip(env.DB, "categoria = 'conector' AND chave = ?1 AND canal = ?2", `evento_dia_${diaN}`, molde.canal)
+    const maratona = await clip(env.DB, "categoria = 'conector' AND chave = 'maratona' AND canal = ?1", molde.canal)
+    const faltando = [
+      !nesteDia && `abertura de evento "neste ${DIA_NOME[diaN]}" (${molde.canal})`,
+      !maratona && `conector "maratona de" (${molde.canal})`,
+      !nome && `nome de ${job.series_id} (${molde.canal})`,
+      !horario && `horário ${hora} (${molde.canal})`,
+      !assinatura && `assinatura final (${molde.canal})`,
+    ].filter(Boolean)
+    if (faltando.length) throw new Error(`faltam clipes de fala: ${faltando.join(', ')}`)
+    clips = [
+      { papel: 'frase', ...nesteDia! }, // 'frase' = âncora da cartela; aqui é a abertura do dia
+      { papel: 'maratona', ...maratona! },
+      { papel: 'nome', ...nome! },
+      { papel: 'horario', ...horario! },
+      { papel: 'assinatura', ...assinatura! },
+    ]
+    transcriptParts = [nesteDia, maratona, nome, horario, assinatura]
+  } else {
+    const frase = job.frase_id
+      ? await env.DB.prepare("SELECT * FROM voice_clips WHERE id = ?1 AND categoria = 'frase' AND series_id = ?2 AND canal = ?3")
+        .bind(job.frase_id, job.series_id, molde.canal).first<ClipRow>()
+      : await env.DB.prepare("SELECT * FROM voice_clips WHERE categoria = 'frase' AND series_id = ?1 AND canal = ?2 ORDER BY RANDOM() LIMIT 1")
+        .bind(job.series_id, molde.canal).first<ClipRow>()
+    const frequencia = await clip(env.DB, "categoria = 'frequencia' AND chave = ?1 AND canal = ?2", fk, molde.canal)
+    const faltando = [
+      !frase && `frase de ${job.series_id} (${molde.canal})`,
+      !nome && `nome de ${job.series_id} (${molde.canal})`,
+      !frequencia && `frequência ${fk} (${molde.canal})`,
+      !horario && `horário ${hora} (${molde.canal})`,
+      !assinatura && `assinatura final (${molde.canal})`,
+    ].filter(Boolean)
+    if (faltando.length) throw new Error(`faltam clipes de fala: ${faltando.join(', ')}`)
+    clips = [
+      { papel: 'frase', ...frase! },
+      { papel: 'nome', ...nome! },
+      { papel: 'frequencia', ...frequencia! },
+      { papel: 'horario', ...horario! },
+      { papel: 'assinatura', ...assinatura! },
+    ]
+    transcriptParts = [frase, nome, frequencia, horario, assinatura]
+  }
+
+  const transcript = transcriptParts.map((c) => c!.rotulo).join(' ').replace(/\s+/g, ' ').trim()
   return {
     id: job.id,
     media_id: job.media_id,
     title: job.title,
     canal: molde.canal,
     series_id: job.series_id,
+    evento,
     slot: {
       dias,
       hora,
@@ -311,13 +360,7 @@ async function resolvePayload(env: Bindings, job: BuildJobRow) {
     transcript,
     molde,
     sample,
-    clips: [
-      { papel: 'frase', ...frase! },
-      { papel: 'nome', ...nome! },
-      { papel: 'frequencia', ...frequencia! },
-      { papel: 'horario', ...horario! },
-      { papel: 'assinatura', ...assinatura! },
-    ],
+    clips,
   }
 }
 
@@ -339,6 +382,12 @@ fabricaComerciais.get('/', async (c) => {
     ).all(),
     c.env.DB.prepare('SELECT id, nome, voz_id, voz_config FROM channels ORDER BY ordem').all(),
   ])
+  // âncoras de grade (slots fixos). Guardado: se a migration 0024 ainda não rodou,
+  // o painel abre normal e a lista vem vazia (não quebra o carregamento).
+  let ancoras: unknown[] = []
+  try {
+    ancoras = (await c.env.DB.prepare('SELECT * FROM channel_slots ORDER BY canal, hora, created_at DESC').all()).results
+  } catch { /* channel_slots ausente: sem âncoras */ }
   return c.json({
     voice_clips: voice.results,
     moldes: moldes.results,
@@ -346,8 +395,78 @@ fabricaComerciais.get('/', async (c) => {
     jobs: jobs.results,
     series: series.results.filter((s: any) => s.sid),
     canais: canais.results,
+    ancoras,
     tts_disponivel: Boolean(c.env.ELEVENLABS_API_KEY),
   })
+})
+
+// ── âncoras de grade (slots fixos) ──────────────────────────────────────────
+// CRUD dos horários fixos que o scheduler honra. Criar uma âncora torna VERDADE
+// um comercial "programa X toda [dias] às [hora]" — por isso o botão de gerar o
+// comercial de horário vive aqui, ao lado do slot que ele anuncia.
+fabricaComerciais.post('/slots', async (c) => {
+  const b = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!b) return c.json({ error: 'JSON inválido' }, 400)
+  const canal = slugify(String(b.canal ?? ''))
+  if (!SLUG.test(canal) || !(await canalExiste(c.env.DB, canal))) return c.json({ error: 'canal desconhecido' }, 400)
+  const seriesId = slugify(String(b.series_id ?? ''))
+  if (!SLUG.test(seriesId)) return c.json({ error: 'série inválida' }, 400)
+  const dias = diasCanon(b.dias)
+  if (dias.length === 0) return c.json({ error: 'escolha ao menos um dia' }, 400)
+  const hora = limpaHora(b.hora)
+  if (!hora) return c.json({ error: 'hora deve ser HH:MM' }, 400)
+  const episodios = Math.max(1, Math.min(20, Math.floor(Number(b.episodios ?? 1)) || 1))
+  const id = `sl_${hex()}`
+  await c.env.DB.prepare(
+    `INSERT INTO channel_slots (id, canal, series_id, dias, hora, episodios)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+  ).bind(id, canal, seriesId, JSON.stringify(dias), hora, episodios).run()
+  // replaneja a grade do canal pra âncora já valer (append-only, preserva o no ar)
+  await scheduleChannel(c.env, canal, 48, true)
+  return c.json({ ok: true, id }, 201)
+})
+
+fabricaComerciais.delete('/slots/:id', async (c) => {
+  const row = await c.env.DB.prepare('SELECT canal FROM channel_slots WHERE id = ?1')
+    .bind(c.req.param('id')).first<{ canal: string }>()
+  if (!row) return c.json({ error: 'âncora não encontrada' }, 404)
+  await c.env.DB.prepare('DELETE FROM channel_slots WHERE id = ?1').bind(c.req.param('id')).run()
+  await scheduleChannel(c.env, row.canal, 48, true) // remove o slot da grade
+  return c.json({ ok: true })
+})
+
+// Gera o comercial de horário (bloco_horario, genérico) que anuncia este slot.
+// Enfileira um job normal da fábrica com os dados da âncora + um molde do canal.
+fabricaComerciais.post('/slots/:id/gerar', async (c) => {
+  const slot = await c.env.DB.prepare('SELECT * FROM channel_slots WHERE id = ?1')
+    .bind(c.req.param('id')).first<{ canal: string; series_id: string; dias: string; hora: string }>()
+  if (!slot) return c.json({ error: 'âncora não encontrada' }, 404)
+  const b = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>))
+  const moldeId = String(b.molde_id ?? '').trim()
+  const molde = moldeId
+    ? await c.env.DB.prepare('SELECT * FROM moldes WHERE id = ?1 AND canal = ?2').bind(moldeId, slot.canal).first<MoldeRow>()
+    : await c.env.DB.prepare('SELECT * FROM moldes WHERE canal = ?1 ORDER BY created_at DESC LIMIT 1').bind(slot.canal).first<MoldeRow>()
+  if (!molde) return c.json({ error: `canal ${slot.canal} está sem molde` }, 400)
+
+  const dias = diasCanon(JSON.parse(slot.dias))
+  const hora = limpaHora(slot.hora) ?? slot.hora
+  const tituloSerie = await serieTitulo(c.env.DB, slot.series_id)
+  const mediaId = `com_${slot.series_id.slice(0, 20)}_${hora.replace(':', 'h')}_${hex(4)}`.slice(0, 40)
+  const dup = await c.env.DB.prepare(
+    `SELECT id FROM media_items WHERE id = ?1
+     UNION SELECT media_id FROM commercial_build_jobs WHERE media_id = ?1`,
+  ).bind(mediaId).first()
+  if (dup) return c.json({ error: `id "${mediaId}" já existe — tente de novo` }, 409)
+
+  const id = `cb_${hex()}`
+  const title = `${tituloSerie} — ${textoTela(dias, hora)}`
+  await c.env.DB.prepare(
+    `INSERT INTO commercial_build_jobs
+       (id, media_id, title, molde_id, series_id, slot_dias, slot_hora)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+  ).bind(id, mediaId, title, molde.id, slot.series_id, JSON.stringify(dias), hora).run()
+  c.executionCtx.waitUntil(dispatchFabrica(c.env))
+  return c.json({ ok: true, id, media_id: mediaId }, 201)
 })
 
 fabricaComerciais.post('/voice-clips', async (c) => {

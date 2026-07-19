@@ -23,6 +23,15 @@ export interface ScheduleReport {
 
 const DAY = 86400
 
+// Conversão de fuso num lugar só (Brasil sem horário de verão desde 2019 →
+// offset fixo -03:00). Usadas pelas âncoras de grade (slots fixos em hora local).
+const spDateStr = (e: number) => new Date((e - 3 * 3600) * 1000).toISOString().slice(0, 10) // 'YYYY-MM-DD' em SP
+const spWeekdayIso = (e: number) => { const d = new Date((e - 3 * 3600) * 1000).getUTCDay(); return d === 0 ? 7 : d } // 1=seg..7=dom
+const spHoraToEpoch = (date: string, hhmm: string): number | null => {
+  const t = Date.parse(`${date}T${hhmm}:00-03:00`)
+  return Number.isFinite(t) ? Math.floor(t / 1000) : null
+}
+
 // RNG com seed (canal+dia): grade reproduzível dentro do dia, variada entre dias.
 function mulberry32(seed: number) {
   return () => {
@@ -145,6 +154,21 @@ export async function scheduleChannel(
      ORDER BY start_at`,
   ).bind(canal, agora).all<{ media_id: string; series_id: string | null; start_at: number; end_at: number }>()
 
+  // Âncoras de grade (slots FIXOS): série X toca no [dia + hora] fixo, todo dia
+  // casado. O try/catch mantém a TV no ar mesmo se a migration ainda não rodou
+  // (tabela ausente → sem âncoras, grade dinâmica normal — deploy à prova de ordem).
+  let slotsAtivos: Array<{ series_id: string; dias: number[]; hora: string; episodios: number }> = []
+  try {
+    const { results: slotRows } = await env.DB.prepare(
+      "SELECT series_id, dias, hora, episodios FROM channel_slots WHERE canal = ?1 AND status = 'ativa'",
+    ).bind(canal).all<{ series_id: string; dias: string; hora: string; episodios: number }>()
+    slotsAtivos = slotRows.map((r) => {
+      let dias: number[] = []
+      try { dias = (JSON.parse(r.dias) as unknown[]).map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 7) } catch { /* slot corrompido: ignora */ }
+      return { series_id: r.series_id, dias, hora: r.hora, episodios: Math.max(1, r.episodios || 1) }
+    }).filter((s) => s.dias.length > 0 && /^([01]\d|2[0-3]):[0-5]\d$/.test(s.hora))
+  } catch { /* tabela ausente: sem âncoras */ }
+
   // Promessas (fase 12): comercial/vinheta que promete programação só toca
   // quando a grade cumpre. Regras aplicadas ao pool:
   //  - pendente com promessa detectada → FORA do rodízio (aguarda revisão);
@@ -256,6 +280,35 @@ export async function scheduleChannel(
   const target = now + hours * 3600
   if (t >= target) return { canal, added: 0, until: t }
 
+  // Materializa as âncoras em ocorrências concretas na janela [t, target]: pra
+  // cada slot ativo, o unix de cada dia-da-semana casado na hora local. Guardado:
+  // só entra série com episódio pronto e cuja hora não caia dentro de uma maratona
+  // (o evento manda). Vazio ⇒ laço idêntico ao de hoje (rodízio dinâmico puro).
+  const seriesComEp = new Set(contents.map((m) => m.series_id).filter(Boolean) as string[])
+  type Ancora = { start: number; series_id: string; episodios: number }
+  const ancoras: Ancora[] = []
+  if (slotsAtivos.length > 0) {
+    const vistos = new Set<string>()
+    for (let d = t - DAY; d <= target + DAY; d += DAY) {
+      const dia = spDateStr(d)
+      for (const s of slotsAtivos) {
+        const A = spHoraToEpoch(dia, s.hora)
+        if (A == null) continue
+        const As = Math.floor(A / 10) * 10
+        if (As < t || As >= target) continue
+        if (!s.dias.includes(spWeekdayIso(As))) continue
+        if (!seriesComEp.has(s.series_id)) continue
+        if (eventos.some((e) => As >= e.start_at - 300 && As < e.end_at)) continue
+        const chave = `${As}|${s.series_id}`
+        if (vistos.has(chave)) continue
+        vistos.add(chave)
+        ancoras.push({ start: As, series_id: s.series_id, episodios: s.episodios })
+      }
+    }
+    ancoras.sort((a, b) => a.start - b.start)
+  }
+  let ancIdx = 0
+
   const rnd = mulberry32(hashStr(canal + new Date().toISOString().slice(0, 10)))
   // rotação em BLOCOS: episódios da mesma série emendados (até N seguidos),
   // séries alternando em rodízio; menos-tocada lidera, empates pela seed do dia
@@ -292,13 +345,15 @@ export async function scheduleChannel(
   // entre dois episódios seguidos dela. O bumper de saída ("voltamos já com X")
   // ABRE o pod e o de volta ("estamos de volta com X") o FECHA, colado no retorno
   // do programa — como na TV real, e só nesse contexto (nunca fora do universo).
-  const breakPod = (serieCtx?: string | null) => {
+  // `teto` = hora da próxima âncora: o pod NUNCA a ultrapassa (fica mais curto se
+  // preciso) pra a grade fixa começar pontual. Infinity quando não há âncora à vista.
+  const breakPod = (serieCtx?: string | null, teto = Infinity) => {
     if (t - ultimoPodFim < MIN_ENTRE_PODS) return
     const alvo = chan.break_target_seg ?? 120
     const bumpers = serieCtx ? duranteDe.get(serieCtx) ?? [] : []
     if (bumpers.length > 0) {
       const bp = porId.get(bumpers[duIdx++ % bumpers.length])
-      if (bp) {
+      if (bp && t + bp.duracao_seg <= teto) {
         push(bp.id, t, t + bp.duracao_seg, 0)
         t += bp.duracao_seg
       }
@@ -310,15 +365,18 @@ export async function scheduleChannel(
     const usados = new Set<string>()
     let sum = 0
     for (;;) {
-      const restante = alvo - sum
+      const restante = Math.min(alvo - sum, teto - t) // nunca cruza a âncora
       const cands = adPool.filter((a) =>
         !usados.has(a.id) && !(usados.size === 0 && a.id === lastAd && adPool.length > 1))
       if (cands.length === 0 || restante <= 0) break
-      const cabem = cands.filter((a) => a.duracao_seg <= restante + folga)
+      const cabem = cands.filter((a) => a.duracao_seg <= restante + folga && t + a.duracao_seg <= teto)
       let pick: MediaRow
       if (cabem.length > 0) pick = cabem[ai++ % cabem.length]
-      else if (sum === 0) pick = cands.reduce((a, b) => (a.duracao_seg <= b.duracao_seg ? a : b))
-      else break
+      else if (sum === 0) {
+        const curtos = cands.filter((a) => t + a.duracao_seg <= teto)
+        if (curtos.length === 0) break
+        pick = curtos.reduce((a, b) => (a.duracao_seg <= b.duracao_seg ? a : b))
+      } else break
       push(pick.id, t, t + pick.duracao_seg, 0)
       t += pick.duracao_seg
       sum += pick.duracao_seg
@@ -331,7 +389,7 @@ export async function scheduleChannel(
     const eleg = promosEvento.filter((p) => t < p.ate)
     if (eleg.length > 0) {
       const pr = porId.get(eleg[peIdx++ % eleg.length].id)
-      if (pr && !usados.has(pr.id)) {
+      if (pr && !usados.has(pr.id) && t + pr.duracao_seg <= teto) {
         push(pr.id, t, t + pr.duracao_seg, 0)
         t += pr.duracao_seg
         sum += pr.duracao_seg
@@ -345,7 +403,7 @@ export async function scheduleChannel(
     const voltas = serieCtx ? voltaDe.get(serieCtx) ?? [] : []
     if (sum > 0 && voltas.length > 0) {
       const vp = porId.get(voltas[voIdx++ % voltas.length])
-      if (vp) {
+      if (vp && t + vp.duracao_seg <= teto) {
         push(vp.id, t, t + vp.duracao_seg, 0)
         t += vp.duracao_seg
       }
@@ -355,18 +413,31 @@ export async function scheduleChannel(
 
   // agenda um conteúdo com seus breaks nos cue points (pods do MEIO do
   // programa nunca levam "a seguir" — o próximo bloco é a continuação dele)
-  const agendaConteudo = (c: MediaRow) => {
+  const agendaConteudo = (c: MediaRow, teto = Infinity) => {
     playedAt[c.id] = t
     const cues = (cuesOf[c.id] ?? []).filter((x) => x > 0 && x < c.duracao_seg)
     let pos = 0
     for (const cue of cues) {
-      push(c.id, t, t + (cue - pos), pos / SEGMENT_DURATION)
-      t += cue - pos
+      const seg = cue - pos
+      if (t + seg > teto) { // o conteúdo cruzaria a âncora: corta nela (EPG sem buraco)
+        if (teto > t) push(c.id, t, teto, pos / SEGMENT_DURATION)
+        t = teto
+        return
+      }
+      push(c.id, t, t + seg, pos / SEGMENT_DURATION)
+      t += seg
       pos = cue
-      breakPod(c.series_id) // pod no MEIO do programa: o bumper dele pode abrir
+      breakPod(c.series_id, teto) // pod no MEIO do programa: o bumper dele pode abrir
+      if (t >= teto) return // o pod encostou na âncora
     }
-    push(c.id, t, t + (c.duracao_seg - pos), pos / SEGMENT_DURATION)
-    t += c.duracao_seg - pos
+    const rest = c.duracao_seg - pos
+    if (t + rest > teto) {
+      if (teto > t) push(c.id, t, teto, pos / SEGMENT_DURATION)
+      t = teto
+      return
+    }
+    push(c.id, t, t + rest, pos / SEGMENT_DURATION)
+    t += rest
   }
 
   // O intervalo ENTRE programas é montado já sabendo quem vem a seguir:
@@ -375,18 +446,18 @@ export async function scheduleChannel(
   // ela faz o papel da vinheta de abertura.
   let asIdx = 0
   let ultimaSerie: string | null = null
-  const podEntrePrograma = (proxima: MediaRow, continuacao: boolean): boolean => {
+  const podEntrePrograma = (proxima: MediaRow, continuacao: boolean, teto = Infinity): boolean => {
     // continuacao = próximo episódio do MESMO bloco (mesma série, emendado): é
     // permanência dentro do universo dela — o bumper "você está vendo X" pode
     // abrir o pod e NÃO se anuncia "a seguir" (o próximo é a mesma coisa).
     const mesmaSerie = continuacao
       ? proxima.series_id
       : ultimaSerie && proxima.series_id === ultimaSerie ? ultimaSerie : null
-    breakPod(mesmaSerie)
+    breakPod(mesmaSerie, teto)
     if (continuacao) return false
     const promoIds = proxima.series_id ? aSeguirDe.get(proxima.series_id) ?? [] : []
     const promo = promoIds.length > 0 ? porId.get(promoIds[asIdx++ % promoIds.length]) : undefined
-    if (!promo) return false
+    if (!promo || t + promo.duracao_seg > teto) return false
     push(promo.id, t, t + promo.duracao_seg, 0)
     t += promo.duracao_seg
     return true
@@ -412,37 +483,89 @@ export async function scheduleChannel(
     return mediaTodas.find((x) => x.id === ev.media_id && (x.tipo === 'episodio' || x.tipo === 'filme'))
   }
 
+  // Bloco da âncora: N episódios emendados da série (rotaciona entre ocorrências),
+  // com breaks entre eles no universo da série. Respeita exclusões (usa `contents`).
+  const episodiosDaSerie = (sid: string) =>
+    contents.filter((m) => m.series_id === sid).sort((a, b) => a.id.localeCompare(b.id))
+  const ancCursor = new Map<string, number>()
+  const scheduleAncora = (a: Ancora): boolean => {
+    const eps = episodiosDaSerie(a.series_id)
+    if (eps.length === 0) return false // série sumiu do pool: âncora ignorada
+    for (let k = 0; k < a.episodios; k++) {
+      const i = ancCursor.get(a.series_id) ?? 0
+      ancCursor.set(a.series_id, i + 1)
+      const ep = eps[i % eps.length]
+      if (k > 0) breakPod(ep.series_id) // intervalo entre episódios do bloco (universo da série)
+      agendaConteudo(ep)
+      ultimaSerie = ep.series_id
+    }
+    return true
+  }
+
   while (t < target) {
+    // âncora vencida ou dentro de maratona → consome sem tocar (o evento manda)
+    while (
+      ancIdx < ancoras.length &&
+      (ancoras[ancIdx].start < t - 5 ||
+        eventos.some((e) => ancoras[ancIdx].start >= e.start_at - 300 && ancoras[ancIdx].start < e.end_at))
+    ) ancIdx++
+    let anc: Ancora | null = ancIdx < ancoras.length ? ancoras[ancIdx] : null
     // maratona agendada cobrindo este instante? o evento manda na grade
     const ev = eventos.find((e) => t >= e.start_at - 300 && t < e.end_at)
-    const evMedia = ev ? proximoDaMaratona(ev) : undefined
 
+    // chegou a hora da âncora (e sem maratona no ar)? toca o bloco fixo NA HORA
+    if (!ev && anc && t >= anc.start - 5) {
+      ancIdx++
+      if (scheduleAncora(anc)) continue
+      anc = null // série sumiu do pool: ignora esta âncora nesta iteração
+    }
+
+    const evMedia = ev ? proximoDaMaratona(ev) : undefined
+    // teto = hora da próxima âncora: NADA (intervalo, vinheta ou episódio) a
+    // ultrapassa, pra a grade fixa começar pontual sem deixar buraco na EPG. Um
+    // episódio que a cruzaria é cortado na hora; um intervalo é encurtado. Sem
+    // âncora à vista (ou durante maratona, que manda) = Infinity (comportamento antigo).
+    const teto = !evMedia && anc ? anc.start : Infinity
+
+    // espia o próximo do rodízio SEM consumir o cursor — se um intervalo encostar
+    // na âncora, o cursor fica intacto e o episódio espiado toca depois dela.
+    let bloco: MediaRow[] | null = null
     let prox: MediaRow
     let continuacao = false
     if (evMedia) {
       prox = evMedia // a maratona cuida da própria emenda; não mexe no cursor de blocos
     } else {
-      const bloco = blocos[bi % blocos.length]
+      bloco = blocos[bi % blocos.length]
       prox = bloco[ei]
       // continuação = não é o 1º do bloco E emenda a mesma série que saiu agora;
       // se um evento entrou no meio do bloco, ultimaSerie muda e o bloco reabre
       continuacao = ei > 0 && prox.series_id != null && prox.series_id === ultimaSerie
-      ei++
-      if (ei >= bloco.length) { bi++; ei = 0 }
     }
 
     let fechouComASeguir = false
-    if (!primeiroBloco) fechouComASeguir = podEntrePrograma(prox, continuacao)
+    if (!primeiroBloco) fechouComASeguir = podEntrePrograma(prox, continuacao, teto)
     primeiroBloco = false
 
-    // vinheta de abertura só quando começa um bloco NOVO: maratona emenda sem
-    // vinheta, episódio-continuação do mesmo bloco também, e "a seguir" já abre
+    // o intervalo encostou na hora da âncora? cede a vez a ela (prox intacto no
+    // cursor); a âncora dispara no topo da próxima iteração e prox toca depois.
+    if (!evMedia && anc && t >= anc.start - 5) continue
+
+    // vinheta de abertura só quando começa um bloco NOVO, e se couber antes da âncora
     if (!evMedia && !continuacao && !fechouComASeguir && vins.length > 0) {
-      const v = vins[vi++ % vins.length]
-      push(v.id, t, t + v.duracao_seg, 0)
-      t += v.duracao_seg
+      const v = vins[vi % vins.length]
+      if (t + v.duracao_seg <= teto) {
+        vi++
+        push(v.id, t, t + v.duracao_seg, 0)
+        t += v.duracao_seg
+      }
     }
-    agendaConteudo(prox)
+
+    // consome o cursor e agenda; agendaConteudo corta o episódio no teto se cruzar
+    if (bloco) {
+      ei++
+      if (ei >= bloco.length) { bi++; ei = 0 }
+    }
+    agendaConteudo(prox, teto)
     ultimaSerie = prox.series_id
   }
 

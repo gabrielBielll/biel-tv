@@ -123,8 +123,8 @@ const promPendentes = computed(() => promessas.value.filter((p) => p.status === 
 const promDecididas = computed(() => promessas.value.filter((p) => p.status === 'confirmada' || p.status === 'ignorar'))
 
 // ── fábrica de comerciais (fala + amostra + molde) ─────────────────────────
-const fabrica = ref<{ voice_clips: any[]; moldes: any[]; samples: any[]; jobs: any[]; series: any[]; canais: any[]; tts_disponivel: boolean }>({
-  voice_clips: [], moldes: [], samples: [], jobs: [], series: [], canais: [], tts_disponivel: false,
+const fabrica = ref<{ voice_clips: any[]; moldes: any[]; samples: any[]; jobs: any[]; series: any[]; canais: any[]; ancoras: any[]; tts_disponivel: boolean }>({
+  voice_clips: [], moldes: [], samples: [], jobs: [], series: [], canais: [], ancoras: [], tts_disponivel: false,
 })
 const fabBusy = ref(false)
 const clipFile = ref<File | null>(null)
@@ -162,6 +162,17 @@ const DIAS_FAB = [
   { n: 1, label: 'seg' }, { n: 2, label: 'ter' }, { n: 3, label: 'qua' }, { n: 4, label: 'qui' },
   { n: 5, label: 'sex' }, { n: 6, label: 'sáb' }, { n: 7, label: 'dom' },
 ]
+// âncoras de grade (slots fixos): série X num horário fixo que o scheduler honra
+const ancoraForm = ref({ canal: 'jetix', series_id: '', dias: [1, 2, 3, 4, 5] as number[], hora: '16:00', episodios: 1 })
+function diasFabLabel(dias: number[]): string {
+  return DIAS_FAB.filter((d) => dias.includes(d.n)).map((d) => d.label).join(' ')
+}
+function tituloSerieFab(sid: string): string {
+  return fabrica.value.series.find((s: any) => s.sid === sid)?.titulo ?? sid
+}
+function ancoraDias(a: any): number[] {
+  try { return JSON.parse(a.dias) } catch { return [] }
+}
 const fabJobsAtivos = computed(() => fabrica.value.jobs.filter((j) => j.status === 'queued' || j.status === 'processing'))
 const canalDoMolde = computed(() =>
   fabrica.value.moldes.find((m) => m.id === buildForm.value.molde_id)?.canal ?? '',
@@ -422,6 +433,46 @@ async function apagarFab(kind: 'voice-clips' | 'samples' | 'moldes', id: string)
   const body = await res.json().catch(() => ({} as { error?: string }))
   msg.value = res.ok ? '✔ removido' : `✖ ${body.error ?? res.status}`
   carregaFabrica()
+}
+
+function toggleDiaAncora(n: number) {
+  const cur = ancoraForm.value.dias
+  ancoraForm.value.dias = cur.includes(n) ? cur.filter((x) => x !== n) : [...cur, n].sort((a, b) => a - b)
+}
+
+async function salvarAncora() {
+  if (!ancoraForm.value.series_id || ancoraForm.value.dias.length === 0) {
+    msg.value = '✖ escolha programa e dias'
+    return
+  }
+  fabBusy.value = true
+  try {
+    const res = await postJson('/fabrica-comerciais/slots', { ...ancoraForm.value })
+    const body = await res.json().catch(() => ({} as { error?: string }))
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    msg.value = '✔ âncora criada — grade replanejada'
+    await carregaFabrica()
+    refresh()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  } finally {
+    fabBusy.value = false
+  }
+}
+
+async function apagarAncora(id: string) {
+  const res = await api(`/fabrica-comerciais/slots/${id}`, { method: 'DELETE' })
+  const body = await res.json().catch(() => ({} as { error?: string }))
+  msg.value = res.ok ? '✔ âncora removida — grade replanejada' : `✖ ${body.error ?? res.status}`
+  await carregaFabrica()
+  refresh()
+}
+
+async function gerarComercialAncora(a: any) {
+  const res = await postJson(`/fabrica-comerciais/slots/${a.id}/gerar`, {})
+  const body = await res.json().catch(() => ({} as { error?: string; media_id?: string }))
+  msg.value = res.ok ? `✔ comercial ${body.media_id} entrou na fábrica` : `✖ ${body.error ?? res.status}`
+  await carregaFabrica()
 }
 
 async function retryFabJob(j: any) {
@@ -1848,6 +1899,48 @@ onBeforeUnmount(() => clearInterval(poll))
                 <span class="mono">{{ m.canal }}</span>
                 <span class="dim grow">{{ m.nome }}{{ m.musica_key ? ' · música' : '' }}</span>
                 <button class="ghost" title="remover molde" @click="apagarFab('moldes', m.id)">✕</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="fab-panel">
+            <h3>Âncoras de grade</h3>
+            <p class="dim small">horário fixo do programa (o scheduler honra) → o comercial “toda [dias] às [hora]” vira verdade</p>
+            <div class="form">
+              <div class="row">
+                <label>Canal
+                  <select v-model="ancoraForm.canal">
+                    <option v-for="c in channels" :key="c.id" :value="c.id">{{ c.nome }}</option>
+                  </select>
+                </label>
+                <label>Programa
+                  <select v-model="ancoraForm.series_id">
+                    <option value="">escolha</option>
+                    <option v-for="s in fabrica.series" :key="s.sid" :value="s.sid">{{ s.titulo }} · {{ s.sid }}</option>
+                  </select>
+                </label>
+              </div>
+              <div class="row">
+                <label>Hora <input v-model="ancoraForm.hora" type="time" /></label>
+                <label>Episódios <input v-model.number="ancoraForm.episodios" type="number" min="1" max="20" /></label>
+              </div>
+              <div class="fab-days">
+                <button
+                  v-for="d in DIAS_FAB"
+                  :key="d.n"
+                  class="chip chip-btn"
+                  :class="{ 'chip-on': ancoraForm.dias.includes(d.n) }"
+                  @click="toggleDiaAncora(d.n)"
+                >{{ d.label }}</button>
+              </div>
+              <button class="ghost" :disabled="fabBusy" @click="salvarAncora">salvar âncora</button>
+            </div>
+            <div class="fab-list">
+              <div v-for="a in fabrica.ancoras" :key="a.id" class="fab-mini">
+                <span class="mono">{{ a.canal }}</span>
+                <span class="dim grow">{{ tituloSerieFab(a.series_id) }} · {{ diasFabLabel(ancoraDias(a)) }} · {{ a.hora }}<span v-if="a.episodios > 1"> · {{ a.episodios }}ep</span></span>
+                <button class="ghost" title="gerar comercial deste horário" @click="gerarComercialAncora(a)">📢</button>
+                <button class="ghost" title="remover âncora" @click="apagarAncora(a.id)">✕</button>
               </div>
             </div>
           </div>
