@@ -235,7 +235,7 @@ function audioGraph({ total, locucaoDuration, prelude, musicaOrigem }) {
   const musicInput = musicaOrigem === 'external' ? 3 : 0
   return [
     voice,
-    `[${musicInput}:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=0.28[music]`,
+    `[${musicInput}:a]aresample=48000,atrim=duration=${t},asetpts=PTS-STARTPTS,volume=0.34[music]`,
     `[voice][music]amix=inputs=2:duration=longest:normalize=0,atrim=duration=${t},alimiter=limit=0.96[aout]`,
   ].join(';')
 }
