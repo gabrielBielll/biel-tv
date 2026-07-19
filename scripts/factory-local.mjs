@@ -228,6 +228,7 @@ async function processJob(job) {
     ...(job.episode ? ['--episode', String(job.episode)] : []),
     ...(job.tags ? ['--tags', job.tags] : []),
     ...(job.canais ? ['--canais', job.canais] : []),
+    ...(job.video_fit ? ['--fit', job.video_fit] : []),
     '--target', TARGET,
     // base_url '' = servido via rota /media/* do Worker (mesmo esquema do
     // resto do catálogo em produção — sem domínio público configurado ainda).

@@ -40,6 +40,9 @@ const { values: opt, positionals } = parseArgs({
     'base-url': { type: 'string' },
     'min-edge': { type: 'string', default: '60' },
     crf: { type: 'string', default: '23' },
+    // enquadramento 16:9: 'letterbox' (padrão, tarjas) ou 'fill' (enche a tela
+    // p/ fonte 4:3 com esticada leve + zoom preservando o topo — ver normalize).
+    fit: { type: 'string', default: 'letterbox' },
     'no-cues': { type: 'boolean', default: false },
     'no-transcript': { type: 'boolean', default: false },
     'keep-workdir': { type: 'boolean', default: false },
@@ -65,6 +68,7 @@ if (!input || !existsSync(input)) die(`arquivo de entrada não encontrado: ${inp
 if (!opt.id || !/^[a-z0-9_]+$/.test(opt.id)) die('--id obrigatório (minúsculas, dígitos e _)')
 if (!TIPOS.includes(opt.tipo)) die(`--tipo obrigatório: ${TIPOS.join('|')}`)
 if (!['local', 'remote'].includes(opt.target)) die('--target deve ser local ou remote')
+if (!['letterbox', 'fill'].includes(opt.fit)) die('--fit deve ser letterbox ou fill')
 const canais = (opt.canais ?? '').split(',').map((s) => s.trim()).filter(Boolean)
 for (const c of canais) if (!/^[a-z0-9_]{2,40}$/.test(c)) die(`canal inválido: ${c}`)
 const baseUrl = opt['base-url'] ?? (opt.target === 'local' ? '' : process.env.R2_PUBLIC_BASE_URL)
@@ -98,7 +102,7 @@ function progresso(pct) {
 console.log(`2/5 normalizando p/ 720p H.264 (crf ${opt.crf})${pad > 0.01 ? ` + pad de ${pad.toFixed(1)}s` : ''}…`)
 const normalized = join(workdir, 'normalized.mp4')
 await normalize(input, normalized, {
-  paddedDur, pad, hasAudio: info.hasAudio, crf: Number(opt.crf),
+  paddedDur, pad, hasAudio: info.hasAudio, crf: Number(opt.crf), fit: opt.fit,
   onProgress: (pct) => progresso(Math.floor(pct * 0.9)),
 })
 

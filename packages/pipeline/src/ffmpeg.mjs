@@ -81,10 +81,18 @@ async function streamDurations(file) {
  * keyframes forçados em t=0,10,20,... e final padded com preto/silêncio até
  * fechar múltiplo de 10s.
  */
-export async function normalize(input, outFile, { paddedDur, pad, hasAudio, crf = 23, fps = 30, onProgress }) {
+export async function normalize(input, outFile, { paddedDur, pad, hasAudio, crf = 23, fps = 30, fit = 'letterbox', onProgress }) {
+  // Enquadramento p/ 1280x720:
+  //  - 'letterbox' (padrão): preserva o aspecto e completa com preto (fonte 4:3
+  //    vira 16:9 com tarjas pretas laterais). Nada de esticar nem cortar.
+  //  - 'fill': enche o 16:9 pra fonte 4:3 — estica ~13% na largura (scale p/
+  //    1280x850) e dá zoom cortando p/ 720, com viés pro topo (corta 40px do topo
+  //    e 90px da base), pra não perder o topo da imagem e não distorcer demais.
+  const enquadra = fit === 'fill'
+    ? ['scale=1280:850', 'crop=1280:720:0:40', 'setsar=1']
+    : ['scale=1280:720:force_original_aspect_ratio=decrease', 'pad=1280:720:(ow-iw)/2:(oh-ih)/2']
   const vf = [
-    'scale=1280:720:force_original_aspect_ratio=decrease',
-    'pad=1280:720:(ow-iw)/2:(oh-ih)/2',
+    ...enquadra,
     `fps=${fps}`,
     'format=yuv420p',
     ...(pad > 0.01 ? [`tpad=stop_mode=add:stop_duration=${pad.toFixed(3)}`] : []),

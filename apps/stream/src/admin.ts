@@ -102,14 +102,17 @@ admin.post('/jobs', async (c) => {
     if (!validos.includes(canal)) return c.json({ error: `canal desconhecido: ${canal}` }, 400)
   }
 
+  // enquadramento 16:9: 'fill' enche a tela (fonte 4:3, sem tarjas); default letterbox
+  const videoFit = b.video_fit === 'fill' ? 'fill' : null
+
   const dup = await c.env.DB.prepare(
     'SELECT id FROM media_items WHERE id = ?1 UNION SELECT id FROM ingest_jobs WHERE id = ?1',
   ).bind(id).first()
   if (dup) return c.json({ error: `id "${id}" já existe` }, 409)
 
   await c.env.DB.prepare(
-    `INSERT INTO ingest_jobs (id, staging_key, original_name, tipo, title, series_id, episode, tags, canais, source_url)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
+    `INSERT INTO ingest_jobs (id, staging_key, original_name, tipo, title, series_id, episode, tags, canais, source_url, video_fit)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
   ).bind(
     id, String(b.staging_key ?? ''), String(b.original_name ?? ''), String(b.tipo), String(b.title),
     b.series_id ? String(b.series_id) : null,
@@ -117,6 +120,7 @@ admin.post('/jobs', async (c) => {
     String(b.tags ?? ''),
     canais.join(','),
     sourceUrl || null,
+    videoFit,
   ).run()
   c.executionCtx.waitUntil(dispatchFabrica(c.env))
   return c.json({ ok: true, id }, 201)
