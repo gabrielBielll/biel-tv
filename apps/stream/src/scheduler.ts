@@ -164,7 +164,8 @@ export async function scheduleChannel(
     : { results: [] as Array<{ media_id: string; status: string; proposta: string | null; condicao: string | null }> }
   const foraDoRodizio = new Set<string>()
   const aSeguirDe = new Map<string, string[]>() // series_id alvo → promo ids
-  const duranteDe = new Map<string, string[]>() // bumper "você está vendo X" → só dentro do universo de X
+  const duranteDe = new Map<string, string[]>() // bumper que ABRE o intervalo ("voltamos já com X") — só no universo de X
+  const voltaDe = new Map<string, string[]>() // bumper que FECHA o intervalo ("estamos de volta com X"), colado no retorno
   const promosEvento: Array<{ id: string; ate: number }> = [] // janela: agora → start do evento
   for (const p of promRows) {
     try {
@@ -186,11 +187,25 @@ export async function scheduleChannel(
           aSeguirDe.set(cond.series_id, lista) // …e entra no pool condicional
         }
         // "durante": vale nos intervalos DO programa e entre dois episódios
-        // seguidos dele — nunca fora do universo da série (pedido do Gabriel)
+        // seguidos dele — nunca fora do universo da série (pedido do Gabriel).
+        // `momento` separa a peça de SAÍDA (abre o intervalo, "voltamos já com X")
+        // da de VOLTA (fecha, colada no retorno, "estamos de volta com X"). Sem
+        // `momento` a peça ABRE, como sempre foi — retrocompatível. 'ambos' entra
+        // nos dois pools.
         if (cond.tipo === 'durante' && cond.series_id) {
-          const lista = duranteDe.get(cond.series_id) ?? []
-          lista.push(p.media_id)
-          duranteDe.set(cond.series_id, lista)
+          const momento = cond.momento === 'volta' || cond.momento === 'saida' || cond.momento === 'ambos'
+            ? cond.momento
+            : 'saida'
+          if (momento === 'volta' || momento === 'ambos') {
+            const lista = voltaDe.get(cond.series_id) ?? []
+            lista.push(p.media_id)
+            voltaDe.set(cond.series_id, lista)
+          }
+          if (momento === 'saida' || momento === 'ambos') {
+            const lista = duranteDe.get(cond.series_id) ?? []
+            lista.push(p.media_id)
+            duranteDe.set(cond.series_id, lista)
+          }
         }
         // promo de EVENTO destrava na janela de promoção: só enquanto houver
         // uma maratona AGENDADA da série correspondente ainda por começar —
@@ -272,9 +287,11 @@ export async function scheduleChannel(
   let ultimoPodFim = -Infinity
   let peIdx = 0
   let duIdx = 0
+  let voIdx = 0
   // serieCtx: série "dona" deste intervalo — no meio de um episódio dela, ou
-  // entre dois episódios seguidos dela. O bumper "você está vendo X" ABRE o
-  // pod nesse contexto (como na TV real) e não existe em nenhum outro lugar.
+  // entre dois episódios seguidos dela. O bumper de saída ("voltamos já com X")
+  // ABRE o pod e o de volta ("estamos de volta com X") o FECHA, colado no retorno
+  // do programa — como na TV real, e só nesse contexto (nunca fora do universo).
   const breakPod = (serieCtx?: string | null) => {
     if (t - ultimoPodFim < MIN_ENTRE_PODS) return
     const alvo = chan.break_target_seg ?? 120
@@ -319,6 +336,18 @@ export async function scheduleChannel(
         t += pr.duracao_seg
         sum += pr.duracao_seg
         lastAd = pr.id
+      }
+    }
+    // fecha o pod com a vinheta de VOLTA ("estamos de volta com X"), colada no
+    // retorno do programa — só quando houve intervalo DE VERDADE (entrou ad) e
+    // estamos no universo da série. Sem isso, dois bumpers grudariam sem break
+    // no meio ("voltamos já" seguido de "estamos de volta").
+    const voltas = serieCtx ? voltaDe.get(serieCtx) ?? [] : []
+    if (sum > 0 && voltas.length > 0) {
+      const vp = porId.get(voltas[voIdx++ % voltas.length])
+      if (vp) {
+        push(vp.id, t, t + vp.duracao_seg, 0)
+        t += vp.duracao_seg
       }
     }
     if (sum > 0 || bumpers.length > 0) ultimoPodFim = t
