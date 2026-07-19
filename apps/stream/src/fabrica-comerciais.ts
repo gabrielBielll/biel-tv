@@ -1,10 +1,12 @@
 import { Hono } from 'hono'
 import { dispatchFabrica } from './fabrica'
 import { scheduleChannel } from './scheduler'
+import { sintetizaClip, sintetizaBytes, TtsIndisponivel, type VozConfig } from './tts'
 
 type Bindings = {
   DB: D1Database
   MEDIA: R2Bucket
+  ELEVENLABS_API_KEY?: string
   GH_DISPATCH_TOKEN?: string
   GH_REPO?: string
 }
@@ -130,6 +132,75 @@ function textoTela(dias: number[], hora: string): string {
   return `${freqTela(dias)} · ${horaTela(hora)}`
 }
 
+// Verbalização pt-BR: o rótulo FALADO de cada fragmento reutilizável, pra "assar"
+// a biblioteca base do canal. A `chave` gerada é a MESMA que o resolvePayload casa
+// (horário=HH:MM, frequência=freqKey, assinatura=encerramento).
+const NUM_HORA = ['zero', 'uma', 'duas', 'três', 'quatro', 'cinco', 'seis', 'sete', 'oito', 'nove', 'dez', 'onze', 'doze']
+
+function horaFala(hhmm: string): string {
+  const [h, m] = hhmm.split(':').map(Number)
+  const min = m === 15 ? ' e quinze' : m === 30 ? ' e meia' : m === 45 ? ' e quarenta e cinco' : ''
+  if (h === 0) return m === 0 ? 'à meia-noite' : `à meia-noite${min}`
+  if (h === 12) return m === 0 ? 'ao meio-dia' : `ao meio-dia${min}`
+  const periodo = h < 12 ? 'da manhã' : h < 18 ? 'da tarde' : 'da noite'
+  const h12 = h % 12 === 0 ? 12 : h % 12
+  return `${h12 === 1 ? 'à' : 'às'} ${NUM_HORA[h12]}${min} ${periodo}`
+}
+
+const DIA_PLURAL: Record<number, string> = { 1: 'às segundas', 2: 'às terças', 3: 'às quartas', 4: 'às quintas', 5: 'às sextas', 6: 'aos sábados', 7: 'aos domingos' }
+const DIA_NOME: Record<number, string> = { 1: 'segunda', 2: 'terça', 3: 'quarta', 4: 'quinta', 5: 'sexta', 6: 'sábado', 7: 'domingo' }
+
+function freqFala(dias: number[]): string {
+  const s = dias.join(',')
+  if (s === '1,2,3,4,5,6,7') return 'todos os dias'
+  if (s === '1,2,3,4,5') return 'de segunda a sexta'
+  if (s === '6,7') return 'aos sábados e domingos'
+  if (dias.length === 1) return DIA_PLURAL[dias[0]]
+  const seq = dias.every((n, i) => i === 0 || n === dias[i - 1] + 1)
+  if (seq) return `de ${DIA_NOME[dias[0]]} a ${DIA_NOME[dias.at(-1)!]}`
+  return dias.map((n) => DIA_NOME[n]).join(', ')
+}
+
+// Assinatura falada por canal: `rotulo` é o texto limpo (transcript/painel);
+// `tts` é o que vai pro ElevenLabs — pode ter tag/pausa/grafia especial pra soar
+// certo. Jetix/Disney: pausa antes limpa a pronúncia do nome. Cartoon: o nome em
+// inglês só flui bem em MINÚSCULAS e SEM pausa (validado com o Gabriel — com pausa
+// ou maiúscula o "no" separa ou o nome sai corrido).
+function assinaturaCanal(canal: string): { rotulo: string; tts: string } | null {
+  if (canal === 'jetix') return { rotulo: 'na Jetix', tts: '[short pause] na Jetix' }
+  if (canal === 'disney_channel') return { rotulo: 'no Disney Channel', tts: '[short pause] no Disney Channel' }
+  if (canal === 'cartoon_network') return { rotulo: 'no Cartoon Network', tts: 'no cartoon network' }
+  return null
+}
+
+type BibItem = { categoria: string; chave: string; rotulo: string; tts: string }
+
+function bibliotecaBase(canal: string): BibItem[] {
+  const itens: BibItem[] = []
+  // horários: 06:00 → 23:45 a cada 15 min + meia-noite
+  for (let h = 6; h <= 23; h++) {
+    for (const m of [0, 15, 30, 45]) {
+      const chave = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+      const rotulo = horaFala(chave)
+      itens.push({ categoria: 'horario', chave, rotulo, tts: rotulo })
+    }
+  }
+  itens.push({ categoria: 'horario', chave: '00:00', rotulo: horaFala('00:00'), tts: horaFala('00:00') })
+  // frequências padrão
+  for (const dias of [[1, 2, 3, 4, 5, 6, 7], [1, 2, 3, 4, 5], [6, 7], [1], [2], [3], [4], [5], [6], [7]]) {
+    const rotulo = freqFala(dias)
+    itens.push({ categoria: 'frequencia', chave: freqKey(dias), rotulo, tts: rotulo })
+  }
+  // assinatura do canal (texto falado ajustado por canal — ver assinaturaCanal)
+  const ass = assinaturaCanal(canal)
+  if (ass) itens.push({ categoria: 'conector', chave: 'encerramento', rotulo: ass.rotulo, tts: ass.tts })
+  // conectores da vinheta "a seguir" (fase 2) — finitos, já deixam prontos
+  itens.push({ categoria: 'conector', chave: 'a_seguir', rotulo: 'a seguir', tts: 'a seguir...' })
+  itens.push({ categoria: 'conector', chave: 'abertura', rotulo: 'você está vendo', tts: 'você está vendo' })
+  itens.push({ categoria: 'conector', chave: 'depois', rotulo: 'e depois', tts: 'e depois...' })
+  return itens
+}
+
 function assetKey(kind: string, id: string, original: string): string {
   return `fabrica/${kind}/${id}/${safeName(original)}`
 }
@@ -158,6 +229,16 @@ async function copiaAsset(env: Bindings, stagingKey: unknown, destKey: string): 
 
 async function canalExiste(db: D1Database, id: string): Promise<boolean> {
   return Boolean(await db.prepare('SELECT id FROM channels WHERE id = ?1').bind(id).first())
+}
+
+async function canalVoz(db: D1Database, canal: string): Promise<{ vozId: string | null; config: VozConfig }> {
+  const row = await db.prepare('SELECT voz_id, voz_config FROM channels WHERE id = ?1')
+    .bind(canal).first<{ voz_id: string | null; voz_config: string | null }>()
+  let config: VozConfig = {}
+  if (row?.voz_config) {
+    try { config = JSON.parse(row.voz_config) } catch { /* config quebrada = usa defaults */ }
+  }
+  return { vozId: row?.voz_id ?? null, config }
 }
 
 async function serieTitulo(db: D1Database, sid: string): Promise<string> {
@@ -240,7 +321,7 @@ async function resolvePayload(env: Bindings, job: BuildJobRow) {
 }
 
 fabricaComerciais.get('/', async (c) => {
-  const [voice, moldes, samples, jobs, series] = await Promise.all([
+  const [voice, moldes, samples, jobs, series, canais] = await Promise.all([
     c.env.DB.prepare('SELECT * FROM voice_clips ORDER BY canal, categoria, series_id, chave, created_at DESC').all(),
     c.env.DB.prepare('SELECT * FROM moldes ORDER BY created_at DESC').all(),
     c.env.DB.prepare('SELECT * FROM program_samples ORDER BY series_id, created_at DESC').all(),
@@ -255,6 +336,7 @@ fabricaComerciais.get('/', async (c) => {
        GROUP BY sid
        ORDER BY titulo`,
     ).all(),
+    c.env.DB.prepare('SELECT id, nome, voz_id, voz_config FROM channels ORDER BY ordem').all(),
   ])
   return c.json({
     voice_clips: voice.results,
@@ -262,6 +344,8 @@ fabricaComerciais.get('/', async (c) => {
     samples: samples.results,
     jobs: jobs.results,
     series: series.results.filter((s: any) => s.sid),
+    canais: canais.results,
+    tts_disponivel: Boolean(c.env.ELEVENLABS_API_KEY),
   })
 })
 
@@ -285,11 +369,32 @@ fabricaComerciais.post('/voice-clips', async (c) => {
   if (!rotulo) return c.json({ error: 'rotulo é obrigatório' }, 400)
 
   const id = `vc_${hex()}`
-  const audioKey = assetKey('voice_clips', id, String(b.original_name ?? 'fala.wav'))
-  try {
-    await copiaAsset(c.env, b.staging_key, audioKey)
-  } catch (e) {
-    return c.json({ error: (e as Error).message }, 400)
+  let audioKey: string
+  if (b.sintetizar) {
+    // Voz automática (ElevenLabs): o próprio `rotulo` é o texto falado. Usa a voz
+    // do canal, ou um override no corpo (ex.: a voz jovem da Jetix num clipe só).
+    const override = String(b.voz_id ?? '').trim()
+    const { vozId, config } = await canalVoz(c.env.DB, canal)
+    const voz = override || vozId
+    if (!voz) return c.json({ error: `canal ${canal} está sem voz configurada` }, 400)
+    try {
+      // O texto sintetizado pode trazer tags de emoção/pausa do v3 (`tts_text`),
+      // mantendo o `rotulo` limpo pro transcript/painel. Sem tts_text, usa o rótulo.
+      const texto = String(b.tts_text ?? '').trim() || rotulo
+      audioKey = await sintetizaClip(c.env, voz, texto, config)
+    } catch (e) {
+      // 503 = indisponível (sem chave/cota): o painel avisa e o clipe não nasce
+      // pela metade. Erro de conteúdo cai como 400.
+      if (e instanceof TtsIndisponivel) return c.json({ error: (e as Error).message }, 503)
+      return c.json({ error: (e as Error).message }, 400)
+    }
+  } else {
+    audioKey = assetKey('voice_clips', id, String(b.original_name ?? 'fala.wav'))
+    try {
+      await copiaAsset(c.env, b.staging_key, audioKey)
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 400)
+    }
   }
   const clipSeries = categoria === 'nome' || categoria === 'frase' ? seriesId : null
   await c.env.DB.prepare(
@@ -304,9 +409,122 @@ fabricaComerciais.delete('/voice-clips/:id', async (c) => {
   const row = await c.env.DB.prepare('SELECT audio_key FROM voice_clips WHERE id = ?1')
     .bind(id).first<{ audio_key: string }>()
   if (!row) return c.json({ error: 'clipe não encontrado' }, 404)
-  await c.env.MEDIA.delete(row.audio_key)
   await c.env.DB.prepare('DELETE FROM voice_clips WHERE id = ?1').bind(id).run()
+  // Áudio sintetizado é compartilhado por hash (texto+voz) entre clipes iguais —
+  // só apaga do R2 se nenhum outro clipe ainda aponta pra mesma chave.
+  const compartilhado = await c.env.DB.prepare('SELECT 1 FROM voice_clips WHERE audio_key = ?1 LIMIT 1')
+    .bind(row.audio_key).first()
+  if (!compartilhado) await c.env.MEDIA.delete(row.audio_key)
   return c.json({ ok: true })
+})
+
+// Toca o áudio de um clipe salvo (botão ▶ da lista). O prefixo fabrica/ não é
+// servido pela rota pública /media/*, então o áudio sai por aqui, com token.
+fabricaComerciais.get('/voice-clips/:id/audio', async (c) => {
+  const row = await c.env.DB.prepare('SELECT audio_key FROM voice_clips WHERE id = ?1')
+    .bind(c.req.param('id')).first<{ audio_key: string }>()
+  if (!row) return c.json({ error: 'clipe não encontrado' }, 404)
+  const obj = await c.env.MEDIA.get(row.audio_key)
+  if (!obj) return c.json({ error: 'áudio não encontrado no R2' }, 404)
+  const ct = row.audio_key.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg'
+  return c.body(obj.body, 200, { 'content-type': ct, 'cache-control': 'no-store' })
+})
+
+// Voz do canal: liga o canal ao voice_id do ElevenLabs + ajustes de timbre/emoção.
+fabricaComerciais.put('/canais/:id/voz', async (c) => {
+  const id = slugify(c.req.param('id'))
+  if (!(await canalExiste(c.env.DB, id))) return c.json({ error: 'canal desconhecido' }, 400)
+  const b = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!b) return c.json({ error: 'JSON inválido' }, 400)
+  const vozId = String(b.voz_id ?? '').trim() || null
+  let vozConfig: string | null = null
+  if (b.voz_config != null && b.voz_config !== '') {
+    try {
+      const obj = typeof b.voz_config === 'string' ? JSON.parse(b.voz_config) : b.voz_config
+      vozConfig = JSON.stringify(obj)
+    } catch {
+      return c.json({ error: 'voz_config deve ser JSON válido' }, 400)
+    }
+  }
+  await c.env.DB.prepare('UPDATE channels SET voz_id = ?2, voz_config = ?3 WHERE id = ?1')
+    .bind(id, vozId, vozConfig).run()
+  return c.json({ ok: true, id, voz_id: vozId })
+})
+
+// Botão de teste do painel: sintetiza um texto e devolve o áudio pra tocar na
+// hora (validar se a voz do canal está correta). Cacheia no R2 como qualquer TTS.
+fabricaComerciais.post('/voz/preview', async (c) => {
+  const b = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!b) return c.json({ error: 'JSON inválido' }, 400)
+  const texto = String(b.texto ?? '').trim().slice(0, 300)
+  if (!texto) return c.json({ error: 'texto é obrigatório' }, 400)
+
+  let voz = String(b.voz_id ?? '').trim()
+  let config: VozConfig = {}
+  if (!voz) {
+    const canal = slugify(String(b.canal ?? ''))
+    const v = await canalVoz(c.env.DB, canal)
+    if (!v.vozId) return c.json({ error: `canal ${canal} está sem voz configurada` }, 400)
+    voz = v.vozId
+    config = v.config
+  }
+  // Ajustes vindos do painel sobrescrevem a config do canal (testar timbre/emoção).
+  if (typeof b.voz_config === 'object' && b.voz_config) config = b.voz_config as VozConfig
+  try {
+    const audio = await sintetizaBytes(c.env, voz, texto, config)
+    return c.body(audio, 200, { 'content-type': 'audio/mpeg', 'cache-control': 'no-store' })
+  } catch (e) {
+    if (e instanceof TtsIndisponivel) return c.json({ error: (e as Error).message }, 503)
+    return c.json({ error: (e as Error).message }, 400)
+  }
+})
+
+// Gera a "biblioteca base" do canal: sintetiza de uma vez os fragmentos FINITOS e
+// reutilizáveis (horários 15 em 15 min, frequências, assinatura, conectores), pra
+// aproveitar a assinatura do ElevenLabs e deixá-los permanentes no R2. Idempotente
+// (pula o que já existe) e em lotes — o front chama em loop e mostra o progresso.
+// `dry_run` devolve só a lista de textos (sem sintetizar, sem gastar crédito).
+fabricaComerciais.post('/canais/:id/biblioteca-base', async (c) => {
+  const canal = slugify(c.req.param('id'))
+  if (!(await canalExiste(c.env.DB, canal))) return c.json({ error: 'canal desconhecido' }, 400)
+  const b = await c.req.json<{ dry_run?: boolean; limit?: number }>().catch(() => ({} as { dry_run?: boolean; limit?: number }))
+  const itens = bibliotecaBase(canal)
+
+  const existentes = await c.env.DB.prepare(
+    'SELECT categoria, chave FROM voice_clips WHERE canal = ?1 AND series_id IS NULL',
+  ).bind(canal).all()
+  const tem = new Set((existentes.results as { categoria: string; chave: string | null }[]).map((r) => `${r.categoria}|${r.chave}`))
+  const faltando = itens.filter((it) => !tem.has(`${it.categoria}|${it.chave}`))
+
+  if (b.dry_run) {
+    return c.json({
+      total: itens.length,
+      faltando: faltando.length,
+      itens: itens.map(({ categoria, chave, rotulo }) => ({ categoria, chave, rotulo })),
+    })
+  }
+
+  const { vozId, config } = await canalVoz(c.env.DB, canal)
+  if (!vozId) return c.json({ error: `canal ${canal} está sem voz configurada` }, 400)
+  const limit = Math.max(1, Math.min(40, Number(b.limit ?? 20)))
+  let gerados = 0
+  for (const it of faltando.slice(0, limit)) {
+    try {
+      const audioKey = await sintetizaClip(c.env, vozId, it.tts, config)
+      await c.env.DB.prepare(
+        `INSERT INTO voice_clips (id, canal, categoria, series_id, chave, rotulo, audio_key)
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6)`,
+      ).bind(`vc_${hex()}`, canal, it.categoria, it.chave, it.rotulo, audioKey).run()
+      gerados++
+    } catch (e) {
+      // Sem chave/cota: para e informa quantos faltam — o resto espera a assinatura.
+      if (e instanceof TtsIndisponivel) {
+        return c.json({ gerados, restantes: faltando.length - gerados, total: itens.length, parou: (e as Error).message }, 503)
+      }
+      throw e
+    }
+  }
+  return c.json({ gerados, restantes: faltando.length - gerados, total: itens.length })
 })
 
 fabricaComerciais.post('/samples', async (c) => {

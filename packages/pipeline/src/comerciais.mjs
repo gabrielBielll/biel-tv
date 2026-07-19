@@ -15,6 +15,8 @@ const H = 720
 const MAX_PRELUDE = 2.5
 const TITLE_FONT = fileURLToPath(new URL('../assets/LiberationSansNarrow-Bold.ttf', import.meta.url))
 const DISNEY_FONT = fileURLToPath(new URL('../assets/Anton-Regular.ttf', import.meta.url))
+const CARTOON_NAME_FONT = fileURLToPath(new URL('../assets/TitanOne-Regular.ttf', import.meta.url))
+const CARTOON_SCHED_FONT = fileURLToPath(new URL('../assets/Barlow-Bold.ttf', import.meta.url))
 
 async function run(bin, args) {
   await execFileAsync(bin, args, BUF)
@@ -113,7 +115,49 @@ function svgFit(text, size, maxWidth) {
     : ''
 }
 
+function wrapText(text, size, maxWidth, factor = 0.62) {
+  const words = String(text).split(/\s+/).filter(Boolean)
+  const lines = []
+  let cur = ''
+  for (const w of words) {
+    const t = cur ? `${cur} ${w}` : w
+    if (cur && [...t].length * size * factor > maxWidth) { lines.push(cur); cur = w } else cur = t
+  }
+  if (cur) lines.push(cur)
+  return lines
+}
+
+// Cartela da Cartoon (molde estilo CN, escala 1280x720): nome no cartão AZUL
+// (branco, Titan One arredondada, quebra até 2 linhas), dia + hora no cartão
+// BRANCO (preto, Barlow Bold). O vídeo vaza à direita pelo buraco preto do molde.
+function makeCartoonOverlay(nome, textoTela, outFile) {
+  const partes = String(textoTela).split('·').map((s) => s.trim())
+  // dia único vira nome por extenso (estilo da referência: "QUARTA")
+  const DIA_FULL = { SEG: 'SEGUNDA', TER: 'TERÇA', QUA: 'QUARTA', QUI: 'QUINTA', SEX: 'SEXTA', SAB: 'SÁBADO', DOM: 'DOMINGO' }
+  const dia = escSvg(DIA_FULL[partes[0]] ?? partes[0] ?? '')
+  let hora = partes[1] ?? ''
+  const m = hora.match(/^(\d{1,2})H(\d{2})?$/) // "16H"->"16:00", "14H30"->"14:30"
+  if (m) hora = `${m[1].padStart(2, '0')}:${m[2] ?? '00'}`
+  hora = escSvg(hora)
+  const NAME_SIZE = 58
+  const nameLines = wrapText(String(nome).toUpperCase(), NAME_SIZE, 560).slice(0, 2)
+  const gap = NAME_SIZE + 8
+  const baseY = 336 - (nameLines.length - 1) * gap
+  const nameSvg = nameLines.map((ln, i) =>
+    `<text x="124" y="${baseY + i * gap}" font-family="Titan One" font-size="${NAME_SIZE}" fill="#ffffff">${escSvg(ln)}</text>`).join('\n')
+  const S = 62
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+${nameSvg}
+<text x="136" y="470" font-family="Barlow" font-weight="700" font-size="${S}" fill="#141414">${dia}</text>
+<text x="136" y="546" font-family="Barlow" font-weight="700" font-size="${S}" fill="#141414">${hora}</text>
+</svg>`
+  const png = new Resvg(svg, { font: { fontFiles: [CARTOON_NAME_FONT, CARTOON_SCHED_FONT], loadSystemFonts: false } }).render().asPng()
+  writeFileSync(outFile, png)
+  return outFile
+}
+
 function makeSvgTextOverlay(titulo, subtitulo, textoBox, canal, outFile) {
+  if (canal === 'cartoon_network') return makeCartoonOverlay(titulo, subtitulo, outFile)
   const style = textStyle(canal)
   const box = parseBox(textoBox) ?? style.box
   const title = escSvg(titulo)

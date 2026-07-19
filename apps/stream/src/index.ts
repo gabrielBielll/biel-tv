@@ -14,6 +14,7 @@ type Bindings = {
   MEDIA: R2Bucket
   ADMIN_TOKEN: string
   ALLOW_TIME_TRAVEL: string
+  ELEVENLABS_API_KEY?: string
   GH_DISPATCH_TOKEN?: string
   GH_REPO?: string
 }

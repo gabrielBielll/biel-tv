@@ -123,17 +123,31 @@ const promPendentes = computed(() => promessas.value.filter((p) => p.status === 
 const promDecididas = computed(() => promessas.value.filter((p) => p.status === 'confirmada' || p.status === 'ignorar'))
 
 // ── fábrica de comerciais (fala + amostra + molde) ─────────────────────────
-const fabrica = ref<{ voice_clips: any[]; moldes: any[]; samples: any[]; jobs: any[]; series: any[] }>({
-  voice_clips: [], moldes: [], samples: [], jobs: [], series: [],
+const fabrica = ref<{ voice_clips: any[]; moldes: any[]; samples: any[]; jobs: any[]; series: any[]; canais: any[]; tts_disponivel: boolean }>({
+  voice_clips: [], moldes: [], samples: [], jobs: [], series: [], canais: [], tts_disponivel: false,
 })
 const fabBusy = ref(false)
 const clipFile = ref<File | null>(null)
 const sampleFile = ref<File | null>(null)
 const moldeFile = ref<File | null>(null)
 const musicaFile = ref<File | null>(null)
-const clipForm = ref({ canal: 'jetix', categoria: 'frase', series_id: '', chave: '', rotulo: '' })
+const clipForm = ref({ canal: 'jetix', categoria: 'frase', series_id: '', chave: '', rotulo: '', sintetizar: true, voz_id: '' })
 const sampleForm = ref({ series_id: '', rotulo: '', source_url: '' })
 const moldeForm = ref({ nome: 'Molde Jetix — horário', canal: 'jetix' })
+// voz por canal (ElevenLabs) — Fase A
+const vozEdit = ref<Record<string, string>>({})
+const vozModelo = ref<Record<string, string>>({})
+const vozTexto = ref('[excited] Prepare-se! [short pause] Uma nova aventura vem aí... [short pause] a seguir, na Jetix!')
+const vozTestando = ref('')
+let vozAudioEl: HTMLAudioElement | null = null
+const vozDoCanal = (canal: string): string =>
+  fabrica.value.canais?.find((c: any) => c.id === canal)?.voz_id ?? ''
+const clipFiltroCanal = ref('')
+const clipFiltroCat = ref('')
+const clipesFiltrados = computed(() => fabrica.value.voice_clips.filter((c: any) =>
+  (!clipFiltroCanal.value || c.canal === clipFiltroCanal.value)
+  && (!clipFiltroCat.value || c.categoria === clipFiltroCat.value),
+))
 const buildForm = ref({
   molde_id: '',
   series_id: '',
@@ -167,6 +181,16 @@ async function carregaFabrica() {
     fabrica.value = await (await api('/fabrica-comerciais')).json()
     if (!buildForm.value.molde_id && fabrica.value.moldes[0]) buildForm.value.molde_id = fabrica.value.moldes[0].id
     if (!channels.value.some((c) => c.id === clipForm.value.canal)) clipForm.value.canal = channels.value[0]?.id ?? ''
+    // sem chave do ElevenLabs, cai pro upload manual de áudio
+    if (!fabrica.value.tts_disponivel) clipForm.value.sintetizar = false
+    for (const cn of fabrica.value.canais ?? []) {
+      if (vozEdit.value[cn.id] === undefined) vozEdit.value[cn.id] = cn.voz_id ?? ''
+      if (vozModelo.value[cn.id] === undefined) {
+        let m = 'eleven_v3'
+        try { m = JSON.parse(cn.voz_config || '{}').model_id || 'eleven_v3' } catch { /* usa v3 */ }
+        vozModelo.value[cn.id] = m
+      }
+    }
   } catch { /* poll cobre */ }
 }
 
@@ -183,18 +207,23 @@ function onMoldeFile(ev: Event) { moldeFile.value = ((ev.target as HTMLInputElem
 function onMusicaFile(ev: Event) { musicaFile.value = ((ev.target as HTMLInputElement).files ?? [])[0] ?? null }
 
 async function salvarClip() {
-  if (!clipFile.value) { msg.value = '✖ escolha o áudio do clipe'; return }
   fabBusy.value = true
   try {
-    const staging = await uploadAsset(clipFile.value)
+    let staging: string | undefined
+    if (!clipForm.value.sintetizar) {
+      if (!clipFile.value) { msg.value = '✖ escolha o áudio do clipe (ou marque "sintetizar")'; return }
+      staging = await uploadAsset(clipFile.value)
+    }
     const res = await postJson('/fabrica-comerciais/voice-clips', {
       ...clipForm.value,
       staging_key: staging,
-      original_name: clipFile.value.name,
+      original_name: clipFile.value?.name ?? '',
     })
     const body = await res.json()
     if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
-    msg.value = `✔ clipe salvo (${clipForm.value.categoria})`
+    msg.value = clipForm.value.sintetizar
+      ? `✔ clipe sintetizado (${clipForm.value.categoria})`
+      : `✔ clipe salvo (${clipForm.value.categoria})`
     clipFile.value = null
     clipForm.value.rotulo = ''
     await carregaFabrica()
@@ -202,6 +231,100 @@ async function salvarClip() {
     msg.value = `✖ ${(e as Error).message}`
   } finally {
     fabBusy.value = false
+  }
+}
+
+async function salvarVozCanal(canal: string) {
+  fabBusy.value = true
+  try {
+    const res = await api(`/fabrica-comerciais/canais/${canal}/voz`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        voz_id: (vozEdit.value[canal] ?? '').trim(),
+        voz_config: { model_id: vozModelo.value[canal] || 'eleven_v3' },
+      }),
+    })
+    const body = await res.json()
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    msg.value = `✔ voz do ${canal} salva`
+    await carregaFabrica()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  } finally {
+    fabBusy.value = false
+  }
+}
+
+async function testarVoz(canal: string) {
+  const texto = vozTexto.value.trim()
+  if (!texto) { msg.value = '✖ escreva um texto de teste'; return }
+  vozTestando.value = canal
+  try {
+    const res = await api('/fabrica-comerciais/voz/preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ canal, texto }),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({} as { error?: string }))
+      throw new Error(body.error ?? `HTTP ${res.status}`)
+    }
+    const url = URL.createObjectURL(await res.blob())
+    vozAudioEl?.pause()
+    vozAudioEl = new Audio(url)
+    vozAudioEl.onended = () => URL.revokeObjectURL(url)
+    await vozAudioEl.play()
+    msg.value = `▶ voz do ${canal}`
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  } finally {
+    vozTestando.value = ''
+  }
+}
+
+async function gerarBiblioteca(canal: string) {
+  if (!confirm(`Gerar a biblioteca base de "${canal}"? Sintetiza horários (15/15min), frequências, assinatura e conectores — gasta créditos do ElevenLabs (pula o que já existe).`)) return
+  fabBusy.value = true
+  try {
+    let restantes = 1
+    let total = 0
+    for (let i = 0; i < 60 && restantes > 0; i++) {
+      const res = await api(`/fabrica-comerciais/canais/${canal}/biblioteca-base`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limit: 12 }),
+      })
+      const body = await res.json()
+      if (!res.ok && res.status !== 503) throw new Error(body.error ?? `HTTP ${res.status}`)
+      total = body.total ?? total
+      restantes = body.restantes ?? 0
+      msg.value = `🎙️ biblioteca ${canal}: ${total - restantes}/${total}`
+      if (res.status === 503) { msg.value = `⏸ pausou (${body.parou}) — faltam ${restantes}`; break }
+      if ((body.gerados ?? 0) === 0) break
+    }
+    await carregaFabrica()
+    if (restantes === 0) msg.value = `✔ biblioteca base de ${canal} pronta (${total} clipes)`
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  } finally {
+    fabBusy.value = false
+  }
+}
+
+const clipTocando = ref('')
+async function tocarClip(id: string) {
+  clipTocando.value = id
+  try {
+    const res = await api(`/fabrica-comerciais/voice-clips/${id}/audio`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const url = URL.createObjectURL(await res.blob())
+    vozAudioEl?.pause()
+    vozAudioEl = new Audio(url)
+    vozAudioEl.onended = () => URL.revokeObjectURL(url)
+    await vozAudioEl.play()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  } finally {
+    clipTocando.value = ''
   }
 }
 
@@ -1601,7 +1724,30 @@ onBeforeUnmount(() => clearInterval(poll))
           </div>
 
           <div class="fab-panel">
-            <h3>Clipes de fala</h3>
+            <h3>Vozes dos canais
+              <span class="dim">· {{ fabrica.tts_disponivel ? 'ElevenLabs ligado' : 'sem chave (só upload)' }}</span>
+            </h3>
+            <div class="fab-list">
+              <div v-for="c in fabrica.canais" :key="c.id" class="fab-mini">
+                <span class="mono">{{ c.nome }}</span>
+                <input v-model="vozEdit[c.id]" placeholder="voice_id do ElevenLabs" class="mono grow" />
+                <select v-model="vozModelo[c.id]" title="modelo de voz">
+                  <option value="eleven_v3">v3 (tags/pausa)</option>
+                  <option value="eleven_multilingual_v2">multilingual v2</option>
+                </select>
+                <button class="ghost" :disabled="fabBusy" @click="salvarVozCanal(c.id)">salvar</button>
+                <button class="ghost" :disabled="!!vozTestando || !c.voz_id" @click="testarVoz(c.id)">
+                  {{ vozTestando === c.id ? '…' : '▶ testar' }}
+                </button>
+                <button class="ghost" :disabled="fabBusy || !c.voz_id" title="gerar horários/frequências/assinatura" @click="gerarBiblioteca(c.id)">📚 base</button>
+              </div>
+            </div>
+            <label>Texto de teste <input v-model="vozTexto" placeholder="frase para ouvir a voz" /></label>
+            <p class="dim">No v3 dá pra usar tags de emoção: <span class="mono">[excited]</span> <span class="mono">[playful]</span> <span class="mono">[short pause]</span> — e uma pausa antes de "Jetix" limpa a pronúncia.</p>
+          </div>
+
+          <div class="fab-panel">
+            <h3>Clipes de fala <span class="dim">· {{ fabrica.voice_clips.length }}</span></h3>
             <div class="form">
               <div class="row">
                 <label>Canal
@@ -1622,13 +1768,45 @@ onBeforeUnmount(() => clearInterval(poll))
               <label>Série <input v-model="clipForm.series_id" placeholder="só nome/frase" /></label>
               <label>Chave <input v-model="clipForm.chave" placeholder="16:00, seg-sex, todos..." /></label>
               <label>Rótulo falado <input v-model="clipForm.rotulo" placeholder="às quatro da tarde" /></label>
-              <input type="file" accept="audio/*,video/*" @change="onClipFile" />
-              <button class="ghost" :disabled="fabBusy" @click="salvarClip">salvar fala</button>
+              <label class="fab-check">
+                <input type="checkbox" v-model="clipForm.sintetizar" :disabled="!fabrica.tts_disponivel" />
+                sintetizar com a voz do canal (ElevenLabs)
+              </label>
+              <label v-if="clipForm.sintetizar">Voz específica (opcional)
+                <input v-model="clipForm.voz_id" placeholder="voice_id só para este clipe" class="mono" />
+              </label>
+              <input v-else type="file" accept="audio/*,video/*" @change="onClipFile" />
+              <p v-if="clipForm.sintetizar && !vozDoCanal(clipForm.canal) && !clipForm.voz_id" class="dim">
+                ⚠️ o canal "{{ clipForm.canal }}" ainda não tem voz — configure em "Vozes dos canais".
+              </p>
+              <button class="ghost" :disabled="fabBusy" @click="salvarClip">
+                {{ clipForm.sintetizar ? 'sintetizar fala' : 'salvar fala' }}
+              </button>
             </div>
+            <div class="row" style="margin-top: 12px">
+              <label>Filtrar canal
+                <select v-model="clipFiltroCanal">
+                  <option value="">todos</option>
+                  <option v-for="c in fabrica.canais" :key="c.id" :value="c.id">{{ c.nome }}</option>
+                </select>
+              </label>
+              <label>Filtrar categoria
+                <select v-model="clipFiltroCat">
+                  <option value="">todas</option>
+                  <option value="horario">horário</option>
+                  <option value="frequencia">frequência</option>
+                  <option value="nome">nome</option>
+                  <option value="frase">frase</option>
+                  <option value="conector">conector</option>
+                </select>
+              </label>
+            </div>
+            <p class="dim">Mostrando {{ Math.min(clipesFiltrados.length, 120) }} de {{ clipesFiltrados.length }} — clique ▶ pra ouvir.</p>
             <div class="fab-list">
-              <div v-for="c in fabrica.voice_clips.slice(0, 14)" :key="c.id" class="fab-mini">
+              <div v-for="c in clipesFiltrados.slice(0, 120)" :key="c.id" class="fab-mini">
                 <span class="mono">{{ c.canal }} · {{ c.categoria }}</span>
                 <span class="dim grow">{{ c.series_id || c.chave }} · {{ c.rotulo }}</span>
+                <button class="ghost" :disabled="!!clipTocando" title="ouvir" @click="tocarClip(c.id)">{{ clipTocando === c.id ? '…' : '▶' }}</button>
                 <button class="ghost" title="remover clipe" @click="apagarFab('voice-clips', c.id)">✕</button>
               </div>
             </div>
@@ -2178,6 +2356,10 @@ button.ghost:hover { color: var(--text); }
 .fab-mini { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line); }
 .fab-mini .grow { min-width: 0; }
 .fab-mini:last-child { border-bottom: 0; }
+.fab-mini input { min-width: 0; color: inherit; }
+.fab-check { flex-direction: row !important; align-items: center; gap: 8px; font-size: 13px; }
+.fab-check input { width: auto; flex: 0 0 auto; }
+.fab-mini select { width: auto; flex: 0 0 auto; }
 @media (max-width: 980px) {
   .fab-grid { grid-template-columns: 1fr; }
   .fab-main { grid-row: auto; }
