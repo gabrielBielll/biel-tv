@@ -228,7 +228,7 @@ function audioGraph({ total, locucaoDuration, prelude, musicaOrigem }) {
   const t = total.toFixed(3)
   const delayMs = Math.round(prelude * 1000)
   const voice = `[2:a]aresample=48000,atrim=duration=${locucaoDuration.toFixed(3)},` +
-    `asetpts=PTS-STARTPTS,volume=1.6,alimiter=limit=0.96` +
+    `asetpts=PTS-STARTPTS,volume=1.35,alimiter=limit=0.96` +
     `${delayMs > 0 ? `,adelay=${delayMs}:all=1` : ''}[voice]`
   if (!musicaOrigem) return `${voice};[voice]apad=whole_dur=${t},atrim=duration=${t}[aout]`
 

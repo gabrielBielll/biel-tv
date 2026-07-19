@@ -115,7 +115,8 @@ chutado. A frase é o gancho sobre a imagem; o card é a ficha com o quê/quando
 - **Música:** a cama enviada com o molde tem prioridade e substitui totalmente o
   áudio da amostra; se o molde não tiver música, a fábrica usa a faixa original
   do vídeo da amostra. A fonte escolhida entra em `amix` em volume reduzido
-  (`0.28`) e a voz fica à frente.
+  (`0.28`); a locução normalizada recebe ganho moderado (`1.35`) e fica à frente
+  sem encobrir a trilha.
 - **Por canal:** a vinheta montada entra em `media_channels` do canal do molde.
 
 ## Fase 2 — vinheta "a seguir" (MESMO motor, re-parametrizado)
