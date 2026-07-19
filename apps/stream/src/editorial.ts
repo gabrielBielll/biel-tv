@@ -15,12 +15,15 @@
 import { pedeJson } from './llm'
 import { spToEpoch, epochToSp } from './diretor'
 import { scheduleChannel } from './scheduler'
+import { dispatchFabrica } from './fabrica'
 
 type Env = {
   DB: D1Database
   MEDIA: R2Bucket
   GEMINI_API_KEY?: string
   DEEPSEEK_API_KEY?: string
+  GH_DISPATCH_TOKEN?: string
+  GH_REPO?: string
 }
 
 export interface DecisaoEditorial {
@@ -178,10 +181,18 @@ ${eventosFuturos.results.map((e) => `${epochToSp(e.start_at)} → ${epochToSp(e.
        WHERE mc.channel_id = ?1 AND m.status='ready' AND m.tipo IN ('episodio','filme')
          AND json_extract(m.metadata,'$.series_id') = ?2 ORDER BY m.id LIMIT 1`,
     ).bind(canal, sid).first<{ id: string }>()
-    await env.DB.prepare(
+    const ev = await env.DB.prepare(
       `INSERT INTO channel_events (canal, tipo, media_id, series_id, start_at, end_at, criado_por)
-       VALUES (?1, 'maratona', ?2, ?3, ?4, ?5, 'editorial')`,
-    ).bind(canal, primeiroEp!.id, sid, ini, fim).run()
+       VALUES (?1, 'maratona', ?2, ?3, ?4, ?5, 'editorial')
+       RETURNING id`,
+    ).bind(canal, primeiroEp!.id, sid, ini, fim).first<{ id: number }>()
+
+    // Fase B: o Diretor enfileira um comercial que PROMETE esta maratona. Nasce
+    // como promessa 'evento' (fase 12) amarrada à série do evento — só vai ao ar
+    // na janela de promoção (agora → start_at) e some quando a maratona começa.
+    // Best-effort: se algo faltar (molde/voz/amostra) o comercial não sai, mas a
+    // maratona nunca é afetada — ele é bônus, jamais um bloqueio.
+    try { await enfileiraComercialEvento(env, canal, sid, ini, ev!.id) } catch { /* bônus */ }
 
     hist.push({ data: epochToSp(agora).slice(0, 10), canal, series_id: sid, inicio: epochToSp(ini), fim: epochToSp(fim), motivo: j.motivo })
     await env.DB.prepare("INSERT OR REPLACE INTO config (k, v) VALUES ('planos_editoriais', ?1)")
@@ -195,4 +206,40 @@ ${eventosFuturos.results.map((e) => `${epochToSp(e.start_at)} → ${epochToSp(e.
     })
   }
   return decisoes
+}
+
+// dia-da-semana em São Paulo → convenção da fábrica de comerciais (1=seg..6=sáb,7=dom)
+function diaFabrica(epochSp: number): number {
+  const js = new Date((epochSp - 3 * 3600) * 1000).getUTCDay() // 0=dom..6=sáb
+  return js === 0 ? 7 : js
+}
+
+// Enfileira o comercial da maratona (Fase B). O slot { [dia do start], hora do
+// start } vira a fala "…, [dia], às [hora]"; o /done materializa a promessa como
+// 'evento' amarrada à série, e o scheduler a toca só na janela agora→start_at.
+async function enfileiraComercialEvento(
+  env: Env, canal: string, sid: string, startAt: number, eventId: number,
+): Promise<void> {
+  // prefere molde SEM música (aí a trilha da amostra — a abertura do desenho — toca)
+  const molde = await env.DB.prepare(
+    'SELECT id FROM moldes WHERE canal = ?1 ORDER BY (musica_key IS NULL) DESC, created_at DESC LIMIT 1',
+  ).bind(canal).first<{ id: string }>()
+  if (!molde) return // canal sem molde: sem comercial, maratona segue no ar
+
+  const diaN = diaFabrica(startAt)
+  // encaixa a hora no grid de 15 min da biblioteca de voz (00/15/30/45)
+  const [h, m] = epochToSp(startAt).slice(11, 16).split(':').map(Number)
+  const mm = [0, 15, 30, 45].reduce((a, b) => (Math.abs(b - m) < Math.abs(a - m) ? b : a), 0)
+  const hora = `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`
+
+  const rid = () => crypto.randomUUID().replace(/-/g, '')
+  const mediaId = `com_ev_${sid.slice(0, 18)}_${rid().slice(0, 8)}`.slice(0, 40)
+  await env.DB.prepare(
+    `INSERT INTO commercial_build_jobs
+       (id, media_id, title, molde_id, series_id, slot_dias, slot_hora, event_id)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+  ).bind(`cb_${rid().slice(0, 10)}`, mediaId, `Maratona ${sid} — ${epochToSp(startAt)}`,
+    molde.id, sid, JSON.stringify([diaN]), hora, eventId).run()
+
+  await dispatchFabrica(env) // acorda a fábrica (best-effort; o cron também cobre)
 }

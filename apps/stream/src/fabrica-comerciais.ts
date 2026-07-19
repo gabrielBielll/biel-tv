@@ -57,6 +57,7 @@ type BuildJobRow = {
   frase_id: string | null
   sample_id: string | null
   payload: string | null
+  event_id: number | null
   created_at: number
   updated_at: number
 }
@@ -699,33 +700,47 @@ fabricaComerciais.post('/:id/done', async (c) => {
   const mediaId = String(b.media_id ?? job.media_id)
   const dias = diasCanon(JSON.parse(job.slot_dias))
   const hora = limpaHora(job.slot_hora) ?? job.slot_hora
-  const proposta = b.proposta ?? {
-    tipo: 'bloco_horario',
-    series_id: job.series_id,
-    descricao: `${job.title} (${textoTela(dias, hora)})`,
-    confianca: 1,
-  }
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      "UPDATE commercial_build_jobs SET status='done', error=NULL, progress=100, updated_at=unixepoch() WHERE id=?1",
-    ).bind(id),
-    // A vinheta gerada nasce 'generico' → entra no RODÍZIO como comercial comum,
-    // "passa com os outros" (pedido do Gabriel, 2026-07-19): é um recado de
-    // programação que informa o espectador o dia todo, como canal retrô fazia —
-    // não fica retida esperando a fase 10a de bloco_horario. A `proposta` guarda
-    // o bloco_horario + o slot na descrição (fica o registro, e dá pra apertar
-    // pra veiculação condicional depois, se quiser). Confirmação manual prévia é
-    // respeitada (não rebaixa uma promessa já 'confirmada').
-    c.env.DB.prepare(
+  const jobDone = c.env.DB.prepare(
+    "UPDATE commercial_build_jobs SET status='done', error=NULL, progress=100, updated_at=unixepoch() WHERE id=?1",
+  ).bind(id)
+
+  let promiseStmt
+  if (job.event_id != null) {
+    // Fase B: comercial de MARATONA → promessa 'evento' já CONFIRMADA, amarrada à
+    // SÉRIE do evento. O scheduler liga por series_id ao channel_events agendado e
+    // toca só na janela agora→start_at, sumindo quando a maratona começa ou é
+    // cancelada. Decidido no SERVIDOR pelo event_id do job — o builder externo
+    // crava proposta:'bloco_horario' no corpo, então b.proposta não é confiável.
+    const cond = JSON.stringify({
+      tipo: 'evento',
+      series_id: job.series_id,
+      descricao: `${job.title} (maratona ${textoTela(dias, hora)})`,
+    })
+    promiseStmt = c.env.DB.prepare(
+      `INSERT INTO media_promises (media_id, transcript, proposta, condicao, status)
+       VALUES (?1, ?2, ?3, ?3, 'confirmada')
+       ON CONFLICT(media_id) DO UPDATE SET
+         transcript=excluded.transcript, proposta=excluded.proposta,
+         condicao=excluded.condicao, status='confirmada', updated_at=unixepoch()`,
+    ).bind(mediaId, String(b.transcript ?? '').slice(0, 8000), cond)
+  } else {
+    // Comercial comum de grade → nasce 'generico' (recado que roda o dia todo,
+    // "passa com os outros"). A proposta guarda o bloco_horario + slot na descrição.
+    // Confirmação manual prévia é respeitada (não rebaixa uma 'confirmada').
+    const proposta = b.proposta ?? {
+      tipo: 'bloco_horario', series_id: job.series_id,
+      descricao: `${job.title} (${textoTela(dias, hora)})`, confianca: 1,
+    }
+    promiseStmt = c.env.DB.prepare(
       `INSERT INTO media_promises (media_id, transcript, proposta, status)
        VALUES (?1, ?2, ?3, 'generico')
        ON CONFLICT(media_id) DO UPDATE SET
-         transcript=excluded.transcript,
-         proposta=excluded.proposta,
+         transcript=excluded.transcript, proposta=excluded.proposta,
          status=CASE WHEN media_promises.status='confirmada' THEN media_promises.status ELSE 'generico' END,
          updated_at=unixepoch()`,
-    ).bind(mediaId, String(b.transcript ?? '').slice(0, 8000), JSON.stringify(proposta)),
-  ])
+    ).bind(mediaId, String(b.transcript ?? '').slice(0, 8000), JSON.stringify(proposta))
+  }
+  await c.env.DB.batch([jobDone, promiseStmt])
   const molde = await c.env.DB.prepare('SELECT canal FROM moldes WHERE id = ?1')
     .bind(job.molde_id).first<{ canal: string }>()
   if (molde?.canal) await scheduleChannel(c.env, molde.canal, 48, true)
