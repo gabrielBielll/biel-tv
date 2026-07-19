@@ -491,13 +491,20 @@ fabricaComerciais.post('/:id/done', async (c) => {
     c.env.DB.prepare(
       "UPDATE commercial_build_jobs SET status='done', error=NULL, progress=100, updated_at=unixepoch() WHERE id=?1",
     ).bind(id),
+    // A vinheta gerada nasce 'generico' → entra no RODÍZIO como comercial comum,
+    // "passa com os outros" (pedido do Gabriel, 2026-07-19): é um recado de
+    // programação que informa o espectador o dia todo, como canal retrô fazia —
+    // não fica retida esperando a fase 10a de bloco_horario. A `proposta` guarda
+    // o bloco_horario + o slot na descrição (fica o registro, e dá pra apertar
+    // pra veiculação condicional depois, se quiser). Confirmação manual prévia é
+    // respeitada (não rebaixa uma promessa já 'confirmada').
     c.env.DB.prepare(
       `INSERT INTO media_promises (media_id, transcript, proposta, status)
-       VALUES (?1, ?2, ?3, 'pendente')
+       VALUES (?1, ?2, ?3, 'generico')
        ON CONFLICT(media_id) DO UPDATE SET
          transcript=excluded.transcript,
          proposta=excluded.proposta,
-         status=CASE WHEN media_promises.status='confirmada' THEN media_promises.status ELSE 'pendente' END,
+         status=CASE WHEN media_promises.status='confirmada' THEN media_promises.status ELSE 'generico' END,
          updated_at=unixepoch()`,
     ).bind(mediaId, String(b.transcript ?? '').slice(0, 8000), JSON.stringify(proposta)),
   ])
