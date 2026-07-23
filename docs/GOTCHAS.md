@@ -384,6 +384,31 @@ que cair pro `filter` **sozinha** (sem `forcarFiltro`) e sair sincronizada — o
 buraco de cobertura que deixou o bug passar (o teste antigo só forçava o filter
 via `{ forcarFiltro: true }`, nunca exercitava a detecção automática).
 
+**Concat `-c copy` de partes com CODEC DE VÍDEO diferente = os frames de metade
+das partes não decodificam (e o erro só aparece na segmentação).** Descoberto em
+2026-07-23, reproduzido com a fonte real que quebrou (Feiticeiros S3E01
+"Francristina", 5 partes). O YouTube não serve o mesmo codec pra todo vídeo:
+baixando com `bv*+ba`, as partes do MESMO episódio vieram `av1, h264, av1, av1,
+h264`. O `concatParts()` decidia o `-c copy` olhando só os parâmetros de ÁUDIO —
+codec/resolução de vídeo eram liberados de propósito, com o argumento de que "o
+normalize reescala e absorve". Isso vale pra **resolução**, não pra **codec**:
+o `-c copy` empilha os pacotes numa trilha só, e uma trilha MP4 declara UM
+codec. O resultado é um arquivo que o ffprobe mostra saudável (`av1`, 1294.8s,
+31043 frames) mas cujo decoder cospe `Unknown OBU type` nas partes h264 —
+medido: **100 de 240 frames** sobrevivendo. As duas validações existentes passam
+limpas, porque as duas olham TEMPO: a duração total bate (os timestamps somam
+certo) e o skew A/V ficou em 0,067s. Os frames é que somem. O estrago só
+aparece lá no fim do pipeline, como `segmentação gerou 9, esperava 11` — e essa
+mensagem culpa "keyframes fora da grade", que é pista falsa: os keyframes estão
+na grade, o que falta é imagem. Foi o que travou 5 jobs de fonte multipartes.
+**Fix:** `concatParts()` agora também exige `videoUniforme` (mesmo
+`vcodec` em todas as partes) pro caminho `-c copy`; codec divergente vai direto
+pro concat filter, que re-encoda tudo pro perfil do canal. Resolução/SAR
+diferentes continuam no `copy` de propósito (aí o normalize absorve mesmo).
+`verify-playlist` ganhou o caso: parte com codec de vídeo diferente tem que cair
+pro `filter` sozinha **e o juntado tem que decodificar inteiro** — a asserção é
+em FRAMES DECODIFICADOS, não em duração, senão o teste não pegaria este bug.
+
 ## Telas com vídeo (`/r`, `/r/cortar`)
 
 **`<video controls>` ROUBA o teclado, e o `preventDefault()` chega tarde.**

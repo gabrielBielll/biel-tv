@@ -113,7 +113,19 @@ progresso(92)
 rmSync(join(segDir, '_index.m3u8'), { force: true })
 const segCount = listSegments(segDir).length
 if (segCount !== paddedDur / SEG) {
-  die(`segmentação gerou ${segCount} segmentos, esperava ${paddedDur / SEG} — keyframes fora da grade?`)
+  // A mensagem antiga culpava "keyframes fora da grade" e mandava a
+  // investigação pro lado errado: na prática o que aconteceu foi a fonte
+  // perder FRAMES (partes juntadas com codecs de vídeo diferentes — ver
+  // GOTCHAS). Então aqui a gente MEDE o normalizado em vez de chutar.
+  const real = await probe(normalized)
+  const curto = paddedDur - real.duration
+  die(`segmentação gerou ${segCount} segmentos, esperava ${paddedDur / SEG}. ` +
+    `O normalizado tem ${real.duration.toFixed(1)}s para um alvo de ${paddedDur}s` +
+    `${curto > 0.5 ? ` (${curto.toFixed(1)}s a menos)` : ''}. ` +
+    (curto > 0.5
+      ? 'Faltou imagem, não keyframe: a fonte perdeu frames na decodificação. '
+        + 'Se ela é juntada de partes, confira se as partes têm o mesmo codec de vídeo.'
+      : 'Duração bate — aí sim suspeite dos keyframes fora da grade de 10s.'))
 }
 console.log(`3/5 segmentado: ${segCount} × ${SEG}.0s ✓`)
 

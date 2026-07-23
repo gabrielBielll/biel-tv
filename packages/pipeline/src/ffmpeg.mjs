@@ -193,17 +193,28 @@ export async function concatParts(partFiles, outFile, { forcarFiltro = false } =
   // fazem o concat demuxer reinterpretar as amostras na timebase errada → o
   // áudio "escorrega" do vídeo, um desync que SOBREVIVE ao normalize. Quando
   // diverge, vamos direto pro filter (que reamostra tudo pra 48k antes de
-  // juntar). Resolução/SAR de vídeo diferentes NÃO são problema aqui: o
-  // normalize reescala e absorve — por isso só o áudio pesa nesta decisão.
+  // juntar).
   const audioUniforme = infos.every((i) =>
     i.acodec === infos[0].acodec &&
     i.asampleRate === infos[0].asampleRate &&
     i.achannels === infos[0].achannels)
 
+  // E o CODEC DE VÍDEO também tem que bater. O `-c copy` empilha os pacotes
+  // numa trilha só, e uma trilha MP4 declara UM codec: se as partes misturam
+  // av1 e h264 (o YouTube serve av01 num vídeo e avc1 noutro da MESMA série —
+  // acontece o tempo todo em episódio dividido em partes), o decoder do codec
+  // declarado recebe os pacotes do outro e não decodifica NADA deles
+  // ("Unknown OBU type" do libdav1d). A validação de duração e a de skew A/V
+  // passam as duas — os timestamps continuam somando certo, só os FRAMES é que
+  // somem — e o estrago só aparece lá na frente, como "segmentação gerou N,
+  // esperava M". Resolução/SAR diferentes seguem liberadas de propósito: aí o
+  // normalize reescala e absorve, sem re-encode à toa.
+  const videoUniforme = infos.every((i) => i.vcodec === infos[0].vcodec)
+
   // caminho feliz: junção CRUA sem re-encode (forcarFiltro pula direto pro
   // plano B — só usado nos testes, pra exercitar o re-encode sem depender de
   // um arquivo patológico que faça o -c copy divergir)
-  if (!forcarFiltro && audioUniforme) {
+  if (!forcarFiltro && audioUniforme && videoUniforme) {
     const listPath = `${outFile}.concat.txt`
     const listBody = partFiles.map((f) => `file '${resolve(f).replace(/'/g, "'\\''")}'`).join('\n') + '\n'
     writeFileSync(listPath, listBody)
