@@ -274,6 +274,38 @@ admin.post('/jobs/:id/cancel', async (c) => {
   return c.json({ ok: true, era: job.status })
 })
 
+// Limpeza em massa da fila (🧹 no painel). Só 'error' e 'done': o que ainda
+// pode rodar ('queued'/'processing') sai um a um, com o aviso do que está em
+// andamento. Igual ao cancelamento individual, apaga a LINHA — o CHECK de
+// status não tem 'cancelado' — e libera o staging no R2 de quem veio de upload
+// (em 'done' o staging já foi apagado; o delete extra é inofensivo).
+admin.post('/jobs/limpar', async (c) => {
+  const { status } = await c.req.json<{ status?: string }>().catch(() => ({ status: '' }))
+  if (!['error', 'done'].includes(String(status))) {
+    return c.json({ error: "status inválido — use 'error' ou 'done'" }, 400)
+  }
+  const { results } = await c.env.DB.prepare(
+    'SELECT id, staging_key FROM ingest_jobs WHERE status = ?1',
+  ).bind(status).all<{ id: string; staging_key: string | null }>()
+  if (results.length === 0) return c.json({ ok: true, removidos: 0, ids: [] })
+  await c.env.DB.prepare('DELETE FROM ingest_jobs WHERE status = ?1').bind(status).run()
+  const chaves = results.map((r) => r.staging_key).filter((k): k is string => Boolean(k))
+  for (let i = 0; i < chaves.length; i += 1000) await c.env.MEDIA.delete(chaves.slice(i, i + 1000))
+  return c.json({ ok: true, removidos: results.length, ids: results.map((r) => r.id) })
+})
+
+// "↻ tentar todos de novo": devolve pra fila tudo que falhou de uma vez — o
+// caso típico é renovar os cookies do YouTube e reprocessar a leva inteira.
+admin.post('/jobs/retry-todos', async (c) => {
+  const r = await c.env.DB.prepare(
+    `UPDATE ingest_jobs SET status = 'queued', error = NULL, progress = 0, updated_at = unixepoch()
+     WHERE status = 'error'`,
+  ).run()
+  const n = r.meta.changes ?? 0
+  if (n > 0) c.executionCtx.waitUntil(dispatchFabrica(c.env))
+  return c.json({ ok: true, reenfileirados: n })
+})
+
 // A fábrica reporta o avanço da transcodificação (0–99) — o painel mostra
 // "processando 37%" no chip da fila. 100 é reservado pro done.
 admin.post('/jobs/:id/progress', async (c) => {
@@ -479,6 +511,18 @@ admin.post('/playlist/:id/confirmar', async (c) => {
   await c.env.DB.prepare("UPDATE playlist_ingests SET status='confirmado', updated_at=unixepoch() WHERE id = ?1").bind(id).run()
   if (criados.length) c.executionCtx.waitUntil(dispatchFabrica(c.env))
   return c.json({ ok: true, criados, pulados })
+})
+
+// Descarta uma análise de playlist (✕ no painel): a que travou na listagem, a
+// que deu erro, ou a já confirmada que só ocupa espaço. Apaga apenas o registro
+// da ANÁLISE — episódios já confirmados viraram jobs e se cancelam pela fila.
+// Se a fábrica ainda estiver listando essa análise, o retorno dela cai num 404
+// inofensivo (nada mais existe pra atualizar).
+admin.delete('/playlist/:id', async (c) => {
+  const r = await c.env.DB.prepare('DELETE FROM playlist_ingests WHERE id = ?1')
+    .bind(c.req.param('id')).run()
+  if ((r.meta.changes ?? 0) === 0) return c.json({ error: 'análise não encontrada' }, 404)
+  return c.json({ ok: true })
 })
 
 // ── promessas de comerciais (fase 12) ──────────────────────────────────────

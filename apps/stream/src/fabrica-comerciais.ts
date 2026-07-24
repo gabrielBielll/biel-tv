@@ -809,6 +809,31 @@ fabricaComerciais.post('/:id/retry', async (c) => {
   return c.json({ ok: true })
 })
 
+// Cancela/descarta um job da fábrica (✕ no painel). Job 'done' já virou mídia
+// no catálogo — recusa e manda remover por lá. Um 'processing' pode estar sendo
+// montado pelo runner: some da fila do mesmo jeito e o /done dele passa a bater
+// num 404 inofensivo (nada mais existe pra atualizar).
+fabricaComerciais.delete('/jobs/:id', async (c) => {
+  const id = c.req.param('id')
+  const job = await c.env.DB.prepare('SELECT status FROM commercial_build_jobs WHERE id = ?1')
+    .bind(id).first<{ status: string }>()
+  if (!job) return c.json({ error: 'job não encontrado' }, 404)
+  if (job.status === 'done') return c.json({ error: 'comercial já montado — remova pelo catálogo' }, 409)
+  await c.env.DB.prepare('DELETE FROM commercial_build_jobs WHERE id = ?1').bind(id).run()
+  return c.json({ ok: true, era: job.status })
+})
+
+// Limpeza em massa dos jobs da fábrica — mesma regra da fila de ingestão: só
+// 'error' e 'done'; o que ainda pode rodar sai um a um.
+fabricaComerciais.post('/jobs/limpar', async (c) => {
+  const { status } = await c.req.json<{ status?: string }>().catch(() => ({ status: '' }))
+  if (!['error', 'done'].includes(String(status))) {
+    return c.json({ error: "status inválido — use 'error' ou 'done'" }, 400)
+  }
+  const r = await c.env.DB.prepare('DELETE FROM commercial_build_jobs WHERE status = ?1').bind(status).run()
+  return c.json({ ok: true, removidos: r.meta.changes ?? 0 })
+})
+
 fabricaComerciais.post('/:id/done', async (c) => {
   const id = c.req.param('id')
   const b = await c.req.json<{ media_id?: string; transcript?: string; proposta?: unknown; render?: unknown }>()
