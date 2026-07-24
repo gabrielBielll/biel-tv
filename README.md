@@ -97,6 +97,18 @@ O app junta as partes de um episódio separadas por comercial numa entrada únic
 guia (via `segment_index_start`), esconde comerciais da grade, e sincroniza o relógio
 com o servidor. Autoplay começa mudo (política dos navegadores) com botão de som.
 
+### EPG público
+
+`GET /epg/:canal` devolve, por padrão, o programa atual e as próximas 24 horas.
+Clientes que exibem histórico podem pedir uma janela explícita em segundos:
+
+```text
+/epg/jetix?past=21600&future=86400
+```
+
+`past` aceita até 24h e `future` até 48h. A resposta inclui `now` (Unix, relógio do
+servidor) e os itens com `title`, `tipo`, `start`, `end` e `segment_index_start`.
+
 Deploy: Cloudflare Pages apontando para `apps/web` (`pnpm build`, saída `dist/`).
 Se o Worker estiver em outro domínio, defina `VITE_API_BASE=https://…workers.dev`
 na build. Os segmentos resolvem sozinhos contra a origem da playlist.

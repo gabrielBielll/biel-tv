@@ -48,6 +48,14 @@ app.get('/channels', async (c) => {
 const CORS = { 'access-control-allow-origin': '*' } as const
 const WINDOW_BEHIND = 4 // slots passados na janela…
 const WINDOW_AHEAD = 1 // …+ 1 futuro (já pré-cortado): encurta o delay percebido
+const MAX_EPG_PAST = 24 * 3600
+const MAX_EPG_FUTURE = 48 * 3600
+
+function durationQuery(c: Context<{ Bindings: Bindings }>, key: string, fallback: number, maximum: number): number {
+  const raw = Number(c.req.query(key))
+  if (!Number.isFinite(raw)) return fallback
+  return Math.min(maximum, Math.max(0, Math.floor(raw)))
+}
 
 function nowFrom(c: Context<{ Bindings: Bindings }>): number {
   const at = c.req.query('at')
@@ -86,9 +94,13 @@ app.get('/live/:canal', async (c) => {
 app.get('/epg/:canal', async (c) => {
   const canal = c.req.param('canal')
   const now = nowFrom(c)
+  // Defaults preservam o contrato original (agora + 24h). Clientes que precisam
+  // navegar pela programação já exibida podem pedir uma janela passada limitada.
+  const past = durationQuery(c, 'past', 0, MAX_EPG_PAST)
+  const future = durationQuery(c, 'future', 24 * 3600, MAX_EPG_FUTURE)
 
   const { results } = await c.env.DB.prepare(SQL_EPG_OVERLAP)
-    .bind(canal, now, now + 24 * 3600)
+    .bind(canal, now - past, now + future)
     .all<EpgRowWithMedia>()
 
   const items = results.map((r) => {
