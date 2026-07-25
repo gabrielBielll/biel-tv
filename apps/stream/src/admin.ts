@@ -279,19 +279,36 @@ admin.post('/jobs/:id/cancel', async (c) => {
 // andamento. Igual ao cancelamento individual, apaga a LINHA — o CHECK de
 // status não tem 'cancelado' — e libera o staging no R2 de quem veio de upload
 // (em 'done' o staging já foi apagado; o delete extra é inofensivo).
+//
+// Os ids são OBRIGATÓRIOS e vêm do painel. Apagar por status varreria a tabela
+// inteira, enquanto o GET /jobs devolve só as 50 mais recentes: o operador
+// confirmaria "limpar 3" e perderia o arquivo já enviado de dezenas de outros.
+// O status continua sendo validado no SQL, então id de job ativo é ignorado.
 admin.post('/jobs/limpar', async (c) => {
-  const { status } = await c.req.json<{ status?: string }>().catch(() => ({ status: '' }))
-  if (!['error', 'done'].includes(String(status))) {
+  const b = await c.req.json<{ status?: string; ids?: unknown }>().catch(() => ({} as { status?: string; ids?: unknown }))
+  const status = String(b.status ?? '')
+  if (!['error', 'done'].includes(status)) {
     return c.json({ error: "status inválido — use 'error' ou 'done'" }, 400)
   }
+  const ids = (Array.isArray(b.ids) ? b.ids : [])
+    .filter((i): i is string => typeof i === 'string' && /^[a-z0-9_]{3,40}$/.test(i))
+    .slice(0, 500)
+  if (ids.length === 0) return c.json({ error: 'informe os ids a limpar' }, 400)
+
+  const marcas = ids.map((_, i) => `?${i + 2}`).join(',')
   const { results } = await c.env.DB.prepare(
-    'SELECT id, staging_key FROM ingest_jobs WHERE status = ?1',
-  ).bind(status).all<{ id: string; staging_key: string | null }>()
+    `SELECT id, staging_key FROM ingest_jobs WHERE status = ?1 AND id IN (${marcas})`,
+  ).bind(status, ...ids).all<{ id: string; staging_key: string | null }>()
   if (results.length === 0) return c.json({ ok: true, removidos: 0, ids: [] })
-  await c.env.DB.prepare('DELETE FROM ingest_jobs WHERE status = ?1').bind(status).run()
+
+  // R2 primeiro: se o D1 for antes e a limpeza do R2 falhar, o staging vira
+  // lixo permanente sem nenhum registro apontando pra ele
   const chaves = results.map((r) => r.staging_key).filter((k): k is string => Boolean(k))
   for (let i = 0; i < chaves.length; i += 1000) await c.env.MEDIA.delete(chaves.slice(i, i + 1000))
-  return c.json({ ok: true, removidos: results.length, ids: results.map((r) => r.id) })
+  const achados = results.map((r) => r.id)
+  const marcas2 = achados.map((_, i) => `?${i + 1}`).join(',')
+  await c.env.DB.prepare(`DELETE FROM ingest_jobs WHERE id IN (${marcas2})`).bind(...achados).run()
+  return c.json({ ok: true, removidos: achados.length, ids: achados })
 })
 
 // "↻ tentar todos de novo": devolve pra fila tudo que falhou de uma vez — o

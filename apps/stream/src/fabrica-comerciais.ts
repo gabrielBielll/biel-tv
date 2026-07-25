@@ -809,28 +809,49 @@ fabricaComerciais.post('/:id/retry', async (c) => {
   return c.json({ ok: true })
 })
 
-// Cancela/descarta um job da fábrica (✕ no painel). Job 'done' já virou mídia
-// no catálogo — recusa e manda remover por lá. Um 'processing' pode estar sendo
-// montado pelo runner: some da fila do mesmo jeito e o /done dele passa a bater
-// num 404 inofensivo (nada mais existe pra atualizar).
+// Cancela um job da fábrica (✕ no painel): tira da fila o que ainda não começou
+// e descarta o que falhou. 'done' já virou mídia no catálogo — remove-se por lá.
+//
+// 'processing' também é RECUSADO, e o motivo não é óbvio: o runner registra a
+// mídia (media_items + media_channels + segmentos no R2) ANTES de chamar o
+// /done, e é o /done que grava a promessa em media_promises. Apagar a linha no
+// meio faz o /done bater num 404 e a peça nascer no catálogo SEM promessa —
+// entrando no rodízio cego. Uma promo de maratona sem promessa toca todo dia,
+// inclusive depois do evento ter passado, que é justamente o que a promessa
+// 'evento' existe pra impedir. Runner morto não trava a fila: o /claim devolve
+// pra 'queued' o que passa de 2h em 'processing'.
 fabricaComerciais.delete('/jobs/:id', async (c) => {
   const id = c.req.param('id')
   const job = await c.env.DB.prepare('SELECT status FROM commercial_build_jobs WHERE id = ?1')
     .bind(id).first<{ status: string }>()
   if (!job) return c.json({ error: 'job não encontrado' }, 404)
   if (job.status === 'done') return c.json({ error: 'comercial já montado — remova pelo catálogo' }, 409)
+  if (job.status === 'processing') {
+    return c.json({
+      error: 'a montagem já começou — espere terminar e remova pelo catálogo (job travado volta pra fila sozinho em 2h)',
+    }, 409)
+  }
   await c.env.DB.prepare('DELETE FROM commercial_build_jobs WHERE id = ?1').bind(id).run()
   return c.json({ ok: true, era: job.status })
 })
 
 // Limpeza em massa dos jobs da fábrica — mesma regra da fila de ingestão: só
-// 'error' e 'done'; o que ainda pode rodar sai um a um.
+// 'error' e 'done', e sempre pelos ids que o painel mostrou (a listagem é
+// limitada, apagar por status varreria também o que o operador não viu).
 fabricaComerciais.post('/jobs/limpar', async (c) => {
-  const { status } = await c.req.json<{ status?: string }>().catch(() => ({ status: '' }))
-  if (!['error', 'done'].includes(String(status))) {
+  const b = await c.req.json<{ status?: string; ids?: unknown }>().catch(() => ({} as { status?: string; ids?: unknown }))
+  const status = String(b.status ?? '')
+  if (!['error', 'done'].includes(status)) {
     return c.json({ error: "status inválido — use 'error' ou 'done'" }, 400)
   }
-  const r = await c.env.DB.prepare('DELETE FROM commercial_build_jobs WHERE status = ?1').bind(status).run()
+  const ids = (Array.isArray(b.ids) ? b.ids : [])
+    .filter((i): i is string => typeof i === 'string' && /^cb_[a-f0-9]{4,32}$/.test(i))
+    .slice(0, 500)
+  if (ids.length === 0) return c.json({ error: 'informe os ids a limpar' }, 400)
+  const marcas = ids.map((_, i) => `?${i + 2}`).join(',')
+  const r = await c.env.DB.prepare(
+    `DELETE FROM commercial_build_jobs WHERE status = ?1 AND id IN (${marcas})`,
+  ).bind(status, ...ids).run()
   return c.json({ ok: true, removidos: r.meta.changes ?? 0 })
 })
 

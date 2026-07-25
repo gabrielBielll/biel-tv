@@ -532,10 +532,7 @@ async function retryFabJob(j: any) {
 }
 
 async function cancelarFabJob(j: any) {
-  const proc = j.status === 'processing'
-  if (!confirm(proc
-    ? `Cancelar "${j.media_id}"? Está sendo montado — sai da fila mesmo assim, e a montagem em andamento é descartada.`
-    : `Cancelar "${j.media_id}"? Sai da fila da fábrica e o comercial não será montado.`)) return
+  if (!confirm(`Cancelar "${j.media_id}"? Sai da fila da fábrica e o comercial não será montado.`)) return
   const res = await api(`/fabrica-comerciais/jobs/${j.id}`, { method: 'DELETE' })
   const body = await res.json().catch(() => ({} as { error?: string }))
   msg.value = res.ok ? `✕ "${j.media_id}" cancelado` : `✖ ${body.error ?? res.status}`
@@ -546,15 +543,15 @@ const fabErro = computed(() => fabrica.value.jobs.filter((j) => j.status === 'er
 const fabFeitos = computed(() => fabrica.value.jobs.filter((j) => j.status === 'done'))
 
 async function limparFabJobs(status: 'error' | 'done') {
-  const n = (status === 'error' ? fabErro : fabFeitos).value.length
-  if (n === 0 || fabBusy.value) return
+  const ids = (status === 'error' ? fabErro : fabFeitos).value.map((j) => j.id)
+  if (ids.length === 0 || fabBusy.value) return
   const aviso = status === 'error'
-    ? `Limpar ${n} montagem(ns) que deram erro?`
-    : `Limpar ${n} montagem(ns) concluída(s)? Os comerciais continuam no catálogo — some só o registro da fábrica.`
+    ? `Limpar ${ids.length} montagem(ns) que deram erro?`
+    : `Limpar ${ids.length} montagem(ns) concluída(s)? Os comerciais continuam no catálogo — some só o registro da fábrica.`
   if (!confirm(aviso)) return
   fabBusy.value = true
   try {
-    const res = await postJson('/fabrica-comerciais/jobs/limpar', { status })
+    const res = await postJson('/fabrica-comerciais/jobs/limpar', { status, ids })
     const body = await res.json()
     if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
     msg.value = `🧹 ${body.removidos} montagem(ns) fora da lista`
@@ -961,6 +958,11 @@ async function enviarLote() {
   // item cancelado não ressuscita: sem excluí-lo daqui, reenviar o lote subia
   // justamente o vídeo que tinha sido cancelado
   const fila = lote.value.filter((i) => i.status !== 'na fila' && i.status !== 'cancelado')
+  if (fila.length === 0) {
+    loteEnviando.value = false
+    msg.value = '✖ nada a enviar — todos os itens já estão na fila ou foram cancelados (use o ↻ pra retomar um cancelado)'
+    return
+  }
   // 1º: TODAS as sessões reservadas antes de qualquer byte — um reload no
   // meio não perde mais nenhum item do lote (todos ficam retomáveis)
   for (const item of fila) {
@@ -1215,8 +1217,10 @@ async function retryJob(j: any) {
 
 async function cancelJob(j: any) {
   const proc = j.status === 'processing'
+  // em 'processing' o cancelamento é só na fila: a fábrica roda fora do painel
+  // e pode terminar o trabalho, publicando a mídia no catálogo mesmo assim
   if (!confirm(proc
-    ? `Cancelar "${j.id}"? Está processando — a fábrica pode terminar o download em andamento, mas ele sai da fila.`
+    ? `Cancelar "${j.id}"? Ele sai da fila agora, mas a fábrica já está trabalhando fora do painel: pode terminar e o vídeo ainda aparecer no catálogo em alguns minutos. Se aparecer, tire do ar por lá.`
     : `Cancelar "${j.id}"? Sai da fila e não será processado.`)) return
   const res = await postJson(`/jobs/${j.id}/cancel`, {})
   const body = await res.json().catch(() => ({} as { error?: string }))
@@ -1233,15 +1237,17 @@ const jobsFeitos = computed(() => jobs.value.filter((j) => j.status === 'done'))
 const limpandoFila = ref('')
 
 async function limparFila(status: 'error' | 'done') {
-  const n = (status === 'error' ? jobsErro : jobsFeitos).value.length
-  if (n === 0 || limpandoFila.value) return
+  // manda os ids que ESTA tela listou: o servidor lida com no máximo isso, e
+  // não apaga o que ficou de fora das 50 linhas que a listagem devolve
+  const ids = (status === 'error' ? jobsErro : jobsFeitos).value.map((j) => j.id)
+  if (ids.length === 0 || limpandoFila.value) return
   const aviso = status === 'error'
-    ? `Limpar ${n} item(ns) que deram erro? Eles somem da fila e não serão processados.`
-    : `Limpar ${n} item(ns) concluído(s) do histórico? Os vídeos continuam no catálogo — some só o registro da fila.`
+    ? `Limpar ${ids.length} item(ns) que deram erro? Eles somem da fila e não serão processados.\n\nO que veio de UPLOAD perde o arquivo já enviado — reenviar depois é do zero. O que veio de link não perde nada.`
+    : `Limpar ${ids.length} item(ns) concluído(s) do histórico? Os vídeos continuam no catálogo — some só o registro da fila.`
   if (!confirm(aviso)) return
   limpandoFila.value = status
   try {
-    const res = await postJson('/jobs/limpar', { status })
+    const res = await postJson('/jobs/limpar', { status, ids })
     const body = await res.json()
     if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
     msg.value = `🧹 ${body.removidos} item(ns) fora da fila`
@@ -2774,11 +2780,19 @@ onBeforeUnmount(() => clearInterval(poll))
             {{ j.status === 'processing' && j.progress > 0 ? `montando ${j.progress}%` : (fabStatus[j.status] ?? j.status) }}
           </span>
           <button v-if="j.status === 'error'" class="ghost" title="tentar de novo" aria-label="tentar montar de novo" @click="retryFabJob(j)">↻</button>
+          <!-- em 'montando' não há cancelar: o runner já pode ter publicado a
+               peça, e apagar a linha aqui a deixaria no ar sem promessa -->
           <button
-            v-if="j.status !== 'done'"
+            v-if="j.status === 'queued' || j.status === 'error'"
             class="ghost" title="cancelar esta montagem" aria-label="cancelar esta montagem"
             @click="cancelarFabJob(j)"
           >✕</button>
+          <Ajuda
+            v-else-if="j.status === 'processing'"
+            titulo="Montagem em andamento não para"
+            texto="Enquanto está montando não dá pra cancelar: a fábrica já pode ter publicado o comercial, e tirar o job daqui o deixaria no ar sem as regras de exibição."
+            atencao="Se travar, ele volta pra fila sozinho depois de 2 horas. Se o comercial nascer e você não quiser, tire do ar pelo Catálogo."
+          />
           <span v-if="j.error" class="err small job-erro">{{ j.error }}</span>
         </div>
       </section>
@@ -2994,8 +3008,8 @@ onBeforeUnmount(() => clearInterval(poll))
           </button>
           <Ajuda
             titulo="Sugerir com IA"
-            texto="Manda os ids e títulos atuais do lote inteiro pra IA numa chamada só, junto com o contexto que você escreveu, e ela devolve título, série e episódio pra cada um. Nada é salvo automaticamente: os campos ficam preenchidos e você salva linha a linha."
-            atencao="Isto SOBRESCREVE o que já estiver digitado nos campos. O selo 'IA 80%' é a confiança que ela mesma declarou — confira os de confiança baixa."
+            texto="Manda os ids e títulos atuais pra IA numa chamada só, junto com o contexto que você escreveu, e ela devolve título, série e episódio pra cada um. Nada é salvo automaticamente: os campos ficam preenchidos e você salva linha a linha."
+            atencao="Vão no máximo 40 por vez — com a lista maior que isso, clique de novo depois de salvar os primeiros. Isto SOBRESCREVE o que já estiver digitado. O selo 'IA 80%' é a confiança que ela mesma declarou."
           />
         </div>
         <div v-for="m in aNomear" :key="m.id" class="nomear-row">

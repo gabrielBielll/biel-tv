@@ -30,7 +30,7 @@ const aberto = ref(false)
 const fixado = ref(false)
 const botao = ref<HTMLButtonElement | null>(null)
 const balao = ref<HTMLElement | null>(null)
-const pos = ref({ top: 0, left: 0, larg: 300, acima: false })
+const pos = ref({ top: 0, left: 0, larg: 300, alt: 340, acima: false })
 let timer: ReturnType<typeof setTimeout> | undefined
 
 function posiciona() {
@@ -39,9 +39,19 @@ function posiciona() {
   const r = el.getBoundingClientRect()
   const larg = Math.min(props.largura, window.innerWidth - 24)
   const left = Math.max(12, Math.min(r.left + r.width / 2 - larg / 2, window.innerWidth - larg - 12))
-  // sem espaço embaixo (linha no rodapé da tela) → o balão sobe
-  const acima = window.innerHeight - r.bottom < 170 && r.top > 170
-  pos.value = { top: acima ? r.top - 8 : r.bottom + 8, left, larg, acima }
+  // Escolhe o lado com mais espaço e limita a altura ao que couber ali: um
+  // texto longo perto do rodapé (ou do topo, quando sobe) ficaria cortado se a
+  // altura máxima fosse fixa.
+  const abaixo = window.innerHeight - r.bottom - 16
+  const acimaDisp = r.top - 16
+  const acima = abaixo < 200 && acimaDisp > abaixo
+  pos.value = {
+    top: acima ? r.top - 8 : r.bottom + 8,
+    left,
+    larg,
+    alt: Math.max(120, Math.min(340, acima ? acimaDisp : abaixo)),
+    acima,
+  }
 }
 
 function abre() {
@@ -74,9 +84,18 @@ function foraDaAjuda(ev: Event) {
   const alvo = ev.target as Node
   if (!botao.value?.contains(alvo) && !balao.value?.contains(alvo)) fecha(true)
 }
-const aoRolar = () => fecha(true)             // a página rolou: o balão perdeu a âncora
-const aoTeclar = (ev: KeyboardEvent) => {     // Esc no documento: fecha mesmo aberto por hover
-  if (ev.key === 'Escape' && aberto.value) fecha(true, true)
+// a página rolou: o balão perdeu a âncora. Rolar DENTRO do próprio balão (ele
+// tem overflow) não conta — o listener é em captura e pegaria esse também.
+const aoRolar = (ev: Event) => {
+  if (balao.value?.contains(ev.target as Node)) return
+  fecha(true)
+}
+// Esc no documento, pra fechar também o balão aberto por hover. Só devolve o
+// foco quando ele estava no próprio "?" — senão Esc roubaria o cursor de quem
+// está digitando num campo com um balão aberto ao lado.
+const aoTeclar = (ev: KeyboardEvent) => {
+  if (ev.key !== 'Escape' || !aberto.value) return
+  fecha(true, document.activeElement === botao.value)
 }
 
 function escuta(liga: boolean) {
@@ -115,7 +134,7 @@ onBeforeUnmount(() => { clearTimeout(timer); escuta(false) })
       role="tooltip"
       class="ajuda-balao"
       :class="{ acima: pos.acima }"
-      :style="{ top: `${pos.top}px`, left: `${pos.left}px`, width: `${pos.larg}px` }"
+      :style="{ top: `${pos.top}px`, left: `${pos.left}px`, width: `${pos.larg}px`, maxHeight: `${pos.alt}px` }"
       @mouseenter="segura"
       @mouseleave="fechaComAtraso"
     >
@@ -148,7 +167,7 @@ onBeforeUnmount(() => { clearTimeout(timer); escuta(false) })
   background: #12121a; border: 1px solid var(--line); border-radius: 10px;
   padding: 10px 12px; box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
   font-size: 12.5px; line-height: 1.5; color: var(--text);
-  max-height: min(60vh, 340px); overflow: auto;
+  overflow: auto; /* a altura máxima vem calculada, do espaço que sobra na tela */
 }
 .ajuda-balao.acima { transform: translateY(-100%); }
 .ajuda-titulo { font-weight: 700; margin-bottom: 4px; }
