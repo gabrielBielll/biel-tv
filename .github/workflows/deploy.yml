@@ -13,6 +13,15 @@ name: deploy
 
 on:
   workflow_dispatch:
+  # A main é gerenciada de outra máquina (divergiu) e o workflow_dispatch exige
+  # o arquivo na branch default — então a feat/playback dispara o deploy no
+  # próprio push. Quando a feature entrar na main, o workflow_dispatch já vale.
+  push:
+    branches: [feat/playback]
+    paths:
+      - 'apps/stream/**'
+      - 'packages/db/**'
+      - '.github/workflows/deploy.yml'
 
 concurrency:
   group: deploy-worker
