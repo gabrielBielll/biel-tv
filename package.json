@@ -31,7 +31,8 @@
     "verify:nomear": "node scripts/verify-nomear.mjs",
     "verify:marcador": "node scripts/verify-marcador.mjs",
     "verify:link": "node scripts/verify-link.mjs",
-    "verify:playlist": "node scripts/verify-playlist.mjs"
+    "verify:playlist": "node scripts/verify-playlist.mjs",
+    "verify:playback": "node scripts/verify-playback.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

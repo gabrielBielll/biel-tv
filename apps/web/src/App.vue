@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ThePlayer from './components/ThePlayer.vue'
-import { coalesce, fetchEpg, hm, nowAndNext, type Program } from './lib/epg'
+import { coalesce, fetchEpg, hm, isReplayable, nowAndNext, vodUrl, type Program } from './lib/epg'
 
 // Em produção cross-origin, defina VITE_API_BASE na build (URL do Worker);
 // em dev o proxy do Vite resolve, e same-origin funciona com ''.
@@ -20,8 +20,12 @@ const cur = computed(() => channels.value.find((c) => c.id === canal.value))
 const liveUrl = computed(() => `${API}/live/${canal.value}`)
 
 const programs = ref<Program[]>([])
+const watching = ref<Program | null>(null) // reprise em curso (null = ao vivo)
+const HISTORY = 7 * 24 * 3600 // 7 dias de histórico no guia (catch-up)
 const erro = ref('')
 const now = ref(Date.now() / 1000)
+const guideRef = ref<HTMLOListElement>()
+let scrolledOnce = false // rola o guia até o "agora" 1x por canal (histórico fica acima)
 let clockOffset = 0
 let tick: ReturnType<typeof setInterval> | undefined
 let poll: ReturnType<typeof setInterval> | undefined
@@ -43,9 +47,13 @@ async function loadChannels() {
 async function load() {
   if (!canal.value) return
   try {
-    const data = await fetchEpg(API, canal.value)
+    const data = await fetchEpg(API, canal.value, { past: HISTORY, future: 24 * 3600 })
     clockOffset = data.now - Date.now() / 1000
     programs.value = coalesce(data.items)
+    if (!scrolledOnce) {
+      scrolledOnce = true
+      scrollToNow()
+    }
     erro.value = ''
   } catch (e) {
     erro.value = `não consegui carregar a programação (${(e as Error).message})`
@@ -61,6 +69,8 @@ function trocar(id: string) {
 
 watch(canal, () => {
   programs.value = []
+  watching.value = null
+  scrolledOnce = false
   vt.value = null
   load()
   loadVotaton()
@@ -90,7 +100,36 @@ const progress = computed(() => {
   if (!c) return 0
   return Math.min(100, ((now.value - c.start) / (c.end - c.start)) * 100)
 })
-const guide = computed(() => programs.value.filter((p) => p.end > now.value).slice(0, 40))
+// Guia com histórico: do mais antigo retido (7d) até o fim da janela futura.
+const guide = computed(() =>
+  programs.value.filter((p) => p.end > now.value - HISTORY).slice(0, 300),
+)
+
+const fmtDay = new Intl.DateTimeFormat('pt-BR', {
+  timeZone: 'America/Sao_Paulo',
+  day: '2-digit',
+  month: '2-digit',
+})
+const dayStr = (unix: number) => fmtDay.format(new Date(unix * 1000))
+// rótulo de dia só quando o item não é de hoje — separa o histórico no guia
+const dayTag = (unix: number, ref: number) => (dayStr(unix) === dayStr(ref) ? '' : dayStr(unix))
+
+// índice do 1º programa que ainda não terminou (no ar, ou o próximo) — âncora do scroll
+const nowIndex = computed(() => Math.max(0, guide.value.findIndex((p) => p.end > now.value)))
+async function scrollToNow() {
+  await nextTick()
+  const ol = guideRef.value
+  const el = ol?.querySelector<HTMLElement>('.guide-item.now-anchor')
+  if (ol && el) ol.scrollTop = Math.max(0, el.offsetTop - ol.offsetTop - 8)
+}
+
+function assistir(p: Program) {
+  if (!isReplayable(p, now.value)) return // futuro ainda não dá pra ver
+  watching.value = p
+}
+function voltarAoVivo() {
+  watching.value = null
+}
 
 const clock = computed(() =>
   new Intl.DateTimeFormat('pt-BR', {
@@ -173,10 +212,22 @@ const vtCountdown = computed(() => {
 
     <main class="layout">
       <section>
-        <ThePlayer v-if="cur?.has_content" :key="canal" :src="liveUrl" />
+        <ThePlayer
+          v-if="cur?.has_content"
+          :key="watching ? 'vod:' + watching.media_id + watching.start : 'live:' + canal"
+          :src="watching ? vodUrl(API, watching.media_id) : liveUrl"
+          :mode="watching ? 'vod' : 'live'"
+          @back-to-live="voltarAoVivo"
+        />
         <div v-else class="player-off">
           <div class="off-nome">{{ cur?.nome ?? 'Biel TV' }}</div>
           <div class="off-msg">em breve nesta TV 📺</div>
+        </div>
+
+        <div v-if="watching" class="reprise-bar">
+          <span class="tag tag-reprise">REPRISE</span>
+          <span class="reprise-title">{{ watching.title }} · do início</span>
+          <button class="reprise-back" @click="voltarAoVivo">voltar ao vivo</button>
         </div>
 
         <div class="now-panel" v-if="onAir.current">
@@ -251,15 +302,25 @@ const vtCountdown = computed(() => {
         </div>
 
         <h2>Programação</h2>
-        <ol class="guide">
+        <ol ref="guideRef" class="guide">
           <li
-            v-for="p in guide"
+            v-for="(p, idx) in guide"
             :key="p.media_id + p.start"
             class="guide-item"
-            :class="{ 'on-air': onAir.current && p.start === onAir.current.start }"
+            :class="{
+              'on-air': onAir.current && p.start === onAir.current.start,
+              'now-anchor': idx === nowIndex,
+              replayable: isReplayable(p, now),
+              watching: watching && watching.media_id === p.media_id && watching.start === p.start,
+            }"
+            @click="assistir(p)"
           >
-            <span class="g-time">{{ hm(p.start) }}</span>
+            <span class="g-time">
+              <span v-if="dayTag(p.start, now)" class="g-day">{{ dayTag(p.start, now) }}</span>
+              {{ hm(p.start) }}
+            </span>
             <span class="g-title">{{ p.title }}</span>
+            <span v-if="isReplayable(p, now)" class="tag tag-play">▶ do início</span>
             <span class="tag">{{ TIPO_LABEL[p.tipo] ?? p.tipo }}</span>
           </li>
         </ol>
@@ -481,6 +542,76 @@ const vtCountdown = computed(() => {
 }
 
 .guide-item.on-air {
+  border-color: var(--accent);
+}
+
+.guide-item.replayable {
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.guide-item.replayable:hover {
+  border-color: var(--accent);
+  background: var(--panel-2);
+}
+
+.guide-item.watching {
+  border-color: var(--accent);
+  background: var(--panel-2);
+}
+
+.g-day {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
+
+.tag-play {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* ── Barra de reprise (catch-up) ─────────────────────────────────────── */
+.reprise-bar {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  padding: 12px 16px;
+}
+
+.tag-reprise {
+  color: #fff;
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.reprise-title {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reprise-back {
+  margin-left: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.reprise-back:hover {
   border-color: var(--accent);
 }
 

@@ -22,6 +22,9 @@ export interface ScheduleReport {
 }
 
 const DAY = 86400
+// Quanto da grade PASSADA guardar (catch-up/playback). O /vod toca por media_id
+// independente disto; este teto é a profundidade do HISTÓRICO no guia do /epg.
+const EPG_RETENTION = 7 * DAY
 
 // Conversão de fuso num lugar só (Brasil sem horário de verão desde 2019 →
 // offset fixo -03:00). Usadas pelas âncoras de grade (slots fixos em hora local).
@@ -598,7 +601,9 @@ export async function runScheduler(
     reports.push(await scheduleChannel(env, c.id, opts.hours ?? 48, opts.rebuild ?? false))
   }
   const now = Math.floor(Date.now() / 1000)
-  await env.DB.prepare('DELETE FROM epg_virtual WHERE end_time_virtual < ?1').bind(now - DAY).run()
+  await env.DB.prepare('DELETE FROM epg_virtual WHERE end_time_virtual < ?1')
+    .bind(now - EPG_RETENTION)
+    .run()
   return reports
 }
 

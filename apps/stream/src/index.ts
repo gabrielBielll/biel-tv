@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { SEGMENT_DURATION, SQL_EPG_OVERLAP, type EpgRowWithMedia } from '@bieltv/db'
-import { buildLivePlaylist } from './playlist'
+import { buildLivePlaylist, buildVodPlaylist } from './playlist'
 import { revisao } from './revisao'
 import { admin } from './admin'
 import { votaton } from './votaton'
@@ -49,6 +49,13 @@ const CORS = { 'access-control-allow-origin': '*' } as const
 const WINDOW_BEHIND = 4 // slots passados na janela…
 const WINDOW_AHEAD = 1 // …+ 1 futuro (já pré-cortado): encurta o delay percebido
 
+const DAY = 86400
+// Teto do histórico no /epg: espelha EPG_RETENTION do scheduler (a grade passada
+// só existe até esse limite — pedir mais que isso só devolveria janela vazia).
+const EPG_HISTORY_MAX = 7 * DAY
+// Teto do futuro: o agendador estende a grade ~48h à frente.
+const EPG_FUTURE_MAX = 2 * DAY
+
 function nowFrom(c: Context<{ Bindings: Bindings }>): number {
   const at = c.req.query('at')
   if (at && c.env.ALLOW_TIME_TRAVEL === '1') {
@@ -56,6 +63,14 @@ function nowFrom(c: Context<{ Bindings: Bindings }>): number {
     if (Number.isFinite(n) && n > 0) return Math.floor(n)
   }
   return Math.floor(Date.now() / 1000)
+}
+
+// Lê um param de janela (segundos) do query, com default e teto. Valor inválido
+// ou negativo cai no default — mantém o /epg sem params 100% retrocompatível.
+function clampWindow(raw: string | undefined, def: number, max: number): number {
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < 0) return def
+  return Math.min(Math.floor(n), max)
 }
 
 app.get('/health', (c) =>
@@ -87,8 +102,13 @@ app.get('/epg/:canal', async (c) => {
   const canal = c.req.param('canal')
   const now = nowFrom(c)
 
+  // Janela do guia: `past`/`future` (segundos) permitem incluir o histórico
+  // (catch-up). Sem params → now..now+24h (comportamento antigo intacto).
+  const past = clampWindow(c.req.query('past'), 0, EPG_HISTORY_MAX)
+  const future = clampWindow(c.req.query('future'), 24 * 3600, EPG_FUTURE_MAX)
+
   const { results } = await c.env.DB.prepare(SQL_EPG_OVERLAP)
-    .bind(canal, now, now + 24 * 3600)
+    .bind(canal, now - past, now + future)
     .all<EpgRowWithMedia>()
 
   const items = results.map((r) => {
@@ -111,6 +131,35 @@ app.get('/epg/:canal', async (c) => {
   })
 
   return c.json({ canal, now, items }, 200, CORS)
+})
+
+// Playback / catch-up: playlist VOD (finita, com barra de progresso) de uma
+// mídia inteira, começando do zero. O front usa isto quando o espectador clica
+// num programa do histórico. Independe da grade — só precisa da mídia existir.
+app.get('/vod/:mediaId', async (c) => {
+  const mediaId = c.req.param('mediaId')
+
+  const media = await c.env.DB.prepare(
+    `SELECT base_url, path_prefix, segment_count, status
+     FROM media_items WHERE id = ?1`,
+  )
+    .bind(mediaId)
+    .first<{ base_url: string; path_prefix: string; segment_count: number; status: string }>()
+
+  // 'ingesting' ainda não tem todos os segmentos no bucket → não é reprodutível.
+  if (!media || media.status === 'ingesting') {
+    return c.text(`mídia "${mediaId}" indisponível para playback\n`, 404, CORS)
+  }
+
+  const m3u8 = buildVodPlaylist(media)
+  if (!m3u8) return c.text(`mídia "${mediaId}" sem segmentos\n`, 404, CORS)
+
+  return c.body(m3u8, 200, {
+    ...CORS,
+    'content-type': 'application/vnd.apple.mpegurl',
+    // Estático por mídia; cache curto p/ refletir um eventual re-polimento noturno.
+    'cache-control': 'public, max-age=300',
+  })
 })
 
 // Serve segmentos pelo binding R2 — caminho do dev local e fallback.

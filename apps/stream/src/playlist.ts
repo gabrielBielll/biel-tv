@@ -1,12 +1,20 @@
-import { SEGMENT_DURATION, type EpgRowWithMedia } from '@bieltv/db'
+import { SEGMENT_DURATION, type EpgRowWithMedia, type MediaItem } from '@bieltv/db'
 
 const pad5 = (n: number) => String(n).padStart(5, '0')
 
-function segmentUri(row: EpgRowWithMedia, segIdx: number): string {
+/**
+ * URL de um segmento `.ts` a partir dos dados de armazenamento da mídia.
+ * base_url vazia = mesma origem do Worker (rota /media/* lendo o binding R2);
+ * em prod = domínio público do bucket. Compartilhada pelo live e pelo VOD.
+ */
+export function mediaSegmentUri(baseUrl: string, pathPrefix: string, segIdx: number): string {
   const file = `seg${pad5(segIdx)}.ts`
-  const base = row.base_url.replace(/\/+$/, '')
-  // base_url vazia = mesma origem do Worker (rota /media/* lendo o binding R2)
-  return base ? `${base}/${row.path_prefix}/${file}` : `/${row.path_prefix}/${file}`
+  const base = baseUrl.replace(/\/+$/, '')
+  return base ? `${base}/${pathPrefix}/${file}` : `/${pathPrefix}/${file}`
+}
+
+function segmentUri(row: EpgRowWithMedia, segIdx: number): string {
+  return mediaSegmentUri(row.base_url, row.path_prefix, segIdx)
 }
 
 interface WindowEntry {
@@ -75,5 +83,36 @@ export function buildLivePlaylist(
   }
 
   // Sem #EXT-X-ENDLIST: o player trata como transmissão ao vivo.
+  return lines.join('\n') + '\n'
+}
+
+/**
+ * Playlist VOD (catch-up) de uma mídia inteira — do 1º ao último segmento.
+ *
+ * Diferente do live: é FINITA (`#EXT-X-ENDLIST`) e marcada como VOD, então o
+ * player mostra a barra de progresso e permite buscar livremente. Toca o
+ * episódio/filme "limpo" (comerciais são mídias separadas na grade) começando
+ * do zero. Depende só da mídia (não da grade), então vale mesmo pra programa
+ * que já saiu do EPG — é estático e cacheável por conteúdo.
+ */
+export function buildVodPlaylist(
+  media: Pick<MediaItem, 'base_url' | 'path_prefix' | 'segment_count'>,
+): string | null {
+  if (!media.segment_count || media.segment_count < 1) return null
+
+  const lines = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:6',
+    `#EXT-X-TARGETDURATION:${SEGMENT_DURATION}`,
+    '#EXT-X-PLAYLIST-TYPE:VOD',
+    '#EXT-X-MEDIA-SEQUENCE:0',
+  ]
+  for (let i = 0; i < media.segment_count; i++) {
+    lines.push(
+      `#EXTINF:${SEGMENT_DURATION.toFixed(1)},`,
+      mediaSegmentUri(media.base_url, media.path_prefix, i),
+    )
+  }
+  lines.push('#EXT-X-ENDLIST')
   return lines.join('\n') + '\n'
 }
