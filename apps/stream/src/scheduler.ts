@@ -84,7 +84,13 @@ export function montaBlocos(contents: MediaRow[], maxLen: number, rnd: () => num
   // cada série vira uma fila de pedaços (episódios em ordem; pedaços de até
   // maxLen) + "frescor" (menos-tocada = menor last_played, null conta como 0)
   const series = [...porSerie.entries()].map(([chave, eps]) => {
-    const ord = [...eps].sort((a, b) => a.id.localeCompare(b.id))
+    // Menos-tocado primeiro, id como desempate. É o que faz a progressão
+    // PERSISTIR entre montagens: episódios já exibidos (last_played recente)
+    // afundam e os inéditos (0) sobem — sem isto, cada rebuild recomeçava a
+    // temporada do episódio 1. Série nova (tudo 0) sai em ordem de id, igual antes.
+    const ord = [...eps].sort(
+      (a, b) => (a.last_played_at ?? 0) - (b.last_played_at ?? 0) || a.id.localeCompare(b.id),
+    )
     const chunks: MediaRow[][] = []
     for (let i = 0; i < ord.length; i += maxLen) chunks.push(ord.slice(i, i + maxLen))
     return { chave, chunks, i: 0, frescor: Math.min(...eps.map((m) => m.last_played_at ?? 0)) }
@@ -582,9 +588,17 @@ export async function scheduleChannel(
       `INSERT INTO epg_virtual (canal, media_id, start_time_virtual, end_time_virtual, segment_index_start) VALUES ${values}`,
     ).run()
   }
-  for (const [id, ts] of Object.entries(playedAt)) {
-    await env.DB.prepare('UPDATE media_items SET last_played_at = ?2 WHERE id = ?1')
-      .bind(id, ts).run()
+  // Batela os UPDATE de last_played_at (antes: 1 query D1 por conteúdo,
+  // sequencial — o grosso dos ~30s ao reencher uma grade zerada). Isso fazia o
+  // reseed estourar o orçamento do cron (grade não se curava sozinha) e, pior, o
+  // Worker às vezes morria antes de gravar → os episódios nunca avançavam.
+  const playedEntries = Object.entries(playedAt)
+  for (let i = 0; i < playedEntries.length; i += 50) {
+    await env.DB.batch(
+      playedEntries.slice(i, i + 50).map(([id, ts]) =>
+        env.DB.prepare('UPDATE media_items SET last_played_at = ?2 WHERE id = ?1').bind(id, ts),
+      ),
+    )
   }
   return { canal, added: rows.length, until: t }
 }
@@ -598,7 +612,14 @@ export async function runScheduler(
     : (await env.DB.prepare('SELECT id FROM channels ORDER BY ordem, id').all<{ id: string }>()).results
   const reports: ScheduleReport[] = []
   for (const c of canais) {
-    reports.push(await scheduleChannel(env, c.id, opts.hours ?? 48, opts.rebuild ?? false))
+    // Isola cada canal: um lento/quebrado não pode abortar o loop e deixar os
+    // seguintes sem extensão (era assim que jetix/disney passavam fome quando o
+    // orçamento do cron estourava no meio e a grade deles zerava).
+    try {
+      reports.push(await scheduleChannel(env, c.id, opts.hours ?? 48, opts.rebuild ?? false))
+    } catch (e) {
+      reports.push({ canal: c.id, added: 0, skipped: String(e) })
+    }
   }
   const now = Math.floor(Date.now() / 1000)
   await env.DB.prepare('DELETE FROM epg_virtual WHERE end_time_virtual < ?1')

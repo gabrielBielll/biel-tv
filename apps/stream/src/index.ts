@@ -182,7 +182,11 @@ export default {
   // pra 48h. A camada editorial (Gemini) entra por cima disso na fase 10.
   async scheduled(_event: ScheduledController, env: Bindings, ctx: ExecutionContext) {
     ctx.waitUntil((async () => {
-      const rec = await reconcileAndRepair(env)
+      // Blindagem: falha no reconcile (ex.: R2 fora) não pode impedir o
+      // agendamento das grades — senão um erro aqui deixa os canais sem extensão
+      // e a grade acaba zerando (404 "fora do ar").
+      let rec: unknown = null
+      try { rec = await reconcileAndRepair(env) } catch (e) { rec = String(e) }
       // 10a: o diretor editorial decide a noite ANTES do agendador estender
       // a grade — falha do LLM nunca derruba o cron (rotação segura tudo)
       let plano: unknown = null

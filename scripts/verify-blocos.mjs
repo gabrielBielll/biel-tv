@@ -85,5 +85,20 @@ const flat = (blocos) => blocos.flatMap((b) => b.map((m) => m.id))
     `1º bloco: ${serieDe(blocos[0])}`)
 }
 
+// ── 7. progressão: episódios já exibidos afundam; os inéditos lideram ────────
+{
+  // série de 5 eps onde 01-02 já tocaram (last_played recente) e 03-05 não (0).
+  // Sem a correção, sairiam sempre 01,02,03,... (id puro) e a temporada
+  // recomeçava do zero a cada montagem. Com ela, os inéditos (03,04,05) vêm 1º.
+  const S = [
+    ep('s_01', 'S', 500), ep('s_02', 'S', 600),
+    ep('s_03', 'S', 0), ep('s_04', 'S', 0), ep('s_05', 'S', 0),
+  ]
+  const ordem = flat(montaBlocos(S, 2, rng(4)))
+  const ineditosPrimeiro = ordem.slice(0, 3).join(',') === 's_03,s_04,s_05'
+  check('progressão: episódios inéditos lideram (não reinicia a temporada)',
+    ineditosPrimeiro, ordem.join(' '))
+}
+
 console.log(`\n${fail === 0 ? '🎉' : '💥'} ${pass}/${pass + fail} checagens passaram`)
 process.exit(fail === 0 ? 0 : 1)

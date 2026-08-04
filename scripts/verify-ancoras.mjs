@@ -51,7 +51,9 @@ function makeDB({ channel, media, slots = [], events = [], cues = {} }) {
     }
     return api
   }
-  return { db: { prepare }, epg }
+  // D1 real tem batch(stmts) (round-trip único); no mock só roda cada um.
+  const batch = async (stmts) => Promise.all(stmts.map((s) => s.run()))
+  return { db: { prepare, batch }, epg }
 }
 
 const ep = (id, series_id) => ({ id, tipo: 'episodio', duracao_seg: 1200, segment_count: 120, last_played_at: 0, series_id })
