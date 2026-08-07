@@ -297,10 +297,13 @@ export async function scheduleChannel(
   // repetiria em ~48h o que acabou de entrar. Conta só pra ORDENAÇÃO desta run
   // (mutação local; nada é gravado). No rebuild o futuro foi deletado acima ⇒
   // o pool volta a ordenar pela exibição real: continua de onde o AR parou.
+  // SEM filtro de canal de propósito: mídia compartilhada (ex.: padrinhos no
+  // jetix E na disney) continua de onde o OUTRO canal parou, em vez de tocar o
+  // mesmo episódio nos dois no mesmo dia — série sindicada, como TV real.
   const { results: futRows } = await env.DB.prepare(
     `SELECT media_id id, MAX(start_time_virtual) t FROM epg_virtual
-     WHERE canal = ?1 AND start_time_virtual > ?2 GROUP BY media_id`,
-  ).bind(canal, now).all<{ id: string; t: number }>()
+     WHERE start_time_virtual > ?1 GROUP BY media_id`,
+  ).bind(now).all<{ id: string; t: number }>()
   const futuroDe = new Map(futRows.map((r) => [r.id, r.t]))
   for (const m of contents) {
     const f = futuroDe.get(m.id)
