@@ -22,7 +22,7 @@ const spHoraToEpoch = (date, hhmm) => Math.floor(Date.parse(`${date}T${hhmm}:00-
 
 // D1 mockado: responde as queries do scheduleChannel por trecho de SQL e captura
 // os INSERT de epg_virtual (interpolados, sem bind) pra reconstruir a grade.
-function makeDB({ channel, media, slots = [], events = [], cues = {} }) {
+function makeDB({ channel, media, slots = [], events = [], cues = {}, covEnd = null, gapEnd = null }) {
   const epg = []
   const cueRows = Object.entries(cues).flatMap(([media_id, ts]) => ts.map((time_seg) => ({ media_id, time_seg })))
   const prepare = (sql) => {
@@ -33,11 +33,14 @@ function makeDB({ channel, media, slots = [], events = [], cues = {} }) {
         if (/FROM channel_events/.test(sql)) return { results: events }
         if (/FROM channel_slots/.test(sql)) return { results: slots }
         if (/FROM media_cue_points/.test(sql)) return { results: cueRows }
-        return { results: [] } // directives, media_promises
+        return { results: [] } // directives, media_promises, futuro agendado
       },
       first: async () => {
         if (/FROM channels WHERE id/.test(sql)) return channel
-        if (/SELECT MAX\(end_time_virtual\)/.test(sql)) return { m: null }
+        // fim GLOBAL do epg (detector de downtime) — alias g, sem filtro de futuro
+        if (/MAX\(end_time_virtual\) g/.test(sql)) return { g: gapEnd }
+        // cobertura futura (alias m) — covEnd permite começar a run num instante exato
+        if (/SELECT MAX\(end_time_virtual\)/.test(sql)) return { m: covEnd }
         return null // onAir vazio
       },
       run: async () => {
@@ -56,7 +59,7 @@ function makeDB({ channel, media, slots = [], events = [], cues = {} }) {
   return { db: { prepare, batch }, epg }
 }
 
-const ep = (id, series_id) => ({ id, tipo: 'episodio', duracao_seg: 1200, segment_count: 120, last_played_at: 0, series_id })
+const ep = (id, series_id, lp = 0) => ({ id, tipo: 'episodio', duracao_seg: 1200, segment_count: 120, last_played_at: lp, series_id })
 const ad = (id, dur) => ({ id, tipo: 'comercial', duracao_seg: dur, segment_count: dur / 10, last_played_at: 0, series_id: null })
 const CANAL = { break_target_seg: 120, comerciais_fieis: 1, episodios_por_bloco: 2 }
 const CATALOGO = [
@@ -205,6 +208,49 @@ const A = spHoraToEpoch(spDateStr(base), HORA) // unix exato da âncora
   const rep = await scheduleChannel({ DB: db }, 'ch', 3, true)
   check('além da grace: perdida é CONTADA no report (nada silencioso)',
     rep.ancorasPerdidas === 1, `ancorasPerdidas=${rep.ancorasPerdidas ?? 0}`)
+}
+
+// ── 8. progressão da âncora: continua do episódio SEGUINTE ao último exibido ─
+//    (regressão: o cursor zerava a cada run e a série ancorada repetia os
+//     primeiros episódios pra sempre). covEnd=A ⇒ a run começa exatamente na
+//     âncora, sem rodízio antes — determinístico.
+{
+  const CAT = [
+    ep('aaa_01', 'aaa'), ep('aaa_02', 'aaa'),
+    ep('bbb_01', 'bbb', 1000), ep('bbb_02', 'bbb', 2000), ep('bbb_03', 'bbb', 0),
+    ad('ad_1', 20), ad('ad_2', 30),
+  ]
+  const { db, epg } = makeDB({
+    channel: CANAL, media: CAT, covEnd: A,
+    slots: [{ series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 }],
+  })
+  await scheduleChannel({ DB: db }, 'ch', 3, false)
+  const rows = grade(epg)
+  const naAncora = rows.find((r) => r.start === A)
+  check('progressão: âncora continua do seguinte ao último exibido (bbb_03, não bbb_01)',
+    naAncora?.media_id === 'bbb_03', naAncora ? naAncora.media_id : 'nada em A')
+}
+
+// ── 9. downtime CONTA: ocorrências de âncora perdidas no buraco avançam o cursor
+//    (escolha do Gabriel: "avançar como se tivesse passado no ar"). Grade morta
+//    há 2 dias (gapEnd = agora-2d) e slot diário ⇒ 2 ocorrências perdidas ⇒ a
+//    âncora de hoje toca bbb_03 (pulou 01 e 02, que "teriam passado").
+{
+  const DAY = 86400
+  const CAT = [
+    ep('aaa_01', 'aaa'), ep('aaa_02', 'aaa'),
+    ep('bbb_01', 'bbb'), ep('bbb_02', 'bbb'), ep('bbb_03', 'bbb'),
+    ad('ad_1', 20), ad('ad_2', 30),
+  ]
+  const { db, epg } = makeDB({
+    channel: CANAL, media: CAT, covEnd: A, gapEnd: agora - 2 * DAY,
+    slots: [{ series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 }],
+  })
+  await scheduleChannel({ DB: db }, 'ch', 3, false)
+  const rows = grade(epg)
+  const naAncora = rows.find((r) => r.start === A)
+  check('downtime conta: 2 ocorrências perdidas ⇒ âncora toca bbb_03',
+    naAncora?.media_id === 'bbb_03', naAncora ? naAncora.media_id : 'nada em A')
 }
 
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)

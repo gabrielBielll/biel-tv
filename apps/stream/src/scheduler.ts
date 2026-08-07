@@ -291,6 +291,31 @@ export async function scheduleChannel(
   const target = now + hours * 3600
   if (t >= target) return { canal, added: 0, until: t }
 
+  // Progressão persistente (pedido do Gabriel, ago/2026): o last_played_at só é
+  // GRAVADO pela exibição real (commitAired). Mas o que JÁ está agendado no
+  // futuro da grade não pode "parecer inédito" na extensão — senão o append
+  // repetiria em ~48h o que acabou de entrar. Conta só pra ORDENAÇÃO desta run
+  // (mutação local; nada é gravado). No rebuild o futuro foi deletado acima ⇒
+  // o pool volta a ordenar pela exibição real: continua de onde o AR parou.
+  const { results: futRows } = await env.DB.prepare(
+    `SELECT media_id id, MAX(start_time_virtual) t FROM epg_virtual
+     WHERE canal = ?1 AND start_time_virtual > ?2 GROUP BY media_id`,
+  ).bind(canal, now).all<{ id: string; t: number }>()
+  const futuroDe = new Map(futRows.map((r) => [r.id, r.t]))
+  for (const m of contents) {
+    const f = futuroDe.get(m.id)
+    if (f && f > (m.last_played_at ?? 0)) m.last_played_at = f
+  }
+
+  // Downtime "conta como se tivesse passado": se a grade ficou vazia entre o fim
+  // da última linha e agora, as ocorrências de âncora dentro do buraco avançam o
+  // cursor da série — igual TV de verdade, que não pausa quando você perde o sinal.
+  const ult = await env.DB.prepare(
+    'SELECT MAX(end_time_virtual) g FROM epg_virtual WHERE canal = ?1',
+  ).bind(canal).first<{ g: number | null }>()
+  const gapStart = ult?.g ?? t
+  const perdidasNoGap = new Map<string, number>() // series_id → episódios "que passaram"
+
   // Materializa as âncoras em ocorrências concretas na janela [t, target]: pra
   // cada slot ativo, o unix de cada dia-da-semana casado na hora local. Guardado:
   // só entra série com episódio pronto e cuja hora não caia dentro de uma maratona
@@ -300,15 +325,25 @@ export async function scheduleChannel(
   const ancoras: Ancora[] = []
   if (slotsAtivos.length > 0) {
     const vistos = new Set<string>()
-    for (let d = t - DAY; d <= target + DAY; d += DAY) {
+    for (let d = Math.min(gapStart, t) - DAY; d <= target + DAY; d += DAY) {
       const dia = spDateStr(d)
       for (const s of slotsAtivos) {
         const A = spHoraToEpoch(dia, s.hora)
         if (A == null) continue
         const As = Math.floor(A / 10) * 10
-        if (As < t || As >= target) continue
         if (!s.dias.includes(spWeekdayIso(As))) continue
         if (!seriesComEp.has(s.series_id)) continue
+        // ocorrência dentro do buraco (grade vazia até agora): teria passado —
+        // avança o cursor sem agendar nada
+        if (As >= gapStart && As < Math.min(t, now)) {
+          const chave = `gap|${As}|${s.series_id}`
+          if (!vistos.has(chave)) {
+            vistos.add(chave)
+            perdidasNoGap.set(s.series_id, (perdidasNoGap.get(s.series_id) ?? 0) + s.episodios)
+          }
+          continue
+        }
+        if (As < t || As >= target) continue
         if (eventos.some((e) => As >= e.start_at - 300 && As < e.end_at)) continue
         const chave = `${As}|${s.series_id}`
         if (vistos.has(chave)) continue
@@ -332,7 +367,6 @@ export async function scheduleChannel(
   let ei = 0 // qual episódio dentro do bloco atual
   let lastAd = ''
   const rows: Array<[string, string, number, number, number]> = []
-  const playedAt: Record<string, number> = {}
 
   const push = (m: string, s: number, e: number, seg: number) => rows.push([canal, m, s, e, seg])
 
@@ -425,7 +459,9 @@ export async function scheduleChannel(
   // agenda um conteúdo com seus breaks nos cue points (pods do MEIO do
   // programa nunca levam "a seguir" — o próximo bloco é a continuação dele)
   const agendaConteudo = (c: MediaRow, teto = Infinity) => {
-    playedAt[c.id] = t
+    // marca localmente pro rodízio/âncora desta run não repetir; a GRAVAÇÃO do
+    // last_played_at é só na exibição real (commitAired), nunca no planejamento
+    c.last_played_at = t
     const cues = (cuesOf[c.id] ?? []).filter((x) => x > 0 && x < c.duracao_seg)
     let pos = 0
     for (const cue of cues) {
@@ -498,12 +534,25 @@ export async function scheduleChannel(
   // com breaks entre eles no universo da série. Respeita exclusões (usa `contents`).
   const episodiosDaSerie = (sid: string) =>
     contents.filter((m) => m.series_id === sid).sort((a, b) => a.id.localeCompare(b.id))
+  // Cursor PERSISTENTE da âncora (antes zerava a cada run → a série ancorada
+  // repetia os primeiros episódios pra sempre): continua do seguinte ao último
+  // exibido/agendado (maior last_played_at — inclui o futuro da grade via
+  // futuroDe) e soma os episódios "que passaram" no downtime (perdidasNoGap).
   const ancCursor = new Map<string, number>()
+  const ancCursorInit = (sid: string, eps: MediaRow[]): number => {
+    let best = -1
+    let bestLp = 0
+    for (let i = 0; i < eps.length; i++) {
+      const lp = eps[i].last_played_at ?? 0
+      if (lp > bestLp) { bestLp = lp; best = i }
+    }
+    return best + 1 + (perdidasNoGap.get(sid) ?? 0) // nunca exibida → 0 (+ gap)
+  }
   const scheduleAncora = (a: Ancora): boolean => {
     const eps = episodiosDaSerie(a.series_id)
     if (eps.length === 0) return false // série sumiu do pool: âncora ignorada
     for (let k = 0; k < a.episodios; k++) {
-      const i = ancCursor.get(a.series_id) ?? 0
+      const i = ancCursor.get(a.series_id) ?? ancCursorInit(a.series_id, eps)
       ancCursor.set(a.series_id, i + 1)
       const ep = eps[i % eps.length]
       if (k > 0) breakPod(ep.series_id) // intervalo entre episódios do bloco (universo da série)
@@ -607,18 +656,8 @@ export async function scheduleChannel(
       `INSERT INTO epg_virtual (canal, media_id, start_time_virtual, end_time_virtual, segment_index_start) VALUES ${values}`,
     ).run()
   }
-  // Batela os UPDATE de last_played_at (antes: 1 query D1 por conteúdo,
-  // sequencial — o grosso dos ~30s ao reencher uma grade zerada). Isso fazia o
-  // reseed estourar o orçamento do cron (grade não se curava sozinha) e, pior, o
-  // Worker às vezes morria antes de gravar → os episódios nunca avançavam.
-  const playedEntries = Object.entries(playedAt)
-  for (let i = 0; i < playedEntries.length; i += 50) {
-    await env.DB.batch(
-      playedEntries.slice(i, i + 50).map(([id, ts]) =>
-        env.DB.prepare('UPDATE media_items SET last_played_at = ?2 WHERE id = ?1').bind(id, ts),
-      ),
-    )
-  }
+  // (o carimbo de last_played_at saiu daqui de propósito: planejar ≠ exibir.
+  //  Quem grava é o commitAired, quando o relógio de fato passa pela linha.)
   return {
     canal,
     added: rows.length,
@@ -634,6 +673,9 @@ export async function runScheduler(
   const canais = opts.canal
     ? [{ id: opts.canal }]
     : (await env.DB.prepare('SELECT id FROM channels ORDER BY ordem, id').all<{ id: string }>()).results
+  // exibição real primeiro: carimba o que o relógio já cobriu ANTES de planejar
+  // (best-effort — manter a TV no ar vem antes do carimbo)
+  try { await commitAired(env) } catch { /* próximo run recupera */ }
   const reports: ScheduleReport[] = []
   for (const c of canais) {
     // Isola cada canal: um lento/quebrado não pode abortar o loop e deixar os
@@ -650,6 +692,34 @@ export async function runScheduler(
     .bind(now - EPG_RETENTION)
     .run()
   return reports
+}
+
+/**
+ * Carimbo da EXIBIÇÃO REAL: last_played_at = start da linha mais recente do
+ * EPG que o relógio já cobriu (start <= agora), por episódio/filme. É a ÚNICA
+ * fonte de progressão — o planejamento não grava nada. Assim a posição de cada
+ * série sobrevive a rebuild/queda: o que foi ao ar conta, o que só estava
+ * planejado não. Idempotente e monotônico (nunca anda pra trás).
+ */
+export async function commitAired(env: Env): Promise<number> {
+  const now = Math.floor(Date.now() / 1000)
+  const { results } = await env.DB.prepare(
+    `SELECT e.media_id id, MAX(e.start_time_virtual) t, m.last_played_at lp
+     FROM epg_virtual e JOIN media_items m ON m.id = e.media_id
+     WHERE e.start_time_virtual <= ?1 AND m.tipo IN ('episodio','filme')
+     GROUP BY e.media_id`,
+  ).bind(now).all<{ id: string; t: number; lp: number | null }>()
+  const mudou = results.filter((r) => r.lp == null || r.lp < r.t)
+  for (let i = 0; i < mudou.length; i += 50) {
+    await env.DB.batch(
+      mudou.slice(i, i + 50).map((r) =>
+        env.DB.prepare(
+          'UPDATE media_items SET last_played_at = ?2 WHERE id = ?1 AND (last_played_at IS NULL OR last_played_at < ?2)',
+        ).bind(r.id, r.t),
+      ),
+    )
+  }
+  return mudou.length
 }
 
 /**
