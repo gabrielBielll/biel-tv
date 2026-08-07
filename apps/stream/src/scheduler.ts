@@ -19,6 +19,8 @@ export interface ScheduleReport {
   added: number
   skipped?: string
   until?: number
+  // âncoras descartadas por atraso além da tolerância (nunca silencioso)
+  ancorasPerdidas?: number
 }
 
 const DAY = 86400
@@ -511,18 +513,31 @@ export async function scheduleChannel(
     return true
   }
 
+  // Tolerância pra âncora ATRASADA (bug corrida maluca, ago/2026): se o bloco
+  // anterior estourou o horário — ou duas âncoras caem no MESMO minuto — a
+  // seguinte NÃO é descartada: dispara atrasada, como TV de verdade quando o
+  // programa anterior passa da hora. Só cai quem atrasar além da GRACE, e cai
+  // CONTADO no report (nada de sumiço silencioso).
+  const ANCORA_GRACE = 45 * 60
+  let ancorasPerdidas = 0
+
   while (t < target) {
-    // âncora vencida ou dentro de maratona → consome sem tocar (o evento manda)
+    // âncora atrasada demais (além da grace) ou dentro de maratona → consome
+    // sem tocar (a perdida é contada; a de maratona é intencional — evento manda)
     while (
       ancIdx < ancoras.length &&
-      (ancoras[ancIdx].start < t - 5 ||
+      (ancoras[ancIdx].start < t - ANCORA_GRACE ||
         eventos.some((e) => ancoras[ancIdx].start >= e.start_at - 300 && ancoras[ancIdx].start < e.end_at))
-    ) ancIdx++
+    ) {
+      if (ancoras[ancIdx].start < t - ANCORA_GRACE) ancorasPerdidas++
+      ancIdx++
+    }
     let anc: Ancora | null = ancIdx < ancoras.length ? ancoras[ancIdx] : null
     // maratona agendada cobrindo este instante? o evento manda na grade
     const ev = eventos.find((e) => t >= e.start_at - 300 && t < e.end_at)
 
-    // chegou a hora da âncora (e sem maratona no ar)? toca o bloco fixo NA HORA
+    // chegou (ou passou, dentro da grace) a hora da âncora, sem maratona no ar?
+    // toca o bloco fixo — na hora quando pontual, atrasado quando espremido
     if (!ev && anc && t >= anc.start - 5) {
       ancIdx++
       if (scheduleAncora(anc)) continue
@@ -533,8 +548,10 @@ export async function scheduleChannel(
     // teto = hora da próxima âncora: NADA (intervalo, vinheta ou episódio) a
     // ultrapassa, pra a grade fixa começar pontual sem deixar buraco na EPG. Um
     // episódio que a cruzaria é cortado na hora; um intervalo é encurtado. Sem
-    // âncora à vista (ou durante maratona, que manda) = Infinity (comportamento antigo).
-    const teto = !evMedia && anc ? anc.start : Infinity
+    // âncora à vista (ou durante maratona, que manda) = Infinity. Âncora JÁ
+    // atrasada (start <= t, esperando a grace) não vira teto — teto no passado
+    // faria t andar pra trás e travar o loop.
+    const teto = !evMedia && anc && anc.start > t ? anc.start : Infinity
 
     // espia o próximo do rodízio SEM consumir o cursor — se um intervalo encostar
     // na âncora, o cursor fica intacto e o episódio espiado toca depois dela.
@@ -557,7 +574,9 @@ export async function scheduleChannel(
 
     // o intervalo encostou na hora da âncora? cede a vez a ela (prox intacto no
     // cursor); a âncora dispara no topo da próxima iteração e prox toca depois.
-    if (!evMedia && anc && t >= anc.start - 5) continue
+    // `!ev` (não `!evMedia`): durante um evento sem mídia tocável, ceder aqui
+    // giraria sem avançar t — o rodízio preenche e a âncora espera o evento.
+    if (!ev && anc && t >= anc.start - 5) continue
 
     // vinheta de abertura só quando começa um bloco NOVO, e se couber antes da âncora
     if (!evMedia && !continuacao && !fechouComASeguir && vins.length > 0) {
@@ -600,7 +619,12 @@ export async function scheduleChannel(
       ),
     )
   }
-  return { canal, added: rows.length, until: t }
+  return {
+    canal,
+    added: rows.length,
+    until: t,
+    ...(ancorasPerdidas > 0 ? { ancorasPerdidas } : {}),
+  }
 }
 
 export async function runScheduler(

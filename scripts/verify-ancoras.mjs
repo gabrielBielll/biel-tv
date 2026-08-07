@@ -168,5 +168,44 @@ const A = spHoraToEpoch(spDateStr(base), HORA) // unix exato da âncora
     cobreA ? cobreA.media_id : 'nenhum')
 }
 
+// ── 6. COLISÃO: duas âncoras no MESMO horário → ambas tocam (a 2ª atrasada) ──
+//    (regressão do bug corrida maluca ago/2026: looney_tunes_show e corrida
+//     ambos às 16:00 → a 2ª era descartada em SILÊNCIO e nunca ia ao ar)
+{
+  const CAT = [...CATALOGO, ep('ccc_01', 'ccc'), ep('ccc_02', 'ccc')]
+  const { db, epg } = makeDB({
+    channel: CANAL, media: CAT,
+    slots: [
+      { series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 2 },
+      { series_id: 'ccc', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 },
+    ],
+  })
+  const rep = await scheduleChannel({ DB: db }, 'ch', 3, true)
+  const rows = grade(epg)
+  const bbbNaHora = rows.some((r) => r.start === A && r.media_id.startsWith('bbb'))
+  const cccDepois = rows.find((r) => r.media_id.startsWith('ccc') && r.start >= A && r.start <= A + 45 * 60)
+  check('colisão: 1ª âncora começa na hora', bbbNaHora)
+  check('colisão: 2ª âncora toca ATRASADA em vez de sumir', Boolean(cccDepois),
+    cccDepois ? `ccc às +${Math.round((cccDepois.start - A) / 60)}min` : 'ccc SUMIU')
+  check('colisão: nenhuma âncora perdida no report', !rep.ancorasPerdidas)
+  check('colisão: EPG contígua', contigua(rows))
+}
+
+// ── 7. atraso ALÉM da grace (45min) → âncora cai, mas CONTADA no report ──────
+{
+  const CAT = [...CATALOGO, ep('ccc_01', 'ccc'), ep('ccc_02', 'ccc')]
+  const { db, epg } = makeDB({
+    channel: CANAL, media: CAT,
+    slots: [
+      // 4 episódios ≈ 80+min de bloco: estoura a grace da âncora seguinte
+      { series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 4 },
+      { series_id: 'ccc', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 },
+    ],
+  })
+  const rep = await scheduleChannel({ DB: db }, 'ch', 3, true)
+  check('além da grace: perdida é CONTADA no report (nada silencioso)',
+    rep.ancorasPerdidas === 1, `ancorasPerdidas=${rep.ancorasPerdidas ?? 0}`)
+}
+
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)
 process.exit(fail === 0 ? 0 : 1)
