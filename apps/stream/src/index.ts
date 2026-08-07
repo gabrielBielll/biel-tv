@@ -182,16 +182,31 @@ export default {
   // pra 48h. A camada editorial (Gemini) entra por cima disso na fase 10.
   async scheduled(_event: ScheduledController, env: Bindings, ctx: ExecutionContext) {
     ctx.waitUntil((async () => {
-      // Blindagem: falha no reconcile (ex.: R2 fora) não pode impedir o
-      // agendamento das grades — senão um erro aqui deixa os canais sem extensão
-      // e a grade acaba zerando (404 "fora do ar").
-      let rec: unknown = null
-      try { rec = await reconcileAndRepair(env) } catch (e) { rec = String(e) }
-      // 10a: o diretor editorial decide a noite ANTES do agendador estender
-      // a grade — falha do LLM nunca derruba o cron (rotação segura tudo)
+      // Heartbeat: marca que o cron FIROU (antes de qualquer coisa pesada). Se
+      // este timestamp não avançar, o problema é o trigger não disparar; se
+      // avançar mas last_reconcile ficar velho, é o reconcile morrendo no limite.
+      const cronNow = Math.floor(Date.now() / 1000)
+      try {
+        await env.DB.prepare("INSERT OR REPLACE INTO config (k, v) VALUES ('last_cron_start', ?1)")
+          .bind(String(cronNow)).run()
+      } catch { /* diagnóstico best-effort */ }
+
+      // ORDEM CRÍTICA (bug ago/2026: last_reconcile travou em 29/07 e TODAS as
+      // grades drenaram → 404): ESTENDER AS GRADES vem PRIMEIRO — é o que mantém
+      // os canais no ar. O reconcile (1 R2 HEAD por mídia) e o editorial (LLM)
+      // são pesados e vinham estourando o limite do cron ANTES de agendar; um
+      // kill por limite NÃO é pego por try/catch. Agora rodam DEPOIS, best-effort.
+      const reports = await runScheduler(env, { hours: 48 })
+
+      // 10a: diretor editorial (maratonas). Best-effort; aplica no próximo ciclo.
       let plano: unknown = null
       try { plano = await planejaEditorial(env) } catch (e) { plano = String(e) }
-      const reports = await runScheduler(env, { hours: 48 })
+
+      // Reconcile catálogo↔R2 por ÚLTIMO: se morrer no limite, as grades já
+      // foram estendidas e os canais continuam no ar.
+      let rec: unknown = null
+      try { rec = await reconcileAndRepair(env) } catch (e) { rec = String(e) }
+
       // rede de segurança da fábrica: dispatch perdido ou run morta no
       // timeout → o cron re-acorda o GitHub Actions enquanto houver fila
       await dispatchSeTemFila(env)
