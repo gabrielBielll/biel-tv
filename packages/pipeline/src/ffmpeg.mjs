@@ -66,6 +66,39 @@ export async function probe(input) {
 }
 
 /**
+ * Detecta tarja preta EMBUTIDA (letterbox/pillarbox queimado na fonte) via
+ * cropdetect, e devolve o "W:H:X:Y" da imagem real — ou null se a fonte já
+ * enche o quadro. Usado pelo --fit fill/auto pra comer barras finas ANTES de
+ * esticar (senão o fill preserva a tarja da fonte — ex.: rips 352x264 com 2px
+ * de cada lado, que viram ~7px no 1280). Amostra a partir de `sampleStart`s
+ * (pula abertura/preto inicial) e pega o crop mais frequente. Valores forçados
+ * a par (yuv420p exige). Best-effort: qualquer erro devolve null (sem crop).
+ */
+export async function detectCrop(input, { sampleStart = 60, frames = 200 } = {}) {
+  let saida = ''
+  try {
+    const { stdout, stderr } = await execFileAsync(FFMPEG(), [
+      '-hide_banner', '-nostats', '-ss', String(sampleStart), '-i', input,
+      '-vf', 'cropdetect=24:2:0', '-frames:v', String(frames), '-f', 'null', '-',
+    ], BUF)
+    saida = `${stdout}${stderr}`
+  } catch (e) {
+    saida = `${e.stdout ?? ''}${e.stderr ?? ''}`   // ffmpeg às vezes sai !=0 e ainda logou o cropdetect
+  }
+  const contagem = new Map()
+  for (const m of saida.matchAll(/crop=(\d+):(\d+):(\d+):(\d+)/g)) {
+    const k = `${m[1]}:${m[2]}:${m[3]}:${m[4]}`
+    contagem.set(k, (contagem.get(k) ?? 0) + 1)
+  }
+  let melhor = null, maxN = 0
+  for (const [k, n] of contagem) if (n > maxN) { melhor = k; maxN = n }
+  if (!melhor) return null
+  const [w, h, x, y] = melhor.split(':').map(Number)
+  const par = (n) => n - (n % 2)   // yuv420p exige dimensões/offsets pares
+  return `${par(w)}:${par(h)}:${par(x)}:${par(y)}`
+}
+
+/**
  * Duração POR STREAM (vídeo e áudio) de um arquivo — usada pra flagrar desync
  * A/V que a duração do container esconde. O concat `-c copy` de partes com
  * timebase de áudio divergente estica o áudio: o container fecha na duração

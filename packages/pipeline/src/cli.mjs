@@ -12,7 +12,7 @@ import { parseArgs } from 'node:util'
 import { existsSync, rmSync, mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { SEG, FFMPEG, probe, normalize, segment, detectBlack } from './ffmpeg.mjs'
+import { SEG, FFMPEG, probe, normalize, segment, detectBlack, detectCrop } from './ffmpeg.mjs'
 import { snapCuePoints } from './cuepoints.mjs'
 import { buildRegisterSql, runD1 } from './registry.mjs'
 import { listSegments, uploadLocal, uploadRemote } from './upload.mjs'
@@ -113,6 +113,26 @@ if (fit === 'auto') {
   console.log(`   fit auto: aspecto ${aspecto.toFixed(3)} → ${fit}`)
 }
 
+// Barras finas da fonte: no fill, um crop manual vence; sem ele, o cropdetect
+// acha a tarja EMBUTIDA e a remove antes de esticar (senão o fill preserva a
+// barra — ex.: rip 352x264 com 2px de cada lado vira ~7px no 1280). Só aplica
+// se o corte for pequeno (barra fina) — corte grande é falso-positivo (cena
+// escura) ou pillarbox real de 4:3-em-16:9, que exige --crop consciente.
+let crop = opt.crop ?? null
+if (fit === 'fill' && !crop) {
+  const det = await detectCrop(input)
+  if (det) {
+    const [w, h] = det.split(':').map(Number)
+    const cortaX = info.width - w
+    const cortaY = info.height - h
+    const pequeno = cortaX >= 0 && cortaY >= 0 && cortaX <= info.width * 0.15 && cortaY <= info.height * 0.15
+    if ((cortaX > 0 || cortaY > 0) && pequeno) {
+      crop = det
+      console.log(`   crop auto (tarja da fonte): ${det} (corta ${cortaX}px x ${cortaY}px)`)
+    }
+  }
+}
+
 // Faixa de áudio: resolve o índice da faixa do idioma pedido (--audio-lang).
 let audioIndex = null
 if (opt['audio-lang'] && info.hasAudio) {
@@ -142,7 +162,7 @@ function progresso(pct) {
 console.log(`2/5 normalizando p/ 720p H.264 (crf ${opt.crf})${pad > 0.01 ? ` + pad de ${pad.toFixed(1)}s` : ''}…`)
 const normalized = join(workdir, 'normalized.mp4')
 await normalize(input, normalized, {
-  paddedDur, pad, hasAudio: info.hasAudio, crf: Number(opt.crf), fit, crop: opt.crop ?? null, audioIndex,
+  paddedDur, pad, hasAudio: info.hasAudio, crf: Number(opt.crf), fit, crop, audioIndex,
   onProgress: (pct) => progresso(Math.floor(pct * 0.9)),
 })
 
