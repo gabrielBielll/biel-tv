@@ -40,9 +40,23 @@ const { values: opt, positionals } = parseArgs({
     'base-url': { type: 'string' },
     'min-edge': { type: 'string', default: '60' },
     crf: { type: 'string', default: '23' },
-    // enquadramento 16:9: 'letterbox' (padrão, tarjas) ou 'fill' (enche a tela
-    // p/ fonte 4:3 com esticada leve + zoom preservando o topo — ver normalize).
+    // enquadramento 16:9: 'letterbox' (padrão, tarjas), 'fill' (enche a tela
+    // p/ fonte 4:3 com esticada leve + zoom preservando o topo — ver normalize),
+    // ou 'auto' (decide pelo aspecto REAL da fonte: 4:3-ish → fill, já-16:9 →
+    // letterbox). O 'auto' é o padrão da fábrica local pra não ter que escolher
+    // fill na mão por série. Nota: fonte 4:3 com pillarbox JÁ QUEIMADO num
+    // container 16:9 se mede como 16:9 e cai em letterbox — esse caso ainda pede
+    // --crop + --fit fill na mão (ver acervo-rips-4x3-pillarbox).
     fit: { type: 'string', default: 'letterbox' },
+    // --crop W:H:X:Y: remove tarja preta JÁ queimada na fonte (pillarbox embutido
+    // de rip 4:3 em container 16:9) ANTES do enquadramento. Combine com --fit fill
+    // pra encher a tela só com a imagem real. Meça com `ffmpeg -vf cropdetect`.
+    crop: { type: 'string' },
+    // --audio-lang <cod>: quando a fonte tem várias faixas, escolhe a do idioma
+    // (tag ISO, ex.: 'por') em vez de deixar o ffmpeg pegar a faixa 1. Necessário
+    // pra acervos onde o PT NÃO é a 1ª faixa (ex.: Looney Tunes = eng,por). Sem
+    // achar o idioma, cai na seleção default (e avisa).
+    'audio-lang': { type: 'string' },
     'no-cues': { type: 'boolean', default: false },
     'no-transcript': { type: 'boolean', default: false },
     'keep-workdir': { type: 'boolean', default: false },
@@ -68,7 +82,8 @@ if (!input || !existsSync(input)) die(`arquivo de entrada não encontrado: ${inp
 if (!opt.id || !/^[a-z0-9_]+$/.test(opt.id)) die('--id obrigatório (minúsculas, dígitos e _)')
 if (!TIPOS.includes(opt.tipo)) die(`--tipo obrigatório: ${TIPOS.join('|')}`)
 if (!['local', 'remote'].includes(opt.target)) die('--target deve ser local ou remote')
-if (!['letterbox', 'fill'].includes(opt.fit)) die('--fit deve ser letterbox ou fill')
+if (!['letterbox', 'fill', 'auto'].includes(opt.fit)) die('--fit deve ser letterbox, fill ou auto')
+if (opt.crop && !/^\d+:\d+:\d+:\d+$/.test(opt.crop)) die('--crop deve ser W:H:X:Y (só números, ex.: 1500:1080:210:0)')
 const canais = (opt.canais ?? '').split(',').map((s) => s.trim()).filter(Boolean)
 for (const c of canais) if (!/^[a-z0-9_]{2,40}$/.test(c)) die(`canal inválido: ${c}`)
 const baseUrl = opt['base-url'] ?? (opt.target === 'local' ? '' : process.env.R2_PUBLIC_BASE_URL)
@@ -87,6 +102,31 @@ const pad = paddedDur - info.duration
 console.log(`1/5 probe: ${info.duration.toFixed(1)}s, ${info.width}x${info.height}, ` +
   `${info.vcodec}/${info.acodec ?? 'sem áudio'} → alvo ${paddedDur}s (${paddedDur / SEG} segmentos)`)
 
+// --fit auto: decide o enquadramento pelo aspecto REAL da fonte. Abaixo de 1.5
+// (4:3=1.33, 3:2=1.5) trata como "estreito" e enche com fill; de 16:9 (1.78)
+// pra cima, letterbox (que vira no-op num vídeo já-16:9). O limiar 1.5 separa
+// 4:3 de 16:9 com folga e não pega widescreen por engano.
+let fit = opt.fit
+if (fit === 'auto') {
+  const aspecto = info.height > 0 ? info.width / info.height : 16 / 9
+  fit = aspecto < 1.5 ? 'fill' : 'letterbox'
+  console.log(`   fit auto: aspecto ${aspecto.toFixed(3)} → ${fit}`)
+}
+
+// Faixa de áudio: resolve o índice da faixa do idioma pedido (--audio-lang).
+let audioIndex = null
+if (opt['audio-lang'] && info.hasAudio) {
+  const lang = opt['audio-lang'].toLowerCase()
+  const faixas = info.audioStreams ?? []
+  const match = faixas.find((s) => (s.lang ?? '').toLowerCase() === lang)
+  if (match) {
+    audioIndex = match.rel
+    console.log(`   áudio: faixa ${match.rel} (${lang}) de ${faixas.length} [${faixas.map((s) => s.lang ?? '?').join(',')}]`)
+  } else {
+    console.log(`   ⚠ áudio: sem faixa '${lang}' — usando a default (faixas: ${faixas.map((s) => s.lang ?? '?').join(',') || 'n/d'})`)
+  }
+}
+
 // Progresso do job inteiro (0–100) em linhas "progresso: N%" no stdout —
 // a fábrica parseia e repassa pro painel. Normalização domina o tempo real:
 // 0→90; segmentação 92; cues 94; upload 94→99; o "done" da fila fecha em 100.
@@ -102,7 +142,7 @@ function progresso(pct) {
 console.log(`2/5 normalizando p/ 720p H.264 (crf ${opt.crf})${pad > 0.01 ? ` + pad de ${pad.toFixed(1)}s` : ''}…`)
 const normalized = join(workdir, 'normalized.mp4')
 await normalize(input, normalized, {
-  paddedDur, pad, hasAudio: info.hasAudio, crf: Number(opt.crf), fit: opt.fit,
+  paddedDur, pad, hasAudio: info.hasAudio, crf: Number(opt.crf), fit, crop: opt.crop ?? null, audioIndex,
   onProgress: (pct) => progresso(Math.floor(pct * 0.9)),
 })
 

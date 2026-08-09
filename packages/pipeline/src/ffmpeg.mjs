@@ -43,6 +43,13 @@ export async function probe(input) {
   const v = info.streams.find((s) => s.codec_type === 'video')
   const a = info.streams.find((s) => s.codec_type === 'audio')
   if (!v) throw new Error('arquivo sem stream de vídeo')
+  // Lista de faixas de áudio na ORDEM do arquivo, com o índice RELATIVO (o que o
+  // `-map 0:a:N` usa) e a tag de idioma. Serve pro cli escolher a faixa PT quando
+  // a fonte traz várias (e a ordem varia por acervo: no PPG o PT vem primeiro, no
+  // Looney Tunes o inglês vem primeiro e o PT é a 2ª — ver --audio-lang).
+  const audioStreams = info.streams
+    .filter((s) => s.codec_type === 'audio')
+    .map((s, i) => ({ rel: i, lang: s.tags?.language ?? null, channels: s.channels ?? null }))
   return {
     duration: Number(info.format.duration),
     width: v.width,
@@ -50,6 +57,7 @@ export async function probe(input) {
     vcodec: v.codec_name,
     acodec: a?.codec_name ?? null,
     hasAudio: Boolean(a),
+    audioStreams,
     // parâmetros de áudio: o concatParts usa pra decidir se o `-c copy` é
     // seguro (sample rate/canais divergentes → o demuxer escorrega o áudio).
     asampleRate: a?.sample_rate ? Number(a.sample_rate) : null,
@@ -78,20 +86,30 @@ async function streamDurations(file) {
  * Passo 1 — normaliza para o perfil único do canal:
  * 1280x720 letterbox, 30fps, H.264 high (CRF configurável, padrão 23 como no
  * my-tv), AAC 128k 48kHz stereo (silêncio injetado se a fonte não tem áudio),
- * keyframes forçados em t=0,10,20,... e final padded com preto/silêncio até
- * fechar múltiplo de 10s.
+ * IDR a cada 10s (keyint fixo por CONTAGEM DE FRAMES) e final padded com
+ * preto/silêncio até fechar múltiplo de 10s.
  */
-export async function normalize(input, outFile, { paddedDur, pad, hasAudio, crf = 23, fps = 30, fit = 'letterbox', onProgress }) {
+export async function normalize(input, outFile, { paddedDur, pad, hasAudio, crf = 23, fps = 30, fit = 'letterbox', crop = null, audioIndex = null, onProgress }) {
   // Enquadramento p/ 1280x720:
   //  - 'letterbox' (padrão): preserva o aspecto e completa com preto (fonte 4:3
   //    vira 16:9 com tarjas pretas laterais). Nada de esticar nem cortar.
-  //  - 'fill': enche o 16:9 pra fonte 4:3 — estica ~13% na largura (scale p/
-  //    1280x850) e dá zoom cortando p/ 720, com viés pro topo (corta 40px do topo
-  //    e 90px da base), pra não perder o topo da imagem e não distorcer demais.
+  //  - 'fill': enche o 16:9 pra fonte 4:3 combinando esticada lateral + zoom leve.
+  //    Estica ~20% na largura (scale p/ 1280x800) e dá zoom cortando só 80px p/ 720,
+  //    com viés pro topo (corta 24px do topo e 56px da base). O peso maior na
+  //    esticada (vs. um zoom forte) preserva mais da cena — pés, chão, cenário —
+  //    e ainda mantém as formas redondas sem distorcer demais. Ver as amostras
+  //    comparadas (estica x zoom) que calibraram esse 800/24 em 2026-07-29.
+  //
+  // `crop` (opcional, "W:H:X:Y"): recorta ANTES de tudo. Existe pros rips de
+  // desenho 4:3 que vêm num container 16:9 com a tarja preta JÁ QUEIMADA nas
+  // laterais (pillarbox embutido — ex.: Coragem "1080p"). Sem remover a tarja
+  // primeiro, o 'fill' esticaria o quadro-com-tarja e o 'letterbox' manteria as
+  // barras pretas; com o crop certo, o 'fill' enche a tela só com a imagem real.
   const enquadra = fit === 'fill'
-    ? ['scale=1280:850', 'crop=1280:720:0:40', 'setsar=1']
+    ? ['scale=1280:800', 'crop=1280:720:0:24', 'setsar=1']
     : ['scale=1280:720:force_original_aspect_ratio=decrease', 'pad=1280:720:(ow-iw)/2:(oh-ih)/2']
   const vf = [
+    ...(crop ? [`crop=${crop}`] : []),
     ...enquadra,
     `fps=${fps}`,
     'format=yuv420p',
@@ -101,14 +119,29 @@ export async function normalize(input, outFile, { paddedDur, pad, hasAudio, crf 
   const args = ['-y', '-hide_banner', '-loglevel', 'error', '-i', input]
   if (!hasAudio) args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000')
 
+  // Seleção de faixa: sem áudio → vídeo da fonte + silêncio sintético. Com
+  // `audioIndex` → mapeia explicitamente aquela faixa de áudio (ex.: a trilha PT
+  // que não é a 1ª). Sem `audioIndex` → deixa o ffmpeg escolher (faixa 1 / mais
+  // canais), que é o certo quando o PT já é a faixa default.
+  const mapArgs = !hasAudio
+    ? ['-map', '0:v:0', '-map', '1:a:0']
+    : (audioIndex != null ? ['-map', '0:v:0', '-map', `0:a:${audioIndex}`] : [])
   args.push(
-    ...(hasAudio ? [] : ['-map', '0:v:0', '-map', '1:a:0']),
+    ...mapArgs,
     '-t', paddedDur.toFixed(3),
     '-vf', vf,
     '-af', 'aresample=48000,apad',
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(crf),
-    '-profile:v', 'high', '-sc_threshold', '0',
-    '-force_key_frames', `expr:gte(t,n_forced*${SEG})`,
+    '-profile:v', 'high',
+    // IDR a cada SEG segundos travando o GOP por CONTAGEM DE FRAMES (keyint fixo
+    // = fps*SEG) sobre a saída CFR do filtro `fps`. Antes usávamos
+    // `-force_key_frames expr:gte(t,n_forced*SEG)`, que depende do PTS de saída:
+    // fontes com timestamp torto (WEBRip com jitter/descontinuidade de PTS) faziam
+    // a expressão PARAR de forçar keyframe no meio do arquivo → um segmento
+    // gigante no fim e a contagem quebrava (ex.: PPG S01E04 gerou 47 de 133).
+    // keyint por frame é imune a isso: 300 frames = 10s exatos, sempre.
+    // scenecut=0 impede o x264 de enfiar IDR extra no meio do GOP.
+    '-x264-params', `keyint=${fps * SEG}:min-keyint=${fps * SEG}:scenecut=0`,
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2',
     outFile,
   )

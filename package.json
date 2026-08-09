@@ -18,6 +18,8 @@
     "web:deploy": "VITE_API_BASE=https://biel-tv-stream.biel-cesa95.workers.dev pnpm --filter @bieltv/web build && pnpm --filter @bieltv/stream pages:deploy",
     "verify:web": "node scripts/verify-web.mjs",
     "factory": "node scripts/factory-local.mjs",
+    "drena:local": "bash scripts/drena-local.sh",
+    "monitora:fila": "bash scripts/monitora-fila.sh",
     "verify:admin": "node scripts/verify-admin.mjs",
     "verify:canais": "node scripts/verify-canais.mjs",
     "verify:blocos": "node scripts/verify-blocos.mjs",
