@@ -14,3 +14,4 @@ dist/
 
 # área de trabalho do pipeline de ingestão (fase 2)
 .ingest-work/
+.registros-pendentes/

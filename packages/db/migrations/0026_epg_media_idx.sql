@@ -1,0 +1,12 @@
+-- Índice por mídia na grade.
+--
+-- Por que existe: a `epg_virtual` só tinha índice por (canal, start, end). Toda
+-- consulta POR MÍDIA — a trava temporal e a limpeza do DELETE /admin/media/:id,
+-- que perguntam "esta mídia está na grade?" — varria a tabela inteira (~20 mil
+-- linhas, 7 dias de passado + 2 de futuro) DUAS vezes por exclusão.
+--
+-- Isso passou despercebido até 15/09/2026, quando uma limpeza de 105 mídias
+-- rebaixadas consumiu ~4 milhões de linhas lidas e estourou de novo o limite
+-- diário do D1 free, derrubando os canais. Com o índice, a mesma operação lê
+-- algumas dezenas de linhas por mídia.
+CREATE INDEX IF NOT EXISTS idx_epg_media ON epg_virtual (media_id);

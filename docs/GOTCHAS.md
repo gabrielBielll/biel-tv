@@ -126,6 +126,47 @@ restaurar o dump depois.
 
 ## Banco de dados (D1/SQLite)
 
+**🔴 O limite do D1 free é LINHAS LIDAS (5 mi/dia), não requisições — e query
+sem piso derruba a TV.** Em 2026-09-15 os três canais devolveram HTTP 500 no
+`/live` no meio do dia. Não foi audiência: o Worker recebeu **1.499 requisições
+em 14h**, todas entre 23h e 01h (um espectador só). O que estourou foi o
+**custo por requisição**: a `SQL_EPG_OVERLAP` só limitava o lado direito
+(`start < ?3`), então o índice `(canal, start_time_virtual)` varria TODO o
+passado do canal guardado na `epg_virtual` — **5.180 linhas por chamada**,
+1.113 chamadas = 5,7 milhões de linhas. Corrigido com um **piso** em
+`start_time_virtual` (`> ?2 - 6h`, folga sobre a linha mais longa possível):
+~200 linhas por chamada. **Antes de criar query nova sobre `epg_virtual`,
+`media_items` ou `media_cue_points`, pergunte quantas LINHAS ela varre por
+chamada** — e confira no GraphQL:
+`d1QueriesAdaptiveGroups(orderBy:[sum_rowsRead_DESC]){count sum{rowsRead} dimensions{query}}`.
+O limite zera à meia-noite UTC (21h de Brasília) e, enquanto está estourado,
+**qualquer** leitura falha — inclusive o painel e o `wrangler d1 execute`.
+
+**Com a cota de leitura estourada, o que ainda funciona.** O limite do D1 free
+bloqueia **leitura** — e a mensagem some até em consulta minúscula. Mas:
+
+| funciona | não funciona |
+|---|---|
+| R2 (subir/baixar segmento, `/media/*`) | `/live` e `/epg` (leem a grade) |
+| ffmpeg/pipeline: baixar, normalizar, segmentar, cue points | registrar mídia no D1 |
+| ElevenLabs, GitHub Actions | painel admin, fila da fábrica (claim lê o D1) |
+| escrita e DDL no D1 (`INSERT`, `DELETE`, `CREATE INDEX`) | qualquer `SELECT` |
+
+Ou seja: **dá pra processar a leva inteira e registrar depois**. É pra isso que
+existe `pnpm ingest ... --adiar-registro`, que sobe pro R2 e grava o SQL do
+registro em `.registros-pendentes/<id>.sql`; quando a cota virar (00:00 UTC =
+21h de Brasília), `pnpm registra:pendentes` aplica tudo de uma vez e move os
+arquivos pra `aplicados/`.
+
+**Apagar mídia em lote custa LEITURA, não escrita.** O `DELETE /admin/media/:id`
+pergunta se a mídia está na grade (`... FROM epg_virtual WHERE media_id = ?`) e
+depois apaga as linhas dela. Sem índice por `media_id`, cada exclusão varria a
+`epg_virtual` inteira duas vezes — 105 exclusões = ~4 milhões de linhas lidas, o
+que estourou o limite diário do D1 free e derrubou os canais em 15/09/2026
+(**duas vezes no mesmo dia**, a segunda por causa da limpeza). Corrigido pela
+migration `0026_epg_media_idx.sql`. Regra geral: antes de rodar QUALQUER laço
+que bate no Worker centenas de vezes, olhe quais linhas cada chamada varre.
+
 **SQLite não permite `ALTER` de `CHECK` constraint — reconstrua a tabela.**
 Pra adicionar um novo valor válido a uma coluna com `CHECK (col IN (...))`,
 o padrão é: criar tabela nova com o CHECK atualizado → `INSERT SELECT` os
@@ -137,6 +178,18 @@ dados → `DROP` a antiga → `RENAME`. Ver `packages/db/migrations/0006_*.sql`.
 alto (erro do d1()), mas ainda assim é um erro bobo de se cometer e perder
 tempo depurando. Confira a migration antes de escrever SQL ad-hoc contra
 essas tabelas.
+
+## Fábrica de comerciais / TTS
+
+**Voz clonada morre junto com a assinatura do ElevenLabs.** Desde 15/09/2026 a
+API responde `401 ivc_not_permitted` ("Instantly cloned voices are not available
+on your current plan") para as vozes dos três canais, que são clonadas. **A
+chave continua válida e com crédito** — voz do catálogo público sintetiza
+normalmente, foi verificado. Não saia trocando `channels.voz_id`: gere com
+`voz_id` de voz pública por parâmetro (todas as rotas de síntese aceitam) e veja
+`docs/features/fabrica-comerciais.md` → "Voz provisória" pra receita completa,
+inclusive como achar depois (`audio_key` guarda a voz no caminho) e regerar com
+a voz clonada quando a assinatura voltar.
 
 ## Diretor / LLM (Gemini + DeepSeek)
 

@@ -1,13 +1,15 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
-import { SEGMENT_DURATION, SQL_EPG_OVERLAP, type EpgRowWithMedia } from '@bieltv/db'
+import { SEGMENT_DURATION, SQL_EPG_AGORA, SQL_EPG_OVERLAP, type EpgRowWithMedia } from '@bieltv/db'
 import { buildLivePlaylist, buildVodPlaylist } from './playlist'
+import { montaGuia } from './guia'
 import { revisao } from './revisao'
 import { admin } from './admin'
 import { votaton } from './votaton'
 import { reconcileAndRepair, runScheduler } from './scheduler'
 import { dispatchSeTemFila } from './fabrica'
 import { planejaEditorial } from './editorial'
+import { reconciliaComerciaisGrade } from './fabrica-comerciais'
 
 type Bindings = {
   DB: D1Database
@@ -84,7 +86,9 @@ app.get('/live/:canal', async (c) => {
   const windowStart = (nowSlot - WINDOW_BEHIND) * SEGMENT_DURATION
   const windowEnd = (nowSlot + WINDOW_AHEAD + 1) * SEGMENT_DURATION
 
-  const { results } = await c.env.DB.prepare(SQL_EPG_OVERLAP)
+  // `SQL_EPG_AGORA` (duas buscas diretas) em vez do intervalo: o /live é a rota
+  // mais repetida do sistema — ~6 linhas lidas por chamada em vez de ~200.
+  const { results } = await c.env.DB.prepare(SQL_EPG_AGORA)
     .bind(canal, windowStart, windowEnd)
     .all<EpgRowWithMedia>()
 
@@ -111,24 +115,17 @@ app.get('/epg/:canal', async (c) => {
     .bind(canal, now - past, now + future)
     .all<EpgRowWithMedia>()
 
-  const items = results.map((r) => {
-    let title = r.media_id
-    try {
-      title = (JSON.parse(r.metadata).title as string) ?? r.media_id
-    } catch {
-      // metadata inválido não derruba o EPG
-    }
-    return {
-      media_id: r.media_id,
-      tipo: r.tipo,
-      title,
-      start: r.start_time_virtual,
-      end: r.end_time_virtual,
-      // permite ao front juntar partes de um mesmo programa (continuação > 0)
-      segment_index_start: r.segment_index_start,
-      is_now: r.start_time_virtual <= now && now < r.end_time_virtual,
-    }
-  })
+  // Nome bonito por série (clipe 'nome' da fábrica). Best-effort: sem a
+  // tabela ou sem clipe, o slug capitalizado cobre — o guia nunca quebra.
+  const nomeSerie = new Map<string, string>()
+  try {
+    const { results: nomes } = await c.env.DB.prepare(
+      "SELECT series_id, MIN(rotulo) rotulo FROM voice_clips WHERE categoria = 'nome' AND series_id IS NOT NULL GROUP BY series_id",
+    ).all<{ series_id: string; rotulo: string }>()
+    for (const n of nomes) nomeSerie.set(n.series_id, n.rotulo.replace(/[.!?]+$/, '').trim())
+  } catch { /* sem clipes: só o fallback de slug */ }
+
+  const items = montaGuia(results, now, nomeSerie)
 
   return c.json({ canal, now, items }, 200, CORS)
 })
@@ -202,6 +199,11 @@ export default {
       let plano: unknown = null
       try { plano = await planejaEditorial(env) } catch (e) { plano = String(e) }
 
+      // fábrica de comerciais de GRADE: âncora sem comercial → job na fila;
+      // âncora que saiu → comercial desatualizado recolhido. Best-effort.
+      let comerciais: unknown = null
+      try { comerciais = await reconciliaComerciaisGrade(env) } catch (e) { comerciais = String(e) }
+
       // Reconcile catálogo↔R2 por ÚLTIMO: se morrer no limite, as grades já
       // foram estendidas e os canais continuam no ar.
       let rec: unknown = null
@@ -210,7 +212,7 @@ export default {
       // rede de segurança da fábrica: dispatch perdido ou run morta no
       // timeout → o cron re-acorda o GitHub Actions enquanto houver fila
       await dispatchSeTemFila(env)
-      console.log('[diretor]', JSON.stringify({ rec, plano, reports }))
+      console.log('[diretor]', JSON.stringify({ rec, plano, comerciais, reports }))
     })())
   },
 }

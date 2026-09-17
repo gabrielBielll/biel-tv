@@ -89,15 +89,25 @@ if (ffprobe && firstSeg) {
   console.log('⚠️  ffprobe indisponível — pulei a validação de decodificação')
 }
 
-// 6) determinismo com viagem no tempo (?at=) em volta de um comercial
-const com = epg?.items?.find((i) => i.tipo === 'comercial' && i.start > (epg?.now ?? 0) + 60)
-if (com) {
-  const C = com.start
+// 6) determinismo com viagem no tempo (?at=) na VIRADA de um programa
+// (o /epg devolve o guia — programa, não linha de grade —, então a virada aqui
+//  é o começo do próximo programa, e não mais uma linha de comercial)
+const virada = epg?.items?.find((i) => i.start > (epg?.now ?? 0) + 60)
+// o segmento na playlist traz o `path_prefix` da mídia, que nem sempre é o id
+// (mídia renomeada mantém o prefixo) — o /vod da mesma mídia revela o prefixo
+const prefixoDaVirada = virada
+  ? (await fetch(`${BASE}/vod/${encodeURIComponent(virada.media_id)}`).then((r) => r.text()).catch(() => ''))
+    .split('\n').find((l) => l.includes('/seg'))?.replace(/\/seg\d+\.ts.*$/, '')
+  : undefined
+if (virada) {
+  const C = virada.start
   const before = parse((await live(`?at=${C - 20}`)).text)
   const boundary = parse((await live(`?at=${C + 5}`)).text)
   const after = parse((await live(`?at=${C + 60}`)).text)
   check('troca de programa gera EXT-X-DISCONTINUITY', boundary.discCount >= 1)
-  check('comercial aparece na janela na hora certa', boundary.segs.some((s) => s.includes(com.media_id)))
+  check('o programa da virada aparece na janela na hora certa',
+    Boolean(prefixoDaVirada) && boundary.segs.some((s) => s.includes(prefixoDaVirada)),
+    prefixoDaVirada ?? 'sem /vod')
   check('MEDIA-SEQUENCE avança 1 por slot de 10s', boundary.mediaSeq - before.mediaSeq === 2,
     `${before.mediaSeq} → ${boundary.mediaSeq}`)
   check('DISCONTINUITY-SEQUENCE incrementa quando o bloco sai da janela', after.discSeq > before.discSeq,
@@ -107,7 +117,7 @@ if (com) {
   check('janela desliza 1 segmento a cada 10s (overlap de 5)',
     w2.mediaSeq === w1.mediaSeq + 1 && JSON.stringify(w2.segs.slice(0, 5)) === JSON.stringify(w1.segs.slice(1)))
 } else {
-  check('há comercial futuro no EPG para testar descontinuidade', false)
+  check('há programa futuro no guia para testar descontinuidade', false)
 }
 
 // 7) ao vivo de verdade: espera 11s e confere que a janela andou

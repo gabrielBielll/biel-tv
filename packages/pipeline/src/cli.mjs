@@ -4,12 +4,12 @@
 //   pnpm ingest <video> --id ep_pr_s1e01 --tipo episodio --title "Power Rangers S1E01" \
 //     [--series pr_s1] [--episode 1] [--tags acao,anos90] \
 //     [--target local|remote] [--base-url https://media1.dominio.com] \
-//     [--min-edge 60] [--crf 23] [--no-cues] [--keep-workdir]
+//     [--min-edge 60] [--crf 23] [--no-cues] [--keep-workdir] [--adiar-registro]
 //
 // Fluxo: probe → normaliza (perfil único + pad p/ múltiplo de 10s) →
 // segmenta (.ts de 10s exatos) → blackdetect → upload R2 → registro D1.
 import { parseArgs } from 'node:util'
-import { existsSync, rmSync, mkdirSync } from 'node:fs'
+import { existsSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SEG, FFMPEG, probe, normalize, segment, detectBlack, detectCrop } from './ffmpeg.mjs'
@@ -60,6 +60,9 @@ const { values: opt, positionals } = parseArgs({
     'no-cues': { type: 'boolean', default: false },
     'no-transcript': { type: 'boolean', default: false },
     'keep-workdir': { type: 'boolean', default: false },
+    // processa e sobe pro R2, mas grava o SQL do registro num arquivo em vez de
+    // tocar no D1 (cota de leitura estourada, banco fora do ar, etc.)
+    'adiar-registro': { type: 'boolean', default: false },
   },
 })
 
@@ -246,12 +249,29 @@ const metadata = {
 }
 // --status disabled: a mídia nasce FORA do ar, esperando aprovação. É o que o
 // cortador usa — peça recortada é palpite até o Gabriel ver.
-runD1(ROOT, buildRegisterSql({
+const registroSql = buildRegisterSql({
   id: opt.id, tipo: opt.tipo, paddedDur, segmentCount: segCount, baseUrl, metadata, cues, canais, transcript,
   status: opt.status === 'disabled' ? 'disabled' : 'ready',
-}), { local: opt.target === 'local', label: `register-${opt.id}` })
+})
+// --adiar-registro: processa e sobe pro R2 agora, grava o SQL do registro num
+// arquivo e NÃO toca no D1. Serve pra quando a cota de leitura diária do D1
+// free está estourada (o banco recusa até consulta pequena, mas o R2 e o
+// ffmpeg seguem funcionando): dá pra transcodificar a leva inteira na hora que
+// der e registrar tudo de uma vez quando a cota virar, com
+// `node scripts/registra-pendentes.mjs`. Ver docs/GOTCHAS.md.
+if (opt['adiar-registro']) {
+  const fila = process.env.REGISTROS_PENDENTES ?? join(ROOT, '.registros-pendentes')
+  mkdirSync(fila, { recursive: true })
+  const destino = join(fila, `${opt.id}.sql`)
+  writeFileSync(destino, registroSql)
+  console.log(`5/5 registro ADIADO → ${destino}`)
+  console.log(`  aplique depois com: node scripts/registra-pendentes.mjs`)
+} else {
+  runD1(ROOT, registroSql, { local: opt.target === 'local', label: `register-${opt.id}` })
+}
 
 if (!opt['keep-workdir']) rmSync(normalized, { force: true })
 console.log(`✔ "${opt.id}" pronto: ${segCount} segmentos em ${opt.target === 'local' ? 'R2 local' : baseUrl}, ` +
-  `${cues.length} cue point(s), registrado no D1 (${opt.target}).`)
+  `${cues.length} cue point(s), ` +
+  (opt['adiar-registro'] ? 'registro no D1 PENDENTE (ver acima).' : `registrado no D1 (${opt.target}).`))
 console.log(`  segmentos mantidos em ${join(workdir, 'segments')}`)

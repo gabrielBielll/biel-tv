@@ -101,11 +101,26 @@ Entregue: whisper na fábrica, LLM propõe a promessa (casador determinístico d
 série), fila de revisão, agendador que cumpre. 4 tipos de promessa (`a_seguir`,
 `durante`, `bloco_horario`, `evento`) + modo fiel/livre por canal + reclassificar
 tipo. Ver tabela de fases concluídas.
+**✅ Entregue em 2026-08-08 — fábrica de grade automática + destrave por âncora:**
+`reconciliaComerciaisGrade()` (cron diário + criar/apagar âncora + POST
+`/admin/fabrica-comerciais/reconciliar-grade`) gera job de comercial pra toda
+âncora sem promo (quando o kit da série existe — clipes nome/frase, amostra,
+molde; lacunas em `config.reconcilia_comerciais`), recolhe promo cuja âncora
+sumiu (`ignorar` + marca `desatualizado`, reversível) e o comercial nasce
+`confirmada` com condicao `bloco_horario` — o scheduler destrava contra as
+`channel_slots` do canal (fiel por construção; era a metade "promos de horário
+fixo destravarem quando a grade garantir o bloco").
 **Falta (etapa 3, junto com a 10a):** programação GUIADA por promo — o Diretor
-montar blocos/sequências justamente porque tem a promo perfeita pra eles, e
-promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o bloco.
+montar blocos/sequências justamente porque tem a promo perfeita pra eles.
 
 ## 📦 Backlog (sem fase definida)
+
+- **Chegar na grade-alvo histórica de ~2005** — meta editorial do Gabriel
+  (2026-07-28): reconstruir os 3 canais no auge de 2005, o mais fiel possível
+  às grades reais da Folha. Grade completa (48 faixas/canal, com o que é real
+  vs. reconstruído) em [features/grade-alvo-2005.md](features/grade-alvo-2005.md).
+  Próximos passos lá: cruzar os ~120 títulos com o acervo do D1, decidir Disney
+  (2005 reconstruído vs. 2002 real) e alimentar a `identidade` de cada canal.
 
 - **Diretor encomenda comerciais + vinhetas "a seguir" GERADAS por IA** —
   pedido do Gabriel (2026-07-13). A inversão genial do problema da fase 12:

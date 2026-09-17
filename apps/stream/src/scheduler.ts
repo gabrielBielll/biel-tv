@@ -21,6 +21,9 @@ export interface ScheduleReport {
   until?: number
   // âncoras descartadas por atraso além da tolerância (nunca silencioso)
   ancorasPerdidas?: number
+  // segundos que viraram INTERVALO pra fechar o vão até a âncora (antes disso
+  // era programa cortado no meio) — no report pra ninguém descobrir de surpresa
+  enchimentoSeg?: number
 }
 
 const DAY = 86400
@@ -242,6 +245,19 @@ export async function scheduleChannel(
             duranteDe.set(cond.series_id, lista)
           }
         }
+        // promo de HORÁRIO destrava quando a grade GARANTE o bloco (fase 12,
+        // etapa 3): existe âncora ativa da série cobrindo a hora e os dias
+        // anunciados → a promo é verdade e volta pro rodízio normal (promo de
+        // grade rodava o dia inteiro na TV de 2005, não só perto da hora).
+        // Sem âncora que cumpra, segue retida — não prometemos no escuro.
+        // Checagem por CANAL de propósito: mídia compartilhada destrava só
+        // no canal cuja grade cumpre o anunciado.
+        if (cond.tipo === 'bloco_horario' && cond.series_id) {
+          const cumpre = slotsAtivos.some((s) => s.series_id === cond.series_id
+            && (!cond.hora || s.hora === cond.hora)
+            && (!Array.isArray(cond.dias) || (cond.dias as unknown[]).every((n) => s.dias.includes(Number(n)))))
+          if (cumpre) foraDoRodizio.delete(p.media_id)
+        }
         // promo de EVENTO destrava na janela de promoção: só enquanto houver
         // uma maratona AGENDADA da série correspondente ainda por começar —
         // "sábado tem maratona X" toca a semana toda ANTES do sábado, e some
@@ -254,9 +270,11 @@ export async function scheduleChannel(
     } catch { /* json corrompido: trata como retida (não promete no escuro) */ }
   }
 
-  const contents = media.filter((m) => m.tipo === 'episodio' || m.tipo === 'filme')
-  const ads = media.filter((m) => m.tipo === 'comercial' && !foraDoRodizio.has(m.id))
-  const vins = media.filter((m) => m.tipo === 'vinheta' && !foraDoRodizio.has(m.id))
+  // duração 0 fica de fora dos três pools: linha de EPG sem duração não toca
+  // nada e faria o enchimento (laço "enche até a hora") girar sem andar.
+  const contents = media.filter((m) => (m.tipo === 'episodio' || m.tipo === 'filme') && m.duracao_seg > 0)
+  const ads = media.filter((m) => m.tipo === 'comercial' && m.duracao_seg > 0 && !foraDoRodizio.has(m.id))
+  const vins = media.filter((m) => m.tipo === 'vinheta' && m.duracao_seg > 0 && !foraDoRodizio.has(m.id))
   const porId = new Map(mediaTodas.map((m) => [m.id, m]))
   if (contents.length === 0) return { canal, added: 0, skipped: 'sem conteúdo' }
 
@@ -363,12 +381,50 @@ export async function scheduleChannel(
   // séries alternando em rodízio; menos-tocada lidera, empates pela seed do dia
   const blocoMax = Math.max(1, chan.episodios_por_bloco ?? 2)
   const blocos = montaBlocos(contents, blocoMax, rnd)
-  const adPool = shuffled(ads, rnd)
-  let ai = 0
-  let vi = 0
+  // FILA de comerciais (e outra de vinhetas): a peça que vai ao ar vai pro FIM
+  // da fila, então só volta depois que todas as outras passaram. Antes era um
+  // índice móvel sobre a lista filtrada por "cabe no alvo" — o que fazia a peça
+  // curta ser sorteada toda hora e a longa nunca: medido em 15/09/2026, 40 das
+  // 135 peças do jetix não iam ao ar NENHUMA vez em 24h enquanto uma vinheta
+  // repetia 27×. Pedido do Gabriel: "faça variar os comerciais, cansa e irrita
+  // ficar vendo as mesmas coisas toda hora".
+  const filaAds = shuffled(ads, rnd)
+  const filaVins = shuffled(vins, rnd)
+  // Tira da fila a peça MAIS ANTIGA que satisfaz o filtro e a recoloca no fim.
+  // Peça que nunca cabe fica na frente e entra assim que houver espaço — é o que
+  // garante que o acervo inteiro rode.
+  const daFila = (fila: MediaRow[], cabe: (m: MediaRow) => boolean): MediaRow | undefined => {
+    const i = fila.findIndex(cabe)
+    if (i < 0) return undefined
+    const [m] = fila.splice(i, 1)
+    fila.push(m)
+    return m
+  }
+
+  // Pools CONDICIONAIS (bumper "voltamos já com X", "a seguir X", promo de
+  // maratona): ao contrário do acervo grande, aqui costuma existir UMA peça por
+  // série — e tocá-la em todo intervalo daquela série faz decorar. Medido em
+  // 15/09/2026: a vinheta de pausa dos Padrinhos ia ao ar 30× por dia. Regra:
+  // sempre a MENOS tocada da lista e, se até ela passou faz pouco tempo, o
+  // intervalo simplesmente não leva a peça (melhor sem do que decorada).
+  const DESCANSO_CONDICIONAL = 45 * 60
+  const ultimaVezDe = new Map<string, number>()
+  const daPoolCondicional = (ids: string[], cabe: (m: MediaRow) => boolean): MediaRow | undefined => {
+    const cands = ids.map((id) => porId.get(id)).filter((m): m is MediaRow => Boolean(m) && cabe(m!))
+    if (cands.length === 0) return undefined
+    const pick = cands.reduce((a, b) =>
+      (ultimaVezDe.get(a.id) ?? -Infinity) <= (ultimaVezDe.get(b.id) ?? -Infinity) ? a : b)
+    if (t - (ultimaVezDe.get(pick.id) ?? -Infinity) < DESCANSO_CONDICIONAL) return undefined
+    ultimaVezDe.set(pick.id, t)
+    return pick
+  }
   let bi = 0 // qual bloco
   let ei = 0 // qual episódio dentro do bloco atual
-  let lastAd = ''
+  // Conteúdo que JÁ entrou nesta montagem. O encaixe (ver abaixo) pode adiantar
+  // um episódio que o rodízio ainda tinha pela frente; sem esta marca ele
+  // tocaria duas vezes no mesmo dia. Quando o acervo inteiro já rodou, a marca
+  // é zerada e a volta recomeça — igual ao rodízio cíclico de sempre.
+  const usadoNaRun = new Set<string>()
   const rows: Array<[string, string, number, number, number]> = []
 
   const push = (m: string, s: number, e: number, seg: number) => rows.push([canal, m, s, e, seg])
@@ -385,10 +441,11 @@ export async function scheduleChannel(
   // 120s se houver alternativa — sem nenhuma que caiba, o pod fica só com o
   // mais curto disponível (nunca estoura empilhando).
   const MIN_ENTRE_PODS = 300
+  const alvoBase = chan.break_target_seg ?? 120
+  // Menor programa do canal: é a régua do "ainda cabe alguém antes da âncora?".
+  // Vão menor que isso não recebe mais programa nenhum — é intervalo garantido.
+  const menorConteudo = Math.min(...contents.map((m) => m.duracao_seg))
   let ultimoPodFim = -Infinity
-  let peIdx = 0
-  let duIdx = 0
-  let voIdx = 0
   // serieCtx: série "dona" deste intervalo — no meio de um episódio dela, ou
   // entre dois episódios seguidos dela. O bumper de saída ("voltamos já com X")
   // ABRE o pod e o de volta ("estamos de volta com X") o FECHA, colado no retorno
@@ -397,104 +454,103 @@ export async function scheduleChannel(
   // preciso) pra a grade fixa começar pontual. Infinity quando não há âncora à vista.
   const breakPod = (serieCtx?: string | null, teto = Infinity) => {
     if (t - ultimoPodFim < MIN_ENTRE_PODS) return
-    const alvo = chan.break_target_seg ?? 120
     const bumpers = serieCtx ? duranteDe.get(serieCtx) ?? [] : []
-    if (bumpers.length > 0) {
-      const bp = porId.get(bumpers[duIdx++ % bumpers.length])
-      if (bp && t + bp.duracao_seg <= teto) {
-        push(bp.id, t, t + bp.duracao_seg, 0)
-        t += bp.duracao_seg
-      }
+    const bp = daPoolCondicional(bumpers, (m) => t + m.duracao_seg <= teto)
+    if (bp) {
+      push(bp.id, t, t + bp.duracao_seg, 0)
+      t += bp.duracao_seg
     }
     // tolerância de 25%: estourar um pouco o alvo é ritmo normal de TV
     // (2×70s num alvo de 120 ✓); o que não pode é UM comercial de 200s
     // entrar sozinho num intervalo de 120 tendo alternativa que caiba
-    const folga = Math.ceil(alvo * 0.25)
-    const usados = new Set<string>()
+    const folga = Math.ceil(alvoBase * 0.25)
     let sum = 0
     for (;;) {
-      const restante = Math.min(alvo - sum, teto - t) // nunca cruza a âncora
-      const cands = adPool.filter((a) =>
-        !usados.has(a.id) && !(usados.size === 0 && a.id === lastAd && adPool.length > 1))
-      if (cands.length === 0 || restante <= 0) break
-      const cabem = cands.filter((a) => a.duracao_seg <= restante + folga && t + a.duracao_seg <= teto)
-      let pick: MediaRow
-      if (cabem.length > 0) pick = cabem[ai++ % cabem.length]
-      else if (sum === 0) {
-        const curtos = cands.filter((a) => t + a.duracao_seg <= teto)
+      const restante = Math.min(alvoBase - sum, teto - t) // nunca cruza a âncora
+      if (restante <= 0 || filaAds.length === 0) break
+      // a mais antiga que cabe no alvo (com a tolerância); se NENHUMA cabe e o
+      // pod ainda está vazio, entra a mais curta disponível (nunca empilha
+      // estourando) — o resto espera o próximo intervalo
+      let pick = daFila(filaAds, (a) => a.duracao_seg <= restante + folga && t + a.duracao_seg <= teto)
+      if (!pick && sum === 0) {
+        const curtos = filaAds.filter((a) => t + a.duracao_seg <= teto)
         if (curtos.length === 0) break
-        pick = curtos.reduce((a, b) => (a.duracao_seg <= b.duracao_seg ? a : b))
-      } else break
+        const menor = curtos.reduce((a, b) => (a.duracao_seg <= b.duracao_seg ? a : b))
+        pick = daFila(filaAds, (a) => a.id === menor.id)
+      }
+      if (!pick) break
       push(pick.id, t, t + pick.duracao_seg, 0)
       t += pick.duracao_seg
       sum += pick.duracao_seg
-      usados.add(pick.id)
-      lastAd = pick.id
     }
     // janela de promoção: enquanto a maratona não começou, o intervalo
     // fecha com UMA promo do evento (rodízio entre as elegíveis) — é assim
     // que você fica sabendo durante a semana que sábado tem maratona
-    const eleg = promosEvento.filter((p) => t < p.ate)
-    if (eleg.length > 0) {
-      const pr = porId.get(eleg[peIdx++ % eleg.length].id)
-      if (pr && !usados.has(pr.id) && t + pr.duracao_seg <= teto) {
-        push(pr.id, t, t + pr.duracao_seg, 0)
-        t += pr.duracao_seg
-        sum += pr.duracao_seg
-        lastAd = pr.id
-      }
+    const eleg = promosEvento.filter((p) => t < p.ate).map((p) => p.id)
+    const pr = daPoolCondicional(eleg, (m) => t + m.duracao_seg <= teto)
+    if (pr) {
+      push(pr.id, t, t + pr.duracao_seg, 0)
+      t += pr.duracao_seg
+      sum += pr.duracao_seg
     }
     // fecha o pod com a vinheta de VOLTA ("estamos de volta com X"), colada no
     // retorno do programa — só quando houve intervalo DE VERDADE (entrou ad) e
     // estamos no universo da série. Sem isso, dois bumpers grudariam sem break
     // no meio ("voltamos já" seguido de "estamos de volta").
     const voltas = serieCtx ? voltaDe.get(serieCtx) ?? [] : []
-    if (sum > 0 && voltas.length > 0) {
-      const vp = porId.get(voltas[voIdx++ % voltas.length])
-      if (vp && t + vp.duracao_seg <= teto) {
-        push(vp.id, t, t + vp.duracao_seg, 0)
-        t += vp.duracao_seg
-      }
+    const vp = sum > 0 ? daPoolCondicional(voltas, (m) => t + m.duracao_seg <= teto) : undefined
+    if (vp) {
+      push(vp.id, t, t + vp.duracao_seg, 0)
+      t += vp.duracao_seg
     }
     if (sum > 0 || bumpers.length > 0) ultimoPodFim = t
   }
 
-  // agenda um conteúdo com seus breaks nos cue points (pods do MEIO do
-  // programa nunca levam "a seguir" — o próximo bloco é a continuação dele)
+  // Agenda um conteúdo INTEIRO com seus breaks nos cue points (pods do MEIO do
+  // programa nunca levam "a seguir" — o próximo bloco é a continuação dele).
+  // O `teto` (hora da próxima âncora) NÃO decepa mais o programa: quem chama só
+  // manda o que cabe, e aqui quem cede espaço são os INTERVALOS do meio — cada
+  // um só pode usar a folga que sobra depois de reservar o resto do episódio.
+  // Cortar programa na hora da âncora era o comportamento antigo e o Gabriel
+  // vetou (set/2026): "um episódio acaba cortando outro… ficar cortando programa
+  // fica bem chato, o ideal é passar comerciais mesmo".
   const agendaConteudo = (c: MediaRow, teto = Infinity) => {
     // marca localmente pro rodízio/âncora desta run não repetir; a GRAVAÇÃO do
     // last_played_at é só na exibição real (commitAired), nunca no planejamento
     c.last_played_at = t
+    usadoNaRun.add(c.id)
     const cues = (cuesOf[c.id] ?? []).filter((x) => x > 0 && x < c.duracao_seg)
+    // ORÇAMENTO dos intervalos deste episódio quando há âncora à frente: eles
+    // podem usar a sobra até a hora MENOS o menor programa do canal. Assim os
+    // breaks não comem o espaço do programa seguinte — sem isso, dois minutos de
+    // intervalo aqui viram dez minutos de comercial colados na âncora (o vão
+    // deixa de caber qualquer desenho). Se nem o menor programa cabe na sobra,
+    // não há o que proteger: os intervalos usam o que quiserem.
+    const sobra = teto === Infinity ? Infinity : teto - t - c.duracao_seg
+    const orcamento = sobra === Infinity || sobra < menorConteudo ? sobra : sobra - menorConteudo
+    let gastoPods = 0
     let pos = 0
     for (const cue of cues) {
-      const seg = cue - pos
-      if (t + seg > teto) { // o conteúdo cruzaria a âncora: corta nela (EPG sem buraco)
-        if (teto > t) push(c.id, t, teto, pos / SEGMENT_DURATION)
-        t = teto
-        return
-      }
-      push(c.id, t, t + seg, pos / SEGMENT_DURATION)
-      t += seg
+      push(c.id, t, t + (cue - pos), pos / SEGMENT_DURATION)
+      t += cue - pos
       pos = cue
-      breakPod(c.series_id, teto) // pod no MEIO do programa: o bumper dele pode abrir
-      if (t >= teto) return // o pod encostou na âncora
+      // pod no MEIO do programa (o bumper dele pode abrir): limitado pela FOLGA
+      // (o que falta de episódio tem que caber antes da âncora) e pelo orçamento
+      const antes = t
+      breakPod(c.series_id, Math.min(
+        teto === Infinity ? Infinity : teto - (c.duracao_seg - pos),
+        t + orcamento - gastoPods,
+      ))
+      gastoPods += t - antes
     }
-    const rest = c.duracao_seg - pos
-    if (t + rest > teto) {
-      if (teto > t) push(c.id, t, teto, pos / SEGMENT_DURATION)
-      t = teto
-      return
-    }
-    push(c.id, t, t + rest, pos / SEGMENT_DURATION)
-    t += rest
+    push(c.id, t, t + (c.duracao_seg - pos), pos / SEGMENT_DURATION)
+    t += c.duracao_seg - pos
   }
 
   // O intervalo ENTRE programas é montado já sabendo quem vem a seguir:
   // fecha com a promo "a seguir <série>" confirmada quando existir (colada
   // no programa prometido, como TV de verdade). Quando fecha com a promo,
   // ela faz o papel da vinheta de abertura.
-  let asIdx = 0
   let ultimaSerie: string | null = null
   const podEntrePrograma = (proxima: MediaRow, continuacao: boolean, teto = Infinity): boolean => {
     // continuacao = próximo episódio do MESMO bloco (mesma série, emendado): é
@@ -506,11 +562,115 @@ export async function scheduleChannel(
     breakPod(mesmaSerie, teto)
     if (continuacao) return false
     const promoIds = proxima.series_id ? aSeguirDe.get(proxima.series_id) ?? [] : []
-    const promo = promoIds.length > 0 ? porId.get(promoIds[asIdx++ % promoIds.length]) : undefined
-    if (!promo || t + promo.duracao_seg > teto) return false
+    const promo = daPoolCondicional(promoIds, (m) => t + m.duracao_seg <= teto)
+    if (!promo) return false
     push(promo.id, t, t + promo.duracao_seg, 0)
     t += promo.duracao_seg
     return true
+  }
+
+  // Avança o cursor do rodízio (bloco/episódio dentro do bloco).
+  const avancaCursor = () => {
+    ei++
+    if (ei >= blocos[bi % blocos.length].length) { bi++; ei = 0 }
+  }
+
+  // Espia o próximo do rodízio SEM consumi-lo, pulando o que já entrou nesta
+  // montagem (o encaixe pode ter adiantado um episódio que estava mais à frente
+  // na fila). Esgotado o acervo, a marca zera e a volta recomeça.
+  const espiaRodizio = (): { item: MediaRow; continuacao: boolean } => {
+    if (usadoNaRun.size >= contents.length) usadoNaRun.clear()
+    for (let guarda = 0; guarda < contents.length; guarda++) {
+      const item = blocos[bi % blocos.length][ei]
+      // continuação = não é o 1º do bloco E emenda a mesma série que saiu agora;
+      // se um evento entrou no meio do bloco, ultimaSerie muda e o bloco reabre
+      if (!usadoNaRun.has(item.id)) {
+        return { item, continuacao: ei > 0 && item.series_id != null && item.series_id === ultimaSerie }
+      }
+      avancaCursor()
+    }
+    return { item: blocos[bi % blocos.length][ei], continuacao: false } // tudo usado: repete
+  }
+
+  // VÃO MORTO de uma escolha: o que sobraria até a âncora depois do programa e
+  // do intervalo seguinte, quando essa sobra é pequena demais pra caber
+  // qualquer outro programa do canal. Esse tempo vira comercial, e é ele que
+  // vira o blocão de 10min colado na hora — o objetivo da escolha é zerá-lo.
+  const vaoMorto = (dur: number, espaco: number): number => {
+    const sobra = espaco - dur - alvoBase
+    return sobra > 0 && sobra < menorConteudo ? sobra : 0
+  }
+
+  // ENCAIXE: escolhe o que entra numa janela que termina na âncora. Serve pros
+  // dois casos: o próximo do rodízio não cabe (antes isto era o corte do
+  // episódio, vetado pelo Gabriel) ou cabe mas deixaria um vão morto. Ranking:
+  // menor vão morto → maior duração → menos tocado. Assim a janela é preenchida
+  // com PROGRAMA em vez de comercial, e o papel de "tapa-buraco" roda entre os
+  // desenhos curtos em vez de cair sempre no mesmo. Fora da busca: a série da
+  // própria âncora (senão o "bloco das 16h" começaria antes das 16h) e o que já
+  // entrou nesta run.
+  const encaixe = (espaco: number, serieDaAncora: string | null): MediaRow | null => {
+    const cands = contents.filter((m) =>
+      m.duracao_seg <= espaco && !usadoNaRun.has(m.id) &&
+      !(serieDaAncora && m.series_id === serieDaAncora))
+    if (cands.length === 0) return null
+    return cands.sort((a, b) =>
+      vaoMorto(a.duracao_seg, espaco) - vaoMorto(b.duracao_seg, espaco) ||
+      b.duracao_seg - a.duracao_seg ||
+      (a.last_played_at ?? 0) - (b.last_played_at ?? 0) ||
+      a.id.localeCompare(b.id))[0]
+  }
+
+  // ENCHIMENTO: nada mais cabe antes da âncora ⇒ o vão vira INTERVALO, que é o
+  // que a TV faz (e o que o Gabriel pediu no lugar do corte). Comerciais até a
+  // hora, sem repetir peça enquanto houver distinta, fechando EXATO (toda
+  // duração do acervo é múltiplo de 10s, como a hora da âncora) e terminando na
+  // promo "a seguir <série da âncora>" quando existe uma confirmada — é assim
+  // que a TV entra no programa da hora cheia. Devolve false só quando o canal
+  // não tem comercial nenhum (aí quem chama decide o que fazer com o vão).
+  let enchimentoSeg = 0
+  const enchimento = (teto: number, serieDepois?: string | null): boolean => {
+    if (filaAds.length === 0) return false
+    const curta = filaAds.reduce((a, b) => (a.duracao_seg <= b.duracao_seg ? a : b))
+    // menor peça capaz de tapar sobra (vinheta de 10s conta: é ela que fecha o
+    // "toco" quando o comercial mais curto do canal é grande demais)
+    const menorPeca = Math.min(curta.duracao_seg, ...filaVins.map((v) => v.duracao_seg))
+    // A peça certa pro que falta, sempre pela FILA (mais antiga primeiro):
+    // fechar EXATO manda; senão a mais antiga que caiba sem deixar um "toco"
+    // que nenhuma peça preenche; senão qualquer uma que caiba; por último a
+    // vinheta do canal, que é curta e cai bem colada no programa da hora.
+    const proxima = (restante: number): MediaRow | undefined =>
+      daFila(filaAds, (a) => a.duracao_seg === restante)
+      ?? daFila(filaAds, (a) => a.duracao_seg <= restante && restante - a.duracao_seg >= menorPeca)
+      ?? daFila(filaAds, (a) => a.duracao_seg <= restante)
+      ?? daFila(filaVins, (v) => v.duracao_seg <= restante)
+    // `estoura`: quando NADA mais cabe, passa alguns segundos da hora em vez de
+    // deixar buraco na EPG (buraco tira o canal do ar; 10s de atraso ninguém vê,
+    // e a grace da âncora cobre). Só vale no fechamento contra a âncora.
+    const encheAte = (limite: number, estoura: boolean) => {
+      while (t < limite) {
+        const pick = proxima(limite - t)
+          ?? (estoura ? daFila(filaAds, (a) => a.duracao_seg === curta.duracao_seg) : undefined)
+        if (!pick) return
+        push(pick.id, t, t + pick.duracao_seg, 0)
+        t += pick.duracao_seg
+      }
+    }
+    const t0 = t
+    // reserva o fim do intervalo pra promo "a seguir" do bloco que vem (só a
+    // confirmada; sem promo, o intervalo é só comercial, como antes)
+    const promoIds = serieDepois ? aSeguirDe.get(serieDepois) ?? [] : []
+    const promo = daPoolCondicional(promoIds, (m) => teto - t > m.duracao_seg)
+    const reserva = promo ? promo.duracao_seg : 0
+    encheAte(teto - reserva, reserva === 0)
+    if (promo && t + promo.duracao_seg <= teto) {
+      push(promo.id, t, t + promo.duracao_seg, 0)
+      t += promo.duracao_seg
+    }
+    encheAte(teto, true) // o que ainda faltar (a promo pode não ter cabido)
+    ultimoPodFim = t
+    enchimentoSeg += t - t0
+    return t > t0
   }
 
   // canal recém-nascido não abre com intervalo; grade em extensão (append)
@@ -551,15 +711,20 @@ export async function scheduleChannel(
     }
     return best + 1 + (perdidasNoGap.get(sid) ?? 0) // nunca exibida → 0 (+ gap)
   }
-  const scheduleAncora = (a: Ancora): boolean => {
+  // `teto` = hora da PRÓXIMA âncora. O bloco fixo também respeita quem vem
+  // depois dele: os intervalos dele não invadem a hora seguinte e cedem espaço
+  // pra caber mais um programa no vão (o mesmo orçamento do agendaConteudo). Se
+  // o bloco em si passar da hora seguinte, ele vai INTEIRO mesmo assim e a
+  // âncora seguinte entra atrasada — a grace cobre. Cortar, nunca.
+  const scheduleAncora = (a: Ancora, teto = Infinity): boolean => {
     const eps = episodiosDaSerie(a.series_id)
     if (eps.length === 0) return false // série sumiu do pool: âncora ignorada
     for (let k = 0; k < a.episodios; k++) {
       const i = ancCursor.get(a.series_id) ?? ancCursorInit(a.series_id, eps)
       ancCursor.set(a.series_id, i + 1)
       const ep = eps[i % eps.length]
-      if (k > 0) breakPod(ep.series_id) // intervalo entre episódios do bloco (universo da série)
-      agendaConteudo(ep)
+      if (k > 0) breakPod(ep.series_id, teto) // intervalo entre episódios do bloco (universo da série)
+      agendaConteudo(ep, teto)
       ultimaSerie = ep.series_id
     }
     return true
@@ -592,36 +757,61 @@ export async function scheduleChannel(
     // toca o bloco fixo — na hora quando pontual, atrasado quando espremido
     if (!ev && anc && t >= anc.start - 5) {
       ancIdx++
-      if (scheduleAncora(anc)) continue
+      // a âncora seguinte é o teto do bloco fixo (intervalos e orçamento)
+      if (scheduleAncora(anc, ancIdx < ancoras.length ? ancoras[ancIdx].start : Infinity)) continue
       anc = null // série sumiu do pool: ignora esta âncora nesta iteração
     }
 
     const evMedia = ev ? proximoDaMaratona(ev) : undefined
     // teto = hora da próxima âncora: NADA (intervalo, vinheta ou episódio) a
-    // ultrapassa, pra a grade fixa começar pontual sem deixar buraco na EPG. Um
-    // episódio que a cruzaria é cortado na hora; um intervalo é encurtado. Sem
-    // âncora à vista (ou durante maratona, que manda) = Infinity. Âncora JÁ
-    // atrasada (start <= t, esperando a grace) não vira teto — teto no passado
-    // faria t andar pra trás e travar o loop.
-    const teto = !evMedia && anc && anc.start > t ? anc.start : Infinity
+    // ultrapassa, pra a grade fixa começar pontual sem deixar buraco na EPG. O
+    // que não couber inteiro não entra (nunca mais é cortado); o vão vira
+    // programa curto + intervalo. Sem âncora à vista (ou durante maratona, que
+    // manda) = Infinity. Âncora JÁ atrasada (start <= t, esperando a grace) não
+    // vira teto — teto no passado faria t andar pra trás e travar o loop.
+    let teto = !evMedia && anc && anc.start > t ? anc.start : Infinity
 
-    // espia o próximo do rodízio SEM consumir o cursor — se um intervalo encostar
-    // na âncora, o cursor fica intacto e o episódio espiado toca depois dela.
-    let bloco: MediaRow[] | null = null
+    // espia o próximo do rodízio SEM consumir o cursor — se ele não couber antes
+    // da âncora, o cursor fica intacto e ele toca depois dela.
+    let doRodizio = false
     let prox: MediaRow
     let continuacao = false
     if (evMedia) {
       prox = evMedia // a maratona cuida da própria emenda; não mexe no cursor de blocos
     } else {
-      bloco = blocos[bi % blocos.length]
-      prox = bloco[ei]
-      // continuação = não é o 1º do bloco E emenda a mesma série que saiu agora;
-      // se um evento entrou no meio do bloco, ultimaSerie muda e o bloco reabre
-      continuacao = ei > 0 && prox.series_id != null && prox.series_id === ultimaSerie
+      const espiado = espiaRodizio()
+      prox = espiado.item
+      continuacao = espiado.continuacao
+      doRodizio = true
     }
 
+    // NUNCA cortar programa no meio (veto do Gabriel, set/2026). Antes disto o
+    // rodízio começava um episódio de 22min faltando 2min pra âncora e o teto o
+    // decepava: 1 em cada 4 exibições ia ao ar pela metade (algumas perdendo
+    // 97%). Agora só entra o que couber INTEIRO e o vão é resolvido nesta ordem:
+    // (1) um conteúdo mais curto que caiba, (2) intervalo até a hora.
+    if (doRodizio && t + prox.duracao_seg > teto) {
+      const alt = encaixe(teto - t, anc?.series_id ?? null)
+      if (alt) {
+        prox = alt
+        continuacao = false
+        doRodizio = false // encaixe não consome o cursor: o espiado toca depois da âncora
+      } else if (enchimento(teto, anc?.series_id ?? null)) {
+        continue // encheu até a hora: a âncora dispara no topo da próxima volta
+      } else {
+        // canal sem comercial nenhum pra tapar o vão: o programa vai INTEIRO e a
+        // âncora entra atrasada (a grace cobre). Cortar, nunca mais.
+        teto = Infinity
+      }
+    }
+
+    // Tudo que vem ANTES do programa (intervalo, promo "a seguir", vinheta) cede
+    // espaço a ele: o teto dos acessórios é a hora da âncora MENOS a duração do
+    // programa. É isso que o faz caber inteiro sem atrasar a grade fixa.
+    const tetoAcessorios = teto === Infinity ? Infinity : teto - prox.duracao_seg
+
     let fechouComASeguir = false
-    if (!primeiroBloco) fechouComASeguir = podEntrePrograma(prox, continuacao, teto)
+    if (!primeiroBloco) fechouComASeguir = podEntrePrograma(prox, continuacao, tetoAcessorios)
     primeiroBloco = false
 
     // o intervalo encostou na hora da âncora? cede a vez a ela (prox intacto no
@@ -630,21 +820,23 @@ export async function scheduleChannel(
     // giraria sem avançar t — o rodízio preenche e a âncora espera o evento.
     if (!ev && anc && t >= anc.start - 5) continue
 
-    // vinheta de abertura só quando começa um bloco NOVO, e se couber antes da âncora
-    if (!evMedia && !continuacao && !fechouComASeguir && vins.length > 0) {
-      const v = vins[vi % vins.length]
-      if (t + v.duracao_seg <= teto) {
-        vi++
+    // Vinheta de abertura: só quando começa um bloco NOVO, se couber antes da
+    // âncora, pela fila (não é sempre a mesma) e respeitando o DESCANSO — num
+    // canal com uma vinheta só no rodízio, abrir todo bloco com ela era o que
+    // fazia a mesma peça tocar 30× por dia. Sem vinheta disponível, o bloco
+    // começa direto: melhor sem vinheta do que com a vinheta decorada.
+    if (!evMedia && !continuacao && !fechouComASeguir) {
+      const v = daFila(filaVins, (x) => t + x.duracao_seg <= tetoAcessorios
+        && t - (ultimaVezDe.get(x.id) ?? -Infinity) >= DESCANSO_CONDICIONAL)
+      if (v) {
+        ultimaVezDe.set(v.id, t)
         push(v.id, t, t + v.duracao_seg, 0)
         t += v.duracao_seg
       }
     }
 
-    // consome o cursor e agenda; agendaConteudo corta o episódio no teto se cruzar
-    if (bloco) {
-      ei++
-      if (ei >= bloco.length) { bi++; ei = 0 }
-    }
+    // consome o cursor e agenda o programa INTEIRO (que cabe: checado acima)
+    if (doRodizio) avancaCursor()
     agendaConteudo(prox, teto)
     ultimaSerie = prox.series_id
   }
@@ -666,6 +858,7 @@ export async function scheduleChannel(
     added: rows.length,
     until: t,
     ...(ancorasPerdidas > 0 ? { ancorasPerdidas } : {}),
+    ...(enchimentoSeg > 0 ? { enchimentoSeg } : {}),
   }
 }
 

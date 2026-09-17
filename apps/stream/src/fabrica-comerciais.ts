@@ -253,10 +253,19 @@ async function canalVoz(db: D1Database, canal: string): Promise<{ vozId: string 
 }
 
 async function serieTitulo(db: D1Database, sid: string): Promise<string> {
+  // fonte preferida: o clipe de voz 'nome' — é o nome LIMPO da série ("Os
+  // Padrinhos Mágicos"). MIN(title) de episódio traz sujeira ("1X01 - ...")
+  // e fica só de fallback; e só episódio/filme, porque comerciais da própria
+  // série também carregam series_id e o MIN() pegava "Maratona X — ...".
+  const nome = await db.prepare(
+    "SELECT rotulo FROM voice_clips WHERE categoria = 'nome' AND series_id = ?1 ORDER BY created_at DESC LIMIT 1",
+  ).bind(sid).first<{ rotulo: string }>()
+  if (nome?.rotulo) return nome.rotulo.replace(/[.!?]+$/, '').trim()
   const row = await db.prepare(
     `SELECT MIN(json_extract(metadata, '$.title')) titulo
      FROM media_items
-     WHERE json_extract(metadata, '$.series_id') = ?1`,
+     WHERE json_extract(metadata, '$.series_id') = ?1
+       AND tipo IN ('episodio', 'filme')`,
   ).bind(sid).first<{ titulo: string | null }>()
   return row?.titulo ?? sid
 }
@@ -423,7 +432,289 @@ fabricaComerciais.post('/slots', async (c) => {
   ).bind(id, canal, seriesId, JSON.stringify(dias), hora, episodios).run()
   // replaneja a grade do canal pra âncora já valer (append-only, preserva o no ar)
   await scheduleChannel(c.env, canal, 48, true)
+  // âncora nova pode merecer comercial (e aposentar um antigo) — em background
+  c.executionCtx.waitUntil(reconciliaComerciaisGrade(c.env).catch(() => { /* cron cobre */ }))
   return c.json({ ok: true, id }, 201)
+})
+
+// ── reconciliador grade ↔ comerciais ────────────────────────────────────────
+// Mantém a fábrica viva SEM operador (cron diário + após mexer nas âncoras +
+// botão do painel): âncora ativa sem comercial anunciando aquele horário →
+// job novo na fila (só quando o kit da série já existe — clipes de fala,
+// amostra e molde; nada de gastar TTS aqui). Âncora que saiu da grade →
+// o comercial que a anunciava vira mentira e é RECOLHIDO do rodízio
+// (promessa 'ignorar' + marca `desatualizado`, reversível se a âncora voltar).
+// O que faltar pra gerar vira relatório de lacunas em config, pro painel.
+
+type Bloco = { canal: string; series_id: string; dias: number[]; hora: string; fim: number }
+
+function minutosDe(hora: string): number {
+  const [h, m] = hora.split(':').map(Number)
+  return h * 60 + m
+}
+
+function horaDe(min: number): string {
+  return `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`
+}
+
+export type ReconGrade = {
+  // `frase` = rótulo da locução desta versão (variação); ausente no retry de job
+  gerados: Array<{ canal: string; series_id: string; hora: string; frase?: string }>
+  reativados: string[]
+  recolhidos: string[]
+  lacunas: Array<{ canal: string; series_id: string; hora: string; faltando: string[] }>
+}
+
+export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGrade> {
+  const relatorio: ReconGrade = { gerados: [], reativados: [], recolhidos: [], lacunas: [] }
+
+  // âncoras ativas (tabela pode não existir num ambiente atrasado: sem grade, sem trabalho)
+  let slots: Array<{ canal: string; series_id: string; dias: number[]; hora: string }> = []
+  try {
+    const { results } = await env.DB.prepare(
+      "SELECT canal, series_id, dias, hora FROM channel_slots WHERE status = 'ativa' ORDER BY canal, hora",
+    ).all<{ canal: string; series_id: string; dias: string; hora: string }>()
+    slots = results.map((r) => {
+      let dias: number[] = []
+      try { dias = diasCanon(JSON.parse(r.dias)) } catch { /* âncora corrompida: fora */ }
+      return { canal: r.canal, series_id: r.series_id, dias, hora: r.hora }
+    }).filter((s) => s.dias.length > 0 && limpaHora(s.hora))
+  } catch { return relatorio }
+  if (slots.length === 0) return relatorio
+
+  // meia-horas consecutivas da MESMA série (12:00 + 12:30) são um bloco só:
+  // um comercial anunciando o começo, como a TV real fazia — não um por faixa
+  const blocos: Bloco[] = []
+  for (const s of slots) {
+    const ant = blocos.at(-1)
+    if (ant && ant.canal === s.canal && ant.series_id === s.series_id
+      && ant.dias.join() === s.dias.join() && minutosDe(s.hora) === ant.fim) {
+      ant.fim += 30
+    } else {
+      blocos.push({ ...s, fim: minutosDe(s.hora) + 30 })
+    }
+  }
+
+  type JobRecon = { id: string; media_id: string; series_id: string; slot_dias: string; slot_hora: string; status: string; frase_id: string | null; canal: string }
+  let jobs: JobRecon[] = []
+  try {
+    jobs = (await env.DB.prepare(
+      `SELECT j.id, j.media_id, j.series_id, j.slot_dias, j.slot_hora, j.status, j.frase_id, m.canal
+       FROM commercial_build_jobs j JOIN moldes m ON m.id = j.molde_id
+       WHERE j.event_id IS NULL`,
+    ).all<JobRecon>()).results
+  } catch { return relatorio }
+
+  // `transcript` entra junto: é a pista de QUAL frase a frota antiga usou (ver
+  // `fraseDoJob` abaixo) — aqueles jobs nasceram sem `frase_id`, sorteando na montagem.
+  const { results: promRows } = await env.DB.prepare(
+    `SELECT p.media_id, p.status, p.proposta, p.transcript FROM media_promises p
+     JOIN commercial_build_jobs j ON j.media_id = p.media_id WHERE j.event_id IS NULL`,
+  ).all<{ media_id: string; status: string; proposta: string | null; transcript: string | null }>()
+  const promDe = new Map(promRows.map((p) => [p.media_id, p]))
+  const prontos = new Set(
+    (await env.DB.prepare(
+      `SELECT m.id FROM media_items m JOIN commercial_build_jobs j ON j.media_id = m.id
+       WHERE m.status = 'ready' AND j.event_id IS NULL`,
+    ).all<{ id: string }>()).results.map((r) => r.id),
+  )
+
+  // kit disponível por canal/série — checado em memória, ANTES de enfileirar
+  // (job que nasceria só pra morrer em "faltam clipes" vira lacuna no relatório)
+  const { results: clipRows } = await env.DB.prepare(
+    'SELECT id, canal, categoria, chave, series_id, rotulo FROM voice_clips ORDER BY created_at, id',
+  ).all<{ id: string; canal: string; categoria: string; chave: string | null; series_id: string | null; rotulo: string }>()
+  const clipSerie = new Set<string>()
+  const clipChave = new Set<string>()
+  // todas as FRASES gravadas de cada canal|série, em ordem estável: é a lista de
+  // variações possíveis do comercial daquele programa
+  const frasesDe = new Map<string, Array<{ id: string; rotulo: string }>>()
+  for (const r of clipRows) {
+    if (r.series_id) clipSerie.add(`${r.canal}|${r.categoria}|${r.series_id}`)
+    if (r.chave) clipChave.add(`${r.canal}|${r.categoria}|${r.chave}`)
+    if (r.categoria === 'frase' && r.series_id) {
+      const k = `${r.canal}|${r.series_id}`
+      const arr = frasesDe.get(k) ?? []
+      arr.push({ id: r.id, rotulo: r.rotulo })
+      frasesDe.set(k, arr)
+    }
+  }
+  const samples = new Set(
+    (await env.DB.prepare('SELECT DISTINCT series_id FROM program_samples').all<{ series_id: string }>())
+      .results.map((r) => r.series_id),
+  )
+  const { results: moldeRows } = await env.DB.prepare(
+    'SELECT id, canal FROM moldes ORDER BY created_at DESC',
+  ).all<{ id: string; canal: string }>()
+  const moldeDe = new Map<string, string>()
+  for (const m of moldeRows) if (!moldeDe.has(m.canal)) moldeDe.set(m.canal, m.id)
+
+  const subconjunto = (a: number[], b: number[]) => a.every((n) => b.includes(n))
+  // canal|série|hora → conjunto de FRASES já cobertas (uma versão do comercial
+  // por frase). '?' = versão da frota antiga, que ocupa vaga sem travar frase.
+  const cobertos = new Map<string, Set<string>>()
+  const cobre = (chave: string, frase: string) => {
+    const s = cobertos.get(chave) ?? new Set<string>()
+    s.add(frase)
+    cobertos.set(chave, s)
+  }
+  const norm = (x: string) => x.replace(/\s+/g, ' ').trim().toLowerCase()
+  // Qual frase ESTE comercial usa: o job novo grava `frase_id`; o da frota antiga
+  // sorteava na montagem e a pista é o transcript da promessa, que COMEÇA pela
+  // frase. Sem pista, '?' — conta como uma variação, mas não bloqueia nenhuma.
+  const fraseDoJob = (j: JobRecon, transcript?: string | null): string => {
+    if (j.frase_id) return j.frase_id
+    const t = transcript ? norm(transcript) : ''
+    const achou = t
+      ? (frasesDe.get(`${j.canal}|${j.series_id}`) ?? []).find((f) => t.startsWith(norm(f.rotulo)))
+      : undefined
+    return achou?.id ?? '?'
+  }
+  const errosPorChave = new Map<string, string>()
+  const canaisMexidos = new Set<string>()
+
+  for (const j of jobs) {
+    const hora = limpaHora(j.slot_hora)
+    if (!hora) continue
+    const chave = `${j.canal}|${j.series_id}|${hora}`
+    const p = promDe.get(j.media_id)
+    const frase = fraseDoJob(j, p?.transcript)
+    if (j.status === 'queued' || j.status === 'processing') { cobre(chave, frase); continue }
+    if (j.status === 'error') { errosPorChave.set(chave, j.id); continue }
+    if (j.status !== 'done' || !prontos.has(j.media_id)) continue
+
+    let dias: number[] = []
+    try { dias = diasCanon(JSON.parse(j.slot_dias)) } catch { /* job antigo corrompido */ }
+    // o comercial continua VERDADE se alguma âncora exibe a série naquela hora
+    // em pelo menos os dias anunciados (anunciar seg–sex quando passa todo dia é ok)
+    const bate = slots.some((s) =>
+      s.canal === j.canal && s.series_id === j.series_id && s.hora === hora && subconjunto(dias, s.dias))
+
+    let prop: Record<string, unknown> | null = null
+    try { prop = p?.proposta ? JSON.parse(p.proposta) : null } catch { /* proposta corrompida */ }
+
+    if (bate) {
+      cobre(chave, frase)
+      // condicao canônica do slot anunciado — o scheduler valida contra as
+      // âncoras (etapa 3), então promo que bate vive como 'confirmada'
+      const condicao = JSON.stringify({
+        tipo: 'bloco_horario', series_id: j.series_id, dias, hora,
+        descricao: typeof prop?.descricao === 'string' ? prop.descricao : undefined,
+      })
+      if (p?.status === 'ignorar' && prop?.desatualizado) {
+        delete prop.desatualizado
+        await env.DB.prepare(
+          "UPDATE media_promises SET status='confirmada', proposta=?2, condicao=?3, updated_at=unixepoch() WHERE media_id=?1",
+        ).bind(j.media_id, JSON.stringify(prop), condicao).run()
+        relatorio.reativados.push(j.media_id)
+        canaisMexidos.add(j.canal)
+      } else if (p?.status === 'generico' && prop?.tipo === 'bloco_horario') {
+        // upgrade da frota antiga (nascida 'generico' antes da etapa 3): quem
+        // bate com a grade vira 'confirmada' com condicao e passa a se
+        // auto-retirar se a âncora sumir entre duas reconciliações
+        await env.DB.prepare(
+          "UPDATE media_promises SET status='confirmada', condicao=?2, updated_at=unixepoch() WHERE media_id=?1",
+        ).bind(j.media_id, condicao).run()
+        canaisMexidos.add(j.canal)
+      }
+    } else if (prop?.tipo === 'bloco_horario' && (p!.status === 'generico' || p!.status === 'confirmada')) {
+      // só recolhe promessa de HORÁRIO da fábrica — 'ignorar' manual e
+      // reclassificações do operador (ex.: rebaixou pra generico puro) ficam em paz
+      prop.desatualizado = true
+      await env.DB.prepare(
+        "UPDATE media_promises SET status='ignorar', proposta=?2, updated_at=unixepoch() WHERE media_id=?1",
+      ).bind(j.media_id, JSON.stringify(prop)).run()
+      relatorio.recolhidos.push(j.media_id)
+      canaisMexidos.add(j.canal)
+    }
+  }
+
+  // Quantas VERSÕES do mesmo comercial um bloco merece: uma por frase gravada da
+  // série, até este teto. Pedido do Gabriel (15/09/2026): "montamos um modelo pra
+  // ter variações nos áudios de cada comercial com as frases do ElevenLabs, mas
+  // só vejo 1 frase passando para cada comercial, quase dá pra decorar". A frase
+  // era sorteada UMA vez, na montagem — e aquele sorteio virava o comercial
+  // daquele horário pra sempre. Agora cada frase vira uma versão de verdade, com
+  // `frase_id` fixo, e o rodízio do agendador alterna entre elas.
+  const MAX_VARIACOES = 3
+  // Teto de versões novas por rodada: o build roda no Actions grátis e a fila é a
+  // mesma da ingestão de episódios. O cron diário (e o botão do painel) completam
+  // o resto nas rodadas seguintes, em vez de despejar ~80 jobs de uma vez.
+  const MAX_NOVAS_POR_RODADA = 15
+  let novas = 0
+
+  for (const b of blocos) {
+    // frases já cobertas por versão viva/na fila (somando as meias-horas emendadas)
+    const cobertas = new Set<string>()
+    for (let m = minutosDe(b.hora); m < b.fim; m += 30) {
+      for (const f of cobertos.get(`${b.canal}|${b.series_id}|${horaDe(m)}`) ?? []) cobertas.add(f)
+    }
+    const frases = frasesDe.get(`${b.canal}|${b.series_id}`) ?? []
+    const alvo = Math.min(MAX_VARIACOES, Math.max(1, frases.length))
+    if (cobertas.size >= alvo) continue
+
+    const fk = freqKey(b.dias)
+    const faltando = [
+      !moldeDe.has(b.canal) && 'molde do canal',
+      !clipSerie.has(`${b.canal}|nome|${b.series_id}`) && 'fala: nome da série',
+      !clipSerie.has(`${b.canal}|frase|${b.series_id}`) && 'fala: frase da série',
+      !clipChave.has(`${b.canal}|horario|${b.hora}`) && `fala: horário ${b.hora}`,
+      !clipChave.has(`${b.canal}|frequencia|${fk}`) && `fala: frequência ${fk}`,
+      !clipChave.has(`${b.canal}|conector|encerramento`) && 'fala: assinatura do canal',
+      !samples.has(b.series_id) && 'amostra de vídeo da série',
+    ].filter(Boolean) as string[]
+    if (faltando.length) {
+      relatorio.lacunas.push({ canal: b.canal, series_id: b.series_id, hora: b.hora, faltando })
+      continue
+    }
+
+    // kit completo: um job em erro do mesmo slot vira retry — só quando o bloco
+    // ainda não tem NENHUMA versão viva (senão a variação nova é que faz falta)
+    const jobErro = errosPorChave.get(`${b.canal}|${b.series_id}|${b.hora}`)
+    if (jobErro && cobertas.size === 0) {
+      await env.DB.prepare(
+        "UPDATE commercial_build_jobs SET status='queued', error=NULL, progress=0, updated_at=unixepoch() WHERE id=?1 AND status='error'",
+      ).bind(jobErro).run()
+      relatorio.gerados.push({ canal: b.canal, series_id: b.series_id, hora: b.hora })
+      continue
+    }
+
+    // uma versão por frase ainda não usada neste bloco, até completar o alvo
+    const pendentes = frases.filter((f) => !cobertas.has(f.id)).slice(0, alvo - cobertas.size)
+    if (pendentes.length === 0) continue
+    const titulo = await serieTitulo(env.DB, b.series_id)
+    for (const f of pendentes) {
+      if (novas >= MAX_NOVAS_POR_RODADA) break
+      const mediaId = `com_${b.series_id.slice(0, 20)}_${b.hora.replace(':', 'h')}_${hex(4)}`.slice(0, 40)
+      const dup = await env.DB.prepare(
+        `SELECT id FROM media_items WHERE id = ?1
+         UNION SELECT media_id FROM commercial_build_jobs WHERE media_id = ?1`,
+      ).bind(mediaId).first()
+      if (dup) continue // colisão raríssima de sufixo: o próximo ciclo tenta de novo
+      // título IGUAL entre as versões de propósito: é o mesmo comercial daquele
+      // horário, o que muda é a locução (e o título aparece no guia)
+      await env.DB.prepare(
+        `INSERT INTO commercial_build_jobs
+           (id, media_id, title, molde_id, series_id, slot_dias, slot_hora, frase_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+      ).bind(`cb_${hex()}`, mediaId, `${titulo} — ${textoTela(b.dias, b.hora)}`,
+        moldeDe.get(b.canal)!, b.series_id, JSON.stringify(b.dias), b.hora, f.id).run()
+      novas++
+      relatorio.gerados.push({ canal: b.canal, series_id: b.series_id, hora: b.hora, frase: f.rotulo })
+    }
+  }
+
+  for (const canal of canaisMexidos) await scheduleChannel(env, canal, 48, true)
+  if (relatorio.gerados.length > 0) await dispatchFabrica(env)
+  try {
+    await env.DB.prepare("INSERT OR REPLACE INTO config (k, v) VALUES ('reconcilia_comerciais', ?1)")
+      .bind(JSON.stringify({ em: Math.floor(Date.now() / 1000), ...relatorio })).run()
+  } catch { /* relatório é best-effort */ }
+  return relatorio
+}
+
+fabricaComerciais.post('/reconciliar-grade', async (c) => {
+  return c.json(await reconciliaComerciaisGrade(c.env))
 })
 
 fabricaComerciais.delete('/slots/:id', async (c) => {
@@ -432,6 +723,8 @@ fabricaComerciais.delete('/slots/:id', async (c) => {
   if (!row) return c.json({ error: 'âncora não encontrada' }, 404)
   await c.env.DB.prepare('DELETE FROM channel_slots WHERE id = ?1').bind(c.req.param('id')).run()
   await scheduleChannel(c.env, row.canal, 48, true) // remove o slot da grade
+  // o comercial que anunciava esta âncora virou mentira — recolher em background
+  c.executionCtx.waitUntil(reconciliaComerciaisGrade(c.env).catch(() => { /* cron cobre */ }))
   return c.json({ ok: true })
 })
 
@@ -607,7 +900,8 @@ fabricaComerciais.post('/voz/preview', async (c) => {
 fabricaComerciais.post('/canais/:id/biblioteca-base', async (c) => {
   const canal = slugify(c.req.param('id'))
   if (!(await canalExiste(c.env.DB, canal))) return c.json({ error: 'canal desconhecido' }, 400)
-  const b = await c.req.json<{ dry_run?: boolean; limit?: number }>().catch(() => ({} as { dry_run?: boolean; limit?: number }))
+  const b = await c.req.json<{ dry_run?: boolean; limit?: number; voz_id?: string }>()
+    .catch(() => ({} as { dry_run?: boolean; limit?: number; voz_id?: string }))
   const itens = bibliotecaBase(canal)
 
   const existentes = await c.env.DB.prepare(
@@ -624,7 +918,11 @@ fabricaComerciais.post('/canais/:id/biblioteca-base', async (c) => {
     })
   }
 
-  const { vozId, config } = await canalVoz(c.env.DB, canal)
+  const { vozId: vozCanal, config } = await canalVoz(c.env.DB, canal)
+  // `voz_id` sobrepõe a voz do canal — é o que permite montar a biblioteca com
+  // voz do catálogo público enquanto o plano não deixa usar a clonada
+  // (docs/features/fabrica-comerciais.md → "Voz provisória").
+  const vozId = String(b.voz_id ?? '').trim() || vozCanal
   if (!vozId) return c.json({ error: `canal ${canal} está sem voz configurada` }, 400)
   const limit = Math.max(1, Math.min(40, Number(b.limit ?? 20)))
   let gerados = 0
@@ -843,21 +1141,25 @@ fabricaComerciais.post('/:id/done', async (c) => {
          condicao=excluded.condicao, status='confirmada', updated_at=unixepoch()`,
     ).bind(mediaId, String(b.transcript ?? '').slice(0, 8000), cond)
   } else {
-    // Comercial comum de grade → nasce 'generico' (recado que roda o dia todo,
-    // "passa com os outros"). A proposta guarda o bloco_horario + slot na descrição.
-    // Confirmação manual prévia é respeitada (não rebaixa uma 'confirmada').
-    const proposta = b.proposta ?? {
-      tipo: 'bloco_horario', series_id: job.series_id,
+    // Comercial de grade → nasce 'confirmada' com condicao bloco_horario: é
+    // FIEL POR CONSTRUÇÃO (fase 12, etapa 3) — o job veio de uma âncora real,
+    // e o scheduler só o roda enquanto existir âncora que cumpra o anunciado
+    // (série + hora + dias). Montado no SERVIDOR pelos dados do job — o
+    // builder externo não é confiável pra isso. 'ignorar' manual do operador
+    // é respeitado (rebuild não ressuscita peça vetada).
+    const cond = JSON.stringify({
+      tipo: 'bloco_horario', series_id: job.series_id, dias, hora,
       descricao: `${job.title} (${textoTela(dias, hora)})`, confianca: 1,
-    }
+    })
     promiseStmt = c.env.DB.prepare(
-      `INSERT INTO media_promises (media_id, transcript, proposta, status)
-       VALUES (?1, ?2, ?3, 'generico')
+      `INSERT INTO media_promises (media_id, transcript, proposta, condicao, status)
+       VALUES (?1, ?2, ?3, ?3, 'confirmada')
        ON CONFLICT(media_id) DO UPDATE SET
          transcript=excluded.transcript, proposta=excluded.proposta,
-         status=CASE WHEN media_promises.status='confirmada' THEN media_promises.status ELSE 'generico' END,
+         condicao=excluded.condicao,
+         status=CASE WHEN media_promises.status='ignorar' THEN media_promises.status ELSE 'confirmada' END,
          updated_at=unixepoch()`,
-    ).bind(mediaId, String(b.transcript ?? '').slice(0, 8000), JSON.stringify(proposta))
+    ).bind(mediaId, String(b.transcript ?? '').slice(0, 8000), cond)
   }
   await c.env.DB.batch([jobDone, promiseStmt])
   const molde = await c.env.DB.prepare('SELECT canal FROM moldes WHERE id = ?1')

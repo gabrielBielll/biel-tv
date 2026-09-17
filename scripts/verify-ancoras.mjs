@@ -7,6 +7,8 @@
 //   3) canal SEM âncora → grade roda igual (aditivo/reversível).
 //   4) série da âncora ausente → pula, não quebra.
 //   5) maratona (channel_events) tem prioridade sobre a âncora.
+//   6) PROGRAMA NUNCA É CORTADO pela âncora: o que não cabe inteiro não entra,
+//      e o vão vira curta (encaixe) + intervalo (enchimento).
 import { scheduleChannel } from '../apps/stream/src/scheduler.ts'
 
 let pass = 0
@@ -251,6 +253,97 @@ const A = spHoraToEpoch(spDateStr(base), HORA) // unix exato da âncora
   const naAncora = rows.find((r) => r.start === A)
   check('downtime conta: 2 ocorrências perdidas ⇒ âncora toca bbb_03',
     naAncora?.media_id === 'bbb_03', naAncora ? naAncora.media_id : 'nada em A')
+}
+
+// ── 10. NUNCA CORTA PROGRAMA: o que não cabe inteiro antes da âncora não entra;
+//    o vão vira intervalo. (Veto do Gabriel, set/2026: "um episódio acaba
+//    cortando outro… ficar cortando programa fica bem chato, o ideal é passar
+//    comerciais mesmo". Antes disto, 1 em cada 4 exibições ia ao ar pela metade.)
+//    Agrupa as linhas de cada exibição (elas são quebradas nos cue points) e
+//    exige a duração INTEIRA da mídia.
+function ocorrencias(rows, catalogo) {
+  const porId = new Map(catalogo.map((m) => [m.id, m]))
+  const out = []
+  let cur = null
+  for (const r of rows) {
+    const m = porId.get(r.media_id)
+    if (!m || (m.tipo !== 'episodio' && m.tipo !== 'filme')) continue
+    if (cur && cur.id === r.media_id) { cur.dur += r.end - r.start; cur.fim = r.end }
+    else { if (cur) out.push(cur); cur = { id: r.media_id, dur: r.end - r.start, ini: r.start, total: m.duracao_seg } }
+  }
+  if (cur) out.push(cur)
+  return out
+}
+{
+  const cues = {}
+  for (const m of CATALOGO) if (m.tipo === 'episodio') cues[m.id] = [300, 600, 900]
+  let cortados = 0, furou = 0, comIntervalo = 0
+  const horarios = [31, 37, 44, 49, 52, 58, 63, 71, 77, 83]
+  for (const off of horarios) {
+    const H = new Date((agora + off * 60 - 3 * 3600) * 1000).toISOString().slice(11, 16)
+    const AA = spHoraToEpoch(spDateStr(agora + off * 60), H)
+    const { db, epg } = makeDB({
+      channel: CANAL, media: CATALOGO, cues,
+      slots: [{ series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: H, episodios: 1 }],
+    })
+    await scheduleChannel({ DB: db }, 'ch', 3, true)
+    const rows = grade(epg)
+    for (const o of ocorrencias(rows, CATALOGO)) {
+      if (o.dur < o.total) { cortados++; console.log(`  ✗ H=${H}: ${o.id} foi ao ar ${o.dur}s de ${o.total}s`) }
+    }
+    if (!contigua(rows) || !nadaCruza(rows, AA)) furou++
+    // o vão imediatamente antes da âncora é intervalo (comercial/vinheta)
+    const ultimo = rows.filter((r) => r.end <= AA).pop()
+    const tipo = CATALOGO.find((m) => m.id === ultimo?.media_id)?.tipo
+    if (tipo === 'comercial' || tipo === 'vinheta') comIntervalo++
+  }
+  check(`programa NUNCA é cortado pela âncora (${horarios.length} horários)`, cortados === 0, `${cortados} cortes`)
+  check('sem corte, a EPG segue contígua e a âncora pontual', furou === 0)
+  check('o vão antes da âncora vira INTERVALO (comercial no lugar do corte)',
+    comIntervalo > 0, `${comIntervalo}/${horarios.length} horários fecharam com intervalo`)
+}
+
+// ── 11. ENCAIXE: sobrando um vão que não cabe o episódio do rodízio, entra um
+//    conteúdo CURTO que caiba — programa no lugar de 10min de comercial.
+{
+  const CURTOS = [1, 2, 3].map((i) => ({
+    id: `cur_0${i}`, tipo: 'episodio', duracao_seg: 300, segment_count: 30, last_played_at: 0, series_id: 'cur',
+  }))
+  const CAT = [...CATALOGO, ...CURTOS]
+  // a run começa 1000s antes da âncora: não cabe episódio de 1200s, cabe curta
+  const { db, epg } = makeDB({
+    channel: CANAL, media: CAT, covEnd: A - 1000,
+    slots: [{ series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 }],
+  })
+  await scheduleChannel({ DB: db }, 'ch', 3, false)
+  const rows = grade(epg)
+  const noVao = rows.filter((r) => r.start >= A - 1000 && r.end <= A)
+  check('encaixe: curta entra no vão em vez de virar só comercial',
+    noVao.some((r) => r.media_id.startsWith('cur_')),
+    noVao.map((r) => r.media_id).join(' ').slice(0, 90))
+  check('encaixe: EPG contígua e âncora pontual',
+    contigua(rows) && nadaCruza(rows, A) && rows.some((r) => r.start === A && r.media_id.startsWith('bbb')))
+  check('encaixe: nada cortado', ocorrencias(rows, CAT).every((o) => o.dur === o.total))
+}
+
+// ── 12. ENCHIMENTO: canal SEM conteúdo curto ⇒ o vão inteiro vira comercial,
+//    e a âncora continua entrando na hora (nunca buraco na EPG).
+{
+  const { db, epg } = makeDB({
+    channel: CANAL, media: CATALOGO, covEnd: A - 900,
+    slots: [{ series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 }],
+  })
+  await scheduleChannel({ DB: db }, 'ch', 3, false)
+  const rows = grade(epg)
+  const noVao = rows.filter((r) => r.start >= A - 900 && r.end <= A)
+  const soIntervalo = noVao.length > 0 && noVao.every((r) => {
+    const tipo = CATALOGO.find((m) => m.id === r.media_id)?.tipo
+    return tipo === 'comercial' || tipo === 'vinheta'
+  })
+  check('enchimento: vão de 15min sem curta vira intervalo inteiro', soIntervalo,
+    `${noVao.length} peças`)
+  check('enchimento: âncora entra na hora e a EPG fica contígua',
+    contigua(rows) && rows.some((r) => r.start === A && r.media_id.startsWith('bbb')))
 }
 
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)

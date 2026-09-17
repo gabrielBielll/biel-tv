@@ -792,7 +792,12 @@ admin.delete('/media/:id', async (c) => {
 
   // trava de prefixo: só apagamos chaves media/<id>/... — nunca um prefixo
   // vazio/estranho, e a barra final garante que media/ep_x2 não cai junto.
-  if (!/^media\/[a-z0-9_]{3,40}$/.test(m.path_prefix)) {
+  // O teto é 120 porque id de peça recortada é descritivo e passa fácil de 40
+  // ("com_cn_invasao_referencia_cn_programacao_andy_esquilo_…" tem 83): com o
+  // limite antigo a exclusão morria com 500 em 115 mídias do acervo — bug
+  // encontrado em 16/09/2026 na limpeza dos rebaixados. O que a trava tem que
+  // barrar é prefixo VAZIO ou fora de `media/`, não id comprido.
+  if (!/^media\/[a-z0-9_]{3,120}$/.test(m.path_prefix)) {
     return c.json({ error: `path_prefix inesperado ("${m.path_prefix}") — deleção recusada por segurança` }, 500)
   }
   const prefixo = `${m.path_prefix}/`
@@ -834,7 +839,12 @@ admin.delete('/media/:id', async (c) => {
     c.env.DB.prepare('DELETE FROM media_channels WHERE media_id = ?1').bind(id),
     c.env.DB.prepare('DELETE FROM epg_virtual WHERE media_id = ?1').bind(id),
     c.env.DB.prepare('DELETE FROM channel_events WHERE media_id = ?1').bind(id),
-    c.env.DB.prepare(`UPDATE directives SET status = 'cancelada' WHERE status = 'ativa' AND payload LIKE ?1`).bind(`%"${id}"%`),
+    // `instr` em vez de LIKE: o D1 recusa padrão LIKE com mais de 50 caracteres
+    // ("LIKE or GLOB pattern too complex"), e `%"<id>"%` passa disso com id de
+    // 47+ chars — que é o caso das peças recortadas (nome descritivo). Custou
+    // 500 silencioso na exclusão de 3 mídias em 16/09/2026; `instr` não tem
+    // limite de tamanho e faz a mesma busca literal.
+    c.env.DB.prepare("UPDATE directives SET status = 'cancelada' WHERE status = 'ativa' AND instr(payload, '\"' || ?1 || '\"') > 0").bind(id),
     c.env.DB.prepare('DELETE FROM ingest_jobs WHERE id = ?1').bind(id),
     c.env.DB.prepare('DELETE FROM upload_parts WHERE session_id IN (SELECT id FROM upload_sessions WHERE media_id = ?1)').bind(id),
     c.env.DB.prepare('DELETE FROM upload_sessions WHERE media_id = ?1').bind(id),
