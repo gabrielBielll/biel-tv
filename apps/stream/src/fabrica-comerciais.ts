@@ -1162,9 +1162,13 @@ fabricaComerciais.post('/:id/done', async (c) => {
     ).bind(mediaId, String(b.transcript ?? '').slice(0, 8000), cond)
   }
   await c.env.DB.batch([jobDone, promiseStmt])
-  const molde = await c.env.DB.prepare('SELECT canal FROM moldes WHERE id = ?1')
-    .bind(job.molde_id).first<{ canal: string }>()
-  if (molde?.canal) await scheduleChannel(c.env, molde.canal, 48, true)
+  // NÃO replaneja a grade aqui. Comercial pronto entra no pool sozinho: a
+  // extensão diária (append) já o usa nos blocos novos, e qualquer rebuild
+  // posterior o distribui pelo resto. Replanejar por comercial custava ~2.600
+  // escritas e ~50 mil leituras por peça — com a fábrica montando uma leva de
+  // 15 por rodada (variação de frase), 32 builds consumiram 44% da cota de
+  // LEITURA e estouraram 2× a de ESCRITA do dia (medido em 17/09/2026), sem
+  // ganho real: o que muda é só quando a peça começa a aparecer.
   return c.json({ ok: true })
 })
 
