@@ -284,9 +284,11 @@ async function resolvePayload(env: Bindings, job: BuildJobRow) {
     .bind(job.molde_id).first<MoldeRow>()
   if (!molde) throw new Error(`molde não encontrado: ${job.molde_id}`)
 
+  // `sample_id` explícito vale mesmo que a amostra seja de OUTRA série: é assim
+  // que o comercial de BLOCO (Cinescópio, Toonami) mostra vídeo — o bloco não
+  // tem filmagem própria, usa a de um dos programas que moram nele.
   const sample = job.sample_id
-    ? await env.DB.prepare('SELECT * FROM program_samples WHERE id = ?1 AND series_id = ?2')
-      .bind(job.sample_id, job.series_id).first<SampleRow>()
+    ? await env.DB.prepare('SELECT * FROM program_samples WHERE id = ?1').bind(job.sample_id).first<SampleRow>()
     : await env.DB.prepare('SELECT * FROM program_samples WHERE series_id = ?1 ORDER BY created_at DESC LIMIT 1')
       .bind(job.series_id).first<SampleRow>()
   if (!sample) throw new Error(`cadastre uma amostra de vídeo ou link do YouTube para ${job.series_id}`)
@@ -428,11 +430,15 @@ fabricaComerciais.post('/slots', async (c) => {
   // reprise: repete o que a série já exibiu hoje em vez de gastar episódio novo
   // (o trilho manhã/tarde/noite das grades de 2005 — ver migration 0029)
   const reprise = b.reprise ? 1 : 0
+  // `bloco`: slug do bloco nomeado a que esta faixa pertence (Cinescópio,
+  // Toonami...). É o que faz a fábrica anunciar o bloco — ver migration 0030.
+  const bloco = b.bloco ? slugify(String(b.bloco)) : null
+  if (bloco && !SLUG.test(bloco)) return c.json({ error: 'bloco inválido' }, 400)
   const id = `sl_${hex()}`
   await c.env.DB.prepare(
-    `INSERT INTO channel_slots (id, canal, series_id, dias, hora, episodios, reprise)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
-  ).bind(id, canal, seriesId, JSON.stringify(dias), hora, episodios, reprise).run()
+    `INSERT INTO channel_slots (id, canal, series_id, dias, hora, episodios, reprise, bloco)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+  ).bind(id, canal, seriesId, JSON.stringify(dias), hora, episodios, reprise, bloco).run()
   // replaneja a grade do canal pra âncora já valer (append-only, preserva o no ar)
   await scheduleChannel(c.env, canal, 48, true)
   // âncora nova pode merecer comercial (e aposentar um antigo) — em background
@@ -449,7 +455,10 @@ fabricaComerciais.post('/slots', async (c) => {
 // (promessa 'ignorar' + marca `desatualizado`, reversível se a âncora voltar).
 // O que faltar pra gerar vira relatório de lacunas em config, pro painel.
 
-type Bloco = { canal: string; series_id: string; dias: number[]; hora: string; fim: number }
+// `Faixa` = meias-horas consecutivas da MESMA série juntadas (12:00 + 12:30 é
+// uma faixa só). Não confundir com BLOCO NOMEADO (`channel_blocos`), que é o
+// guarda-chuva com identidade — Cinescópio, Toonami, Hora Acme.
+type Faixa = { canal: string; series_id: string; dias: number[]; hora: string; fim: number; bloco?: string | null }
 
 function minutosDe(hora: string): number {
   const [h, m] = hora.split(':').map(Number)
@@ -472,22 +481,26 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
   const relatorio: ReconGrade = { gerados: [], reativados: [], recolhidos: [], lacunas: [] }
 
   // âncoras ativas (tabela pode não existir num ambiente atrasado: sem grade, sem trabalho)
-  let slots: Array<{ canal: string; series_id: string; dias: number[]; hora: string }> = []
+  let slots: Array<{ canal: string; series_id: string; dias: number[]; hora: string; bloco?: string | null }> = []
   try {
-    const { results } = await env.DB.prepare(
-      "SELECT canal, series_id, dias, hora FROM channel_slots WHERE status = 'ativa' ORDER BY canal, hora",
-    ).all<{ canal: string; series_id: string; dias: string; hora: string }>()
+    type SlotRow = { canal: string; series_id: string; dias: string; hora: string; bloco?: string | null }
+    const sel = (cols: string) => env.DB.prepare(
+      `SELECT ${cols} FROM channel_slots WHERE status = 'ativa' ORDER BY canal, hora`,
+    ).all<SlotRow>()
+    // `bloco` é da migration 0030; banco atrasado cai no SELECT sem ela
+    const { results } = await sel('canal, series_id, dias, hora, bloco')
+      .catch(() => sel('canal, series_id, dias, hora'))
     slots = results.map((r) => {
       let dias: number[] = []
       try { dias = diasCanon(JSON.parse(r.dias)) } catch { /* âncora corrompida: fora */ }
-      return { canal: r.canal, series_id: r.series_id, dias, hora: r.hora }
+      return { canal: r.canal, series_id: r.series_id, dias, hora: r.hora, bloco: r.bloco ?? null }
     }).filter((s) => s.dias.length > 0 && limpaHora(s.hora))
   } catch { return relatorio }
   if (slots.length === 0) return relatorio
 
   // meia-horas consecutivas da MESMA série (12:00 + 12:30) são um bloco só:
   // um comercial anunciando o começo, como a TV real fazia — não um por faixa
-  const blocos: Bloco[] = []
+  const blocos: Faixa[] = []
   for (const s of slots) {
     const ant = blocos.at(-1)
     if (ant && ant.canal === s.canal && ant.series_id === s.series_id
@@ -542,10 +555,14 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
       frasesDe.set(k, arr)
     }
   }
-  const samples = new Set(
-    (await env.DB.prepare('SELECT DISTINCT series_id FROM program_samples').all<{ series_id: string }>())
-      .results.map((r) => r.series_id),
-  )
+  // id da amostra por série (não só "existe"): o comercial de BLOCO precisa
+  // apontar explicitamente pra amostra de um dos programas dele
+  const amostraDe = new Map<string, string>()
+  for (const r of (await env.DB.prepare(
+    'SELECT id, series_id FROM program_samples ORDER BY created_at DESC',
+  ).all<{ id: string; series_id: string }>()).results) {
+    if (!amostraDe.has(r.series_id)) amostraDe.set(r.series_id, r.id)
+  }
   const { results: moldeRows } = await env.DB.prepare(
     'SELECT id, canal FROM moldes ORDER BY created_at DESC',
   ).all<{ id: string; canal: string }>()
@@ -646,7 +663,25 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
   const MAX_NOVAS_POR_RODADA = 15
   let novas = 0
 
-  for (const b of blocos) {
+  // BLOCOS NOMEADOS entram na mesma esteira: pra fábrica, um bloco é uma
+  // "série" cujo series_id é o slug (o kit `nome`/`frase` é cadastrado assim) e
+  // cuja amostra de vídeo vem de um dos programas que moram nele. Só entra
+  // bloco que TEM faixa apontando pra ele — nunca anunciar bloco vazio.
+  let blocosNomeados: Array<Faixa & { nome: string }> = []
+  try {
+    const { results: bn } = await env.DB.prepare(
+      "SELECT canal, slug, nome, dias, hora FROM channel_blocos WHERE status = 'ativa'",
+    ).all<{ canal: string; slug: string; nome: string; dias: string; hora: string }>()
+    blocosNomeados = bn.map((r) => {
+      let dias: number[] = []
+      try { dias = diasCanon(JSON.parse(r.dias)) } catch { /* bloco corrompido: fora */ }
+      const hora = limpaHora(r.hora)
+      return { canal: r.canal, series_id: r.slug, nome: r.nome, dias, hora: hora ?? '', fim: 0 }
+    }).filter((b) => b.dias.length > 0 && b.hora
+      && slots.some((s) => s.canal === b.canal && s.bloco === b.series_id))
+  } catch { /* migration 0030 ainda não rodou: sem blocos nomeados */ }
+
+  for (const b of [...blocos, ...blocosNomeados]) {
     // frases já cobertas por versão viva/na fila (somando as meias-horas emendadas)
     const cobertas = new Set<string>()
     for (let m = minutosDe(b.hora); m < b.fim; m += 30) {
@@ -657,6 +692,14 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
     if (cobertas.size >= alvo) continue
 
     const fk = freqKey(b.dias)
+    // Bloco nomeado não tem filmagem própria: empresta a amostra do primeiro
+    // programa que mora nele (ordem de horário, pra ser determinístico).
+    const daSerie = amostraDe.get(b.series_id)
+    const doBloco = daSerie ?? (b.bloco === undefined
+      ? slots.filter((sl) => sl.canal === b.canal && sl.bloco === b.series_id)
+        .map((sl) => amostraDe.get(sl.series_id)).find(Boolean)
+      : undefined)
+    const amostraId = daSerie ?? doBloco
     const faltando = [
       !moldeDe.has(b.canal) && 'molde do canal',
       !clipSerie.has(`${b.canal}|nome|${b.series_id}`) && 'fala: nome da série',
@@ -664,7 +707,7 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
       !clipChave.has(`${b.canal}|horario|${b.hora}`) && `fala: horário ${b.hora}`,
       !clipChave.has(`${b.canal}|frequencia|${fk}`) && `fala: frequência ${fk}`,
       !clipChave.has(`${b.canal}|conector|encerramento`) && 'fala: assinatura do canal',
-      !samples.has(b.series_id) && 'amostra de vídeo da série',
+      !amostraId && 'amostra de vídeo (da série, ou de algum programa do bloco)',
     ].filter(Boolean) as string[]
     if (faltando.length) {
       relatorio.lacunas.push({ canal: b.canal, series_id: b.series_id, hora: b.hora, faltando })
@@ -685,7 +728,8 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
     // uma versão por frase ainda não usada neste bloco, até completar o alvo
     const pendentes = frases.filter((f) => !cobertas.has(f.id)).slice(0, alvo - cobertas.size)
     if (pendentes.length === 0) continue
-    const titulo = await serieTitulo(env.DB, b.series_id)
+    // bloco nomeado já traz o nome de exibição; série busca o clipe 'nome'
+    const titulo = 'nome' in b ? (b as { nome: string }).nome : await serieTitulo(env.DB, b.series_id)
     for (const f of pendentes) {
       if (novas >= MAX_NOVAS_POR_RODADA) break
       const mediaId = `com_${b.series_id.slice(0, 20)}_${b.hora.replace(':', 'h')}_${hex(4)}`.slice(0, 40)
@@ -698,10 +742,10 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
       // horário, o que muda é a locução (e o título aparece no guia)
       await env.DB.prepare(
         `INSERT INTO commercial_build_jobs
-           (id, media_id, title, molde_id, series_id, slot_dias, slot_hora, frase_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+           (id, media_id, title, molde_id, series_id, slot_dias, slot_hora, frase_id, sample_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
       ).bind(`cb_${hex()}`, mediaId, `${titulo} — ${textoTela(b.dias, b.hora)}`,
-        moldeDe.get(b.canal)!, b.series_id, JSON.stringify(b.dias), b.hora, f.id).run()
+        moldeDe.get(b.canal)!, b.series_id, JSON.stringify(b.dias), b.hora, f.id, amostraId!).run()
       novas++
       relatorio.gerados.push({ canal: b.canal, series_id: b.series_id, hora: b.hora, frase: f.rotulo })
     }
@@ -715,6 +759,47 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
   } catch { /* relatório é best-effort */ }
   return relatorio
 }
+
+// ── blocos nomeados (Cinescópio, Toonami, Hora Acme...) ────────────────────
+// O bloco não põe programa no ar — quem faz isso é o channel_slots. Ele dá
+// NOME, hora e dias a um conjunto de faixas, e é isso que a fábrica anuncia.
+fabricaComerciais.post('/blocos', async (c) => {
+  const b = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!b) return c.json({ error: 'JSON inválido' }, 400)
+  const canal = slugify(String(b.canal ?? ''))
+  if (!SLUG.test(canal) || !(await canalExiste(c.env.DB, canal))) return c.json({ error: 'canal desconhecido' }, 400)
+  const slug = slugify(String(b.slug ?? b.nome ?? ''))
+  if (!SLUG.test(slug)) return c.json({ error: 'slug inválido' }, 400)
+  const nome = String(b.nome ?? '').trim().slice(0, 80)
+  if (!nome) return c.json({ error: 'nome é obrigatório' }, 400)
+  const dias = diasCanon(b.dias)
+  if (dias.length === 0) return c.json({ error: 'escolha ao menos um dia' }, 400)
+  const hora = limpaHora(b.hora)
+  if (!hora) return c.json({ error: 'hora deve ser HH:MM' }, 400)
+  const id = `bl_${hex()}`
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO channel_blocos (id, canal, slug, nome, dias, hora) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+    ).bind(id, canal, slug, nome, JSON.stringify(dias), hora).run()
+  } catch (e) {
+    const msg = String((e as Error).message ?? e)
+    if (msg.includes('UNIQUE')) return c.json({ error: `o canal ${canal} já tem um bloco "${slug}"` }, 409)
+    if (msg.includes('no such table')) return c.json({ error: 'migration 0030 ainda não rodou neste banco' }, 503)
+    throw e
+  }
+  // bloco novo merece comercial — em background, o cron cobre se falhar
+  c.executionCtx.waitUntil(reconciliaComerciaisGrade(c.env).catch(() => { /* cron cobre */ }))
+  return c.json({ ok: true, id, slug }, 201)
+})
+
+fabricaComerciais.delete('/blocos/:id', async (c) => {
+  const r = await c.env.DB.prepare("UPDATE channel_blocos SET status='cancelada' WHERE id = ?1")
+    .bind(c.req.param('id')).run()
+  if ((r.meta.changes ?? 0) === 0) return c.json({ error: 'bloco não encontrado' }, 404)
+  // o comercial que anunciava o bloco vira mentira — o reconciliador recolhe
+  c.executionCtx.waitUntil(reconciliaComerciaisGrade(c.env).catch(() => { /* cron cobre */ }))
+  return c.json({ ok: true })
+})
 
 fabricaComerciais.post('/reconciliar-grade', async (c) => {
   return c.json(await reconciliaComerciaisGrade(c.env))

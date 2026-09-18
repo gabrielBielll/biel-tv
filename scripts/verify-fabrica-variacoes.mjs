@@ -27,7 +27,7 @@ const CLIPES_BASE = (canal) => [
 ]
 
 // D1 mockado: responde por trecho de SQL e captura os INSERT de job.
-function makeDB({ slots, jobs = [], promessas = [], prontos = [], clipes, samples, moldes }) {
+function makeDB({ slots, jobs = [], promessas = [], prontos = [], clipes, samples, moldes, blocos = [] }) {
   const inseridos = []
   const updates = []
   const prepare = (sql) => {
@@ -36,11 +36,12 @@ function makeDB({ slots, jobs = [], promessas = [], prontos = [], clipes, sample
       bind: (...a) => { args = a; return api },
       all: async () => {
         if (/FROM channel_slots/.test(sql)) return { results: slots }
+        if (/FROM channel_blocos/.test(sql)) return { results: blocos }
         if (/FROM commercial_build_jobs j JOIN moldes/.test(sql)) return { results: jobs }
         if (/FROM media_promises p\s+JOIN/.test(sql)) return { results: promessas }
         if (/FROM media_items m JOIN commercial_build_jobs/.test(sql)) return { results: prontos.map((id) => ({ id })) }
         if (/FROM voice_clips ORDER BY created_at/.test(sql)) return { results: clipes }
-        if (/FROM program_samples/.test(sql)) return { results: samples.map((s) => ({ series_id: s })) }
+        if (/FROM program_samples/.test(sql)) return { results: samples.map((s) => ({ id: `sm_${s}`, series_id: s })) }
         if (/FROM moldes ORDER BY/.test(sql)) return { results: moldes }
         return { results: [] }
       },
@@ -51,7 +52,7 @@ function makeDB({ slots, jobs = [], promessas = [], prontos = [], clipes, sample
       },
       run: async () => {
         if (/INSERT INTO commercial_build_jobs/.test(sql)) {
-          inseridos.push({ id: args[0], media_id: args[1], title: args[2], series_id: args[4], hora: args[6], frase_id: args[7] ?? null })
+          inseridos.push({ id: args[0], media_id: args[1], title: args[2], series_id: args[4], hora: args[6], frase_id: args[7] ?? null, sample_id: args[8] ?? null })
         } else if (/^UPDATE/.test(sql.trim())) updates.push(sql.trim().slice(0, 40))
         return { meta: { changes: 1 } }
       },
@@ -144,6 +145,55 @@ const TRES_FRASES = [
   check('36 versões possíveis → no máximo 15 por rodada', inseridos.length === 15, `${inseridos.length} jobs`)
   const primeiraSerie = inseridos.filter((i) => i.series_id === 'serie_0')
   check('o teto não deixa bloco pela metade sem motivo (cobre por ordem)', primeiraSerie.length === 3)
+}
+
+// ── 7. BLOCO NOMEADO: vira comercial próprio, com amostra emprestada ────────
+//    (Cinescópio, Toonami, Hora Acme — o bloco não tem filmagem própria, usa a
+//     de um programa que mora nele)
+{
+  const clipes = [
+    ...CLIPES_BASE('jetix'),
+    { id: 'c_nome_pucca', canal: 'jetix', categoria: 'nome', chave: null, series_id: 'pucca', rotulo: 'Pucca' },
+    { id: 'f_pucca', canal: 'jetix', categoria: 'frase', chave: null, series_id: 'pucca', rotulo: 'Amor e macarrão.' },
+    // kit do BLOCO: nome e frase cadastrados com series_id = slug do bloco
+    { id: 'c_nome_cine', canal: 'jetix', categoria: 'nome', chave: null, series_id: 'cinescopio', rotulo: 'Cinescópio' },
+    { id: 'f_cine', canal: 'jetix', categoria: 'frase', chave: null, series_id: 'cinescopio', rotulo: 'Os melhores filmes da Jetix.' },
+    // bloco de fim de semana precisa da fala de frequência 'fimsemana'
+    { id: 'c_freq_fds', canal: 'jetix', categoria: 'frequencia', chave: 'fimsemana', series_id: null, rotulo: 'aos fins de semana' },
+  ]
+  const { env, inseridos } = makeDB({
+    slots: [{ canal: 'jetix', series_id: 'pucca', dias: '[6,7]', hora: '16:00', bloco: 'cinescopio' }],
+    blocos: [{ canal: 'jetix', slug: 'cinescopio', nome: 'Cinescópio', dias: '[6,7]', hora: '16:00' }],
+    clipes, samples: ['pucca'], moldes: MOLDES,   // amostra existe SÓ da série
+  })
+  const rep = await reconciliaComerciaisGrade(env)
+  const doBloco = inseridos.filter((i) => i.series_id === 'cinescopio')
+  check('bloco nomeado vira comercial próprio', doBloco.length === 1, `${doBloco.length} job(s)`)
+  check('comercial do bloco usa o nome do bloco no título',
+    (doBloco[0]?.title ?? '').startsWith('Cinescópio'), doBloco[0]?.title ?? '—')
+  check('bloco empresta a amostra de um programa dele', doBloco[0]?.sample_id === 'sm_pucca',
+    String(doBloco[0]?.sample_id))
+  check('a série do bloco continua ganhando o comercial dela',
+    inseridos.some((i) => i.series_id === 'pucca'))
+  check('bloco sem lacuna quando o kit está completo',
+    !rep.lacunas.some((l) => l.series_id === 'cinescopio'),
+    rep.lacunas.map((l) => l.series_id).join(',') || 'nenhuma')
+}
+
+// ── 8. bloco SEM faixa apontando pra ele não é anunciado ────────────────────
+{
+  const { env, inseridos } = makeDB({
+    slots: [{ canal: 'jetix', series_id: 'pucca', dias: '[6,7]', hora: '16:00' }],  // sem `bloco`
+    blocos: [{ canal: 'jetix', slug: 'cinescopio', nome: 'Cinescópio', dias: '[6,7]', hora: '16:00' }],
+    clipes: [...CLIPES_BASE('jetix'),
+      { id: 'c_freq_fds', canal: 'jetix', categoria: 'frequencia', chave: 'fimsemana', series_id: null, rotulo: 'aos fins de semana' },
+      { id: 'c_nome_pucca', canal: 'jetix', categoria: 'nome', chave: null, series_id: 'pucca', rotulo: 'Pucca' },
+      { id: 'f_pucca', canal: 'jetix', categoria: 'frase', chave: null, series_id: 'pucca', rotulo: 'Amor e macarrão.' }],
+    samples: ['pucca'], moldes: MOLDES,
+  })
+  await reconciliaComerciaisGrade(env)
+  check('bloco vazio (sem faixa) não é anunciado',
+    !inseridos.some((i) => i.series_id === 'cinescopio'))
 }
 
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)
