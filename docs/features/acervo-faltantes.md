@@ -134,6 +134,30 @@ onde reprocessar (cortar a tarja com `--crop` + `--fit fill`) devolve conteúdo
 que hoje não tem substituto — ou, se a fonte original ainda existir, re-baixar
 em 16:9 sai melhor que re-encodar o encode do R2.
 
+## 📥 7 downloads truncados — refazer a fonte
+
+Achados em 17/09/2026 no `.ingest-work` do celular: pastas de ingest que nunca
+chegaram ao catálogo porque o **download da fonte travou no meio**. O que existe
+localmente é transcodificação parcial (inútil como episódio), mas serve de
+registro de quais fontes precisam ser baixadas de novo. As pastas foram apagadas
+depois de anotar isto aqui.
+
+| episódio | o que tinha baixado | duração esperada |
+|---|---|---|
+| `ep_as_meninas_superpoderosas_s1_e04` | 47 seg ≈ 7min50 | ~11min |
+| `ep_as_meninas_superpoderosas_s2_e02` | 25 seg ≈ 4min10 | ~11min |
+| `ep_as_meninas_superpoderosas_s2_e07` | 52 seg ≈ 8min40 | ~11min |
+| `ep_coragem_o_cao_covarde_s2_e10` | 71 seg ≈ 11min50 | ~11min (quase completo) |
+| `ep_coragem_o_cao_covarde_s3_e12` | 42 seg ≈ 7min | ~11min |
+| `ep_looney_tunes_s9_e39` | 12 seg ≈ 2min | ~7min |
+| `ep_looney_tunes_s9_e55` | 36 seg ≈ 6min | ~7min |
+
+Batem com a lista de pendências da memória [[acervo-cn-manha-2005]] ("rebaixar
+downloads truncados"). O Coragem T02E10 chegou perto do fim — vale conferir se
+não está completo antes de rebaixar. Ao re-baixar, seguir
+[[verificar-fonte-antes-de-ingest]]: conferir truncamento (pacotes ≈ duração)
+ANTES de gastar transcodificação.
+
 ## 🎬 Filmes — a faixa que hoje não existe
 
 O acervo tem **um filme só**: `filme_as_meninas_superpoderosas_2002` (69 min, CN).
