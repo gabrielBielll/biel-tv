@@ -171,15 +171,19 @@ export async function scheduleChannel(
   // Âncoras de grade (slots FIXOS): série X toca no [dia + hora] fixo, todo dia
   // casado. O try/catch mantém a TV no ar mesmo se a migration ainda não rodou
   // (tabela ausente → sem âncoras, grade dinâmica normal — deploy à prova de ordem).
-  let slotsAtivos: Array<{ series_id: string; dias: number[]; hora: string; episodios: number }> = []
+  let slotsAtivos: Array<{ series_id: string; dias: number[]; hora: string; episodios: number; reprise: boolean }> = []
   try {
-    const { results: slotRows } = await env.DB.prepare(
-      "SELECT series_id, dias, hora, episodios FROM channel_slots WHERE canal = ?1 AND status = 'ativa'",
-    ).bind(canal).all<{ series_id: string; dias: string; hora: string; episodios: number }>()
+    type SlotRow = { series_id: string; dias: string; hora: string; episodios: number; reprise?: number }
+    const sel = (cols: string) => env.DB.prepare(
+      `SELECT ${cols} FROM channel_slots WHERE canal = ?1 AND status = 'ativa'`,
+    ).bind(canal).all<SlotRow>()
+    // `reprise` é da migration 0029; banco atrasado cai no SELECT sem ela
+    const { results: slotRows } = await sel('series_id, dias, hora, episodios, reprise')
+      .catch(() => sel('series_id, dias, hora, episodios'))
     slotsAtivos = slotRows.map((r) => {
       let dias: number[] = []
       try { dias = (JSON.parse(r.dias) as unknown[]).map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 7) } catch { /* slot corrompido: ignora */ }
-      return { series_id: r.series_id, dias, hora: r.hora, episodios: Math.max(1, r.episodios || 1) }
+      return { series_id: r.series_id, dias, hora: r.hora, episodios: Math.max(1, r.episodios || 1), reprise: (r.reprise ?? 0) !== 0 }
     }).filter((s) => s.dias.length > 0 && /^([01]\d|2[0-3]):[0-5]\d$/.test(s.hora))
   } catch { /* tabela ausente: sem âncoras */ }
 
@@ -357,7 +361,7 @@ export async function scheduleChannel(
   // só entra série com episódio pronto e cuja hora não caia dentro de uma maratona
   // (o evento manda). Vazio ⇒ laço idêntico ao de hoje (rodízio dinâmico puro).
   const seriesComEp = new Set(contents.map((m) => m.series_id).filter(Boolean) as string[])
-  type Ancora = { start: number; series_id: string; episodios: number }
+  type Ancora = { start: number; series_id: string; episodios: number; reprise: boolean }
   const ancoras: Ancora[] = []
   if (slotsAtivos.length > 0) {
     const vistos = new Set<string>()
@@ -384,12 +388,36 @@ export async function scheduleChannel(
         const chave = `${As}|${s.series_id}`
         if (vistos.has(chave)) continue
         vistos.add(chave)
-        ancoras.push({ start: As, series_id: s.series_id, episodios: s.episodios })
+        ancoras.push({ start: As, series_id: s.series_id, episodios: s.episodios, reprise: s.reprise })
       }
     }
     ancoras.sort((a, b) => a.start - b.start)
   }
   let ancIdx = 0
+
+  // O que cada série já exibiu em cada DIA (chave `series|YYYY-MM-DD` em SP) —
+  // é o que a âncora de reprise repete. Alimentado pelo próprio planejamento e
+  // semeado com o dia que já está na grade (o slot da tarde pode reprisar uma
+  // exibição da manhã que foi planejada numa run anterior).
+  const exibidoNoDia = new Map<string, string[]>()
+  const marcaExibido = (sid: string | null, mid: string, quando: number) => {
+    if (!sid) return
+    const k = `${sid}|${spDateStr(quando)}`
+    const lista = exibidoNoDia.get(k) ?? []
+    if (lista.at(-1) !== mid) lista.push(mid)
+    exibidoNoDia.set(k, lista)
+  }
+  if (slotsAtivos.some((s) => s.reprise)) {
+    // só paga a consulta quando o canal tem slot de reprise
+    const { results: hoje } = await env.DB.prepare(
+      `SELECT e.media_id id, e.start_time_virtual t, json_extract(m.metadata, '$.series_id') sid
+       FROM epg_virtual e JOIN media_items m ON m.id = e.media_id
+       WHERE e.canal = ?1 AND e.start_time_virtual > ?2 AND e.start_time_virtual < ?3
+         AND m.tipo IN ('episodio','filme')
+       ORDER BY e.start_time_virtual`,
+    ).bind(canal, t - 2 * DAY, target).all<{ id: string; t: number; sid: string | null }>()
+    for (const r of hoje) marcaExibido(r.sid, r.id, r.t)
+  }
 
   const rnd = mulberry32(hashStr(canal + new Date().toISOString().slice(0, 10)))
   // rotação em BLOCOS: episódios da mesma série emendados (até N seguidos),
@@ -534,6 +562,7 @@ export async function scheduleChannel(
     // last_played_at é só na exibição real (commitAired), nunca no planejamento
     c.last_played_at = t
     usadoNaRun.add(c.id)
+    marcaExibido(c.series_id, c.id, t)
     const cues = (cuesOf[c.id] ?? []).filter((x) => x > 0 && x < c.duracao_seg)
     // ORÇAMENTO dos intervalos deste episódio quando há âncora à frente: eles
     // podem usar a sobra até a hora MENOS o menor programa do canal. Assim os
@@ -734,6 +763,22 @@ export async function scheduleChannel(
   const scheduleAncora = (a: Ancora, teto = Infinity): boolean => {
     const eps = episodiosDaSerie(a.series_id)
     if (eps.length === 0) return false // série sumiu do pool: âncora ignorada
+    // REPRISE: repete o que a série exibiu HOJE, sem gastar episódio novo — é
+    // o trilho das grades de 2005 (mesma atração de manhã, à tarde e à noite).
+    // Se ainda não passou nada hoje, cai no comportamento normal: o primeiro
+    // slot do dia é sempre o inédito, mesmo marcado como reprise.
+    if (a.reprise) {
+      const doDia = exibidoNoDia.get(`${a.series_id}|${spDateStr(a.start)}`) ?? []
+      const repetir = doDia.slice(-a.episodios).map((id) => porId.get(id)).filter((m): m is MediaRow => Boolean(m))
+      if (repetir.length > 0) {
+        for (const ep of repetir) {
+          if (ep !== repetir[0]) breakPod(ep.series_id, teto)
+          agendaConteudo(ep, teto)
+          ultimaSerie = ep.series_id
+        }
+        return true
+      }
+    }
     for (let k = 0; k < a.episodios; k++) {
       const i = ancCursor.get(a.series_id) ?? ancCursorInit(a.series_id, eps)
       ancCursor.set(a.series_id, i + 1)

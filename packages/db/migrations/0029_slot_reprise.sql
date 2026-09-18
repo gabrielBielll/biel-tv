@@ -1,0 +1,14 @@
+-- Âncora de REPRISE: repete o episódio que a série já exibiu hoje, em vez de
+-- avançar pro próximo.
+--
+-- Por que: nas grades reais de 2005 (docs/features/grade-alvo-2005.md, recortes
+-- da Folha) quase metade dos programas repete no mesmo dia, sempre no mesmo
+-- trilho madrugada + dia + noite — "O Que Há de Novo, Scooby-Doo?" em 11:00,
+-- 14:00, 18:00 e 21:30; Sonic X em 02:00, 07:30 e 15:30. E era o MESMO episódio
+-- voltando, não três episódios diferentes. Sem esta marca, três âncoras da
+-- mesma série gastavam três episódios do acervo por dia e nunca reprisavam.
+--
+-- Semântica: slot com reprise=1 exibe a última exibição da série NO MESMO DIA
+-- (fuso de SP). Se a série ainda não passou hoje, o slot se comporta como
+-- âncora normal — ou seja, o primeiro do dia é sempre o inédito.
+ALTER TABLE channel_slots ADD COLUMN reprise INTEGER NOT NULL DEFAULT 0;

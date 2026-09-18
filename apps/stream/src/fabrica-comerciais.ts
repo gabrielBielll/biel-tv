@@ -425,11 +425,14 @@ fabricaComerciais.post('/slots', async (c) => {
   const hora = limpaHora(b.hora)
   if (!hora) return c.json({ error: 'hora deve ser HH:MM' }, 400)
   const episodios = Math.max(1, Math.min(20, Math.floor(Number(b.episodios ?? 1)) || 1))
+  // reprise: repete o que a série já exibiu hoje em vez de gastar episódio novo
+  // (o trilho manhã/tarde/noite das grades de 2005 — ver migration 0029)
+  const reprise = b.reprise ? 1 : 0
   const id = `sl_${hex()}`
   await c.env.DB.prepare(
-    `INSERT INTO channel_slots (id, canal, series_id, dias, hora, episodios)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
-  ).bind(id, canal, seriesId, JSON.stringify(dias), hora, episodios).run()
+    `INSERT INTO channel_slots (id, canal, series_id, dias, hora, episodios, reprise)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+  ).bind(id, canal, seriesId, JSON.stringify(dias), hora, episodios, reprise).run()
   // replaneja a grade do canal pra âncora já valer (append-only, preserva o no ar)
   await scheduleChannel(c.env, canal, 48, true)
   // âncora nova pode merecer comercial (e aposentar um antigo) — em background

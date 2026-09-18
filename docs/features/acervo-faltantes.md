@@ -10,26 +10,32 @@
 > **~ reconstruído** (madrugada/manhã estimadas). Um título que a grade repete em
 > vários horários rende mais que um que aparece uma vez.
 
-Hoje: **978 programas** no ar — CN 400 (19 séries), Jetix 394 (16), Disney 184 (8).
+Hoje (18/09): **1.074 programas** no ar — CN 474 (23 séries), Jetix 394 (16),
+Disney 206 (9).
+
+> Atualizado em 18/09: entraram **Clube das Winx (26), Laboratório de Dexter
+> (11), Pokémon (19) e Super Choque (18)** no Cartoon e **Cory na Casa Branca
+> (21)** na Disney — quatro deles eram prioridade máxima (horário real na
+> grade). A Raven voltou a 18 com o primeiro episódio reprocessado.
 
 ## 🔵 Cartoon Network
 
-**Falta, com horário REAL na grade (prioridade máxima — 9 títulos)**
+**Falta, com horário REAL na grade (prioridade máxima — 5 títulos)**
 
 | Programa | Horários na grade-alvo |
 |---|---|
 | A Mansão Foster para Amigos Imaginários | 09:00 · 14:30 |
-| O Laboratório de Dexter | 07:30 · 21:00 |
-| O Clube das Winx | 13:00 · 15:00 |
 | Betty Atômica | 12:30 · 15:30 |
 | Mucha Lucha | 11:30 · 16:30 |
 | Du, Dudu e Edu | 05:30 · 17:00 |
 | Hi Hi Puffy AmiYumi | 19:00 |
-| Pokémon | 22:00 |
-| Super Choque (Static Shock) | 23:30 |
+
+✅ Entraram em 18/09: Laboratório de Dexter (11 eps), Clube das Winx (26),
+Pokémon (19), Super Choque (18).
 
 **Falta, faixa reconstruída (madrugada/manhã — 6 títulos)**
-InuYasha · Dragon Ball GT · Yu Yu Hakusho · Cavaleiros do Zodíaco · Samurai X · Johnny Bravo
+InuYasha · Dragon Ball GT · Yu Yu Hakusho · Cavaleiros do Zodíaco · Samurai X ·
+Johnny Bravo
 
 > **Zatch Bell!** está na grade da CN às 01:30 e nós já temos 32 eps — no Jetix.
 > É só ligar a série ao `cartoon_network` também (mídia compartilhada já funciona,
@@ -92,9 +98,10 @@ descartada). Escolhas do Gabriel que ainda **não** temos:
 | Lilo & Stitch: A Série | animação (3 horários) |
 | A Nova Escola do Imperador | animação (3 horários) |
 | Os Substitutos | animação |
-| Cory na Casa Branca | sitcom |
 | Boa Sorte, Charlie | sitcom |
 | A Casa do Mickey Mouse | pré-escolar (faixa da manhã) |
+
+✅ Entrou em 18/09: Cory na Casa Branca (21 eps).
 
 **Clássicos Disney da manhã — a escolher** (o Gabriel pediu, ainda sem decisão):
 A Turma do Pateta · O Point do Mickey (House of Mouse) · Os Caçadores de

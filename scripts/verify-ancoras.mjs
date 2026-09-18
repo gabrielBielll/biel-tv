@@ -346,5 +346,49 @@ function ocorrencias(rows, catalogo) {
     contigua(rows) && rows.some((r) => r.start === A && r.media_id.startsWith('bbb')))
 }
 
+// ── 13. REPRISE: a âncora marcada repete o que a série já passou HOJE ───────
+//    (grades reais de 2005: o mesmo programa volta de manhã, à tarde e à noite
+//     — e era o MESMO episódio, não um novo a cada faixa)
+{
+  const H2 = new Date((A + 3600 - 3 * 3600) * 1000).toISOString().slice(11, 16)
+  const A2 = spHoraToEpoch(spDateStr(A + 3600), H2)
+  const slots = (reprise) => [
+    { series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 },
+    { series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: H2, episodios: 1, reprise },
+  ]
+
+  const comReprise = makeDB({ channel: CANAL, media: CATALOGO, slots: slots(1) })
+  await scheduleChannel({ DB: comReprise.db }, 'ch', 3, true)
+  const r1 = grade(comReprise.epg)
+  const orig = r1.find((r) => r.start === A)?.media_id
+  const rep = r1.find((r) => r.start === A2)?.media_id
+  check('reprise: a 2ª âncora exibe o MESMO episódio da 1ª', Boolean(orig) && orig === rep,
+    `${orig ?? 'nada'} → ${rep ?? 'nada'}`)
+  check('reprise: EPG contígua', contigua(r1))
+
+  const semReprise = makeDB({ channel: CANAL, media: CATALOGO, slots: slots(0) })
+  await scheduleChannel({ DB: semReprise.db }, 'ch', 3, true)
+  const r2 = grade(semReprise.epg)
+  const o2 = r2.find((r) => r.start === A)?.media_id
+  const p2 = r2.find((r) => r.start === A2)?.media_id
+  check('sem reprise: a 2ª âncora avança pro episódio seguinte (comportamento antigo)',
+    Boolean(o2) && Boolean(p2) && o2 !== p2, `${o2 ?? 'nada'} → ${p2 ?? 'nada'}`)
+}
+
+// ── 14. reprise sem nada exibido ainda no dia → age como âncora normal ──────
+//    (o primeiro slot do dia é sempre o inédito, mesmo marcado como reprise)
+{
+  const { db, epg } = makeDB({
+    channel: CANAL, media: CATALOGO,
+    slots: [{ series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1, reprise: 1 }],
+  })
+  await scheduleChannel({ DB: db }, 'ch', 3, true)
+  const rows = grade(epg)
+  const naHora = rows.find((r) => r.start === A)
+  check('reprise sem exibição anterior no dia: vira âncora normal, não some',
+    Boolean(naHora) && naHora.media_id.startsWith('bbb'), naHora?.media_id ?? 'nada em A')
+  check('reprise sem exibição anterior: EPG contígua', contigua(rows))
+}
+
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)
 process.exit(fail === 0 ? 0 : 1)
