@@ -51,9 +51,25 @@ responde:
 catálogo público sintetizou normalmente com a mesma chave. É só o direito de
 *usar voz clonada* que some quando a assinatura cai.
 
-**Decisão do Gabriel (2026-09-15):** não assinar por ora. Programa novo que
-entrar **gera o comercial com voz do catálogo mesmo**; quando ele assinar, a
-gente regera com a voz clonada do canal, que fica melhor.
+**Decisão do Gabriel (2026-09-15, detalhada em 18/09):** a assinatura foi
+**pausada de propósito** — estava sendo paga e quase não usada. A estratégia é
+**acumular trabalho de voz** e, quando tiver volume, assinar, gerar tudo de uma
+vez com as vozes clonadas dos narradores e cancelar de novo.
+
+Enquanto isso o trabalho **não para**: gera-se com voz do catálogo público (o
+plano grátis libera), e depois:
+
+> **gerar com voz genérica → refazer com a voz certa → apagar as genéricas**
+
+"Isso tem que ser rastreável" — por isso `voice_clips.voz_provisoria`
+(migration 0031) e a rota **`GET /admin/fabrica-comerciais/voz-provisoria`**,
+que devolve a lista de trabalho do refazer: os clipes marcados E os comerciais
+montados com algum deles (um comercial usa 5 clipes; basta um provisório pra
+peça inteira estar na voz errada). A rota traz junto o passo a passo do ciclo.
+
+O `audio_key` também carrega a voz no caminho (`fabrica/tts/<voz>/<hash>.mp3`),
+mas isso é convenção — a marca no banco é o que aparece numa listagem e não
+depende de ninguém lembrar do padrão.
 
 ### Como gerar clipe agora (voz do catálogo)
 

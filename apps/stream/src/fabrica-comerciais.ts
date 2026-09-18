@@ -760,6 +760,67 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
   return relatorio
 }
 
+// ── voz provisória: a lista de trabalho do "refazer e apagar" ──────────────
+// A assinatura do ElevenLabs está pausada (estava sendo paga e quase não usada)
+// e o plano grátis não deixa usar as vozes CLONADAS dos narradores — só as do
+// catálogo. Decisão do Gabriel (18/09/2026): não parar o trabalho; gerar com
+// voz de catálogo, acumular, e quando a assinatura voltar REFAZER com a voz
+// certa e APAGAR as genéricas.
+//
+// Esta rota é o que torna esse ciclo executável: diz exatamente o que está
+// provisório — os clipes marcados E os comerciais que foram montados com
+// algum deles (um comercial usa 5 clipes; basta um provisório pra ele inteiro
+// estar na voz errada).
+fabricaComerciais.get('/voz-provisoria', async (c) => {
+  let clipes: Array<{ id: string; canal: string; categoria: string; series_id: string | null; chave: string | null; rotulo: string; audio_key: string }>
+  try {
+    clipes = (await c.env.DB.prepare(
+      `SELECT id, canal, categoria, series_id, chave, rotulo, audio_key
+       FROM voice_clips WHERE voz_provisoria = 1 ORDER BY canal, categoria, series_id, chave`,
+    ).all<{ id: string; canal: string; categoria: string; series_id: string | null; chave: string | null; rotulo: string; audio_key: string }>()).results
+  } catch {
+    return c.json({ error: 'migration 0031 ainda não rodou neste banco' }, 503)
+  }
+  if (clipes.length === 0) return c.json({ clipes: [], comerciais: [], total: 0 })
+
+  // um comercial de grade usa: frase (do job) + nome (canal|série) +
+  // frequência (canal|freq) + horário (canal|hora) + assinatura (canal)
+  const marcado = new Set(clipes.map((c2) => c2.id))
+  const porChave = new Map<string, string>() // canal|categoria|chave-ou-série → id
+  for (const c2 of clipes) porChave.set(`${c2.canal}|${c2.categoria}|${c2.series_id ?? c2.chave}`, c2.id)
+
+  const { results: jobs } = await c.env.DB.prepare(
+    `SELECT j.media_id, j.series_id, j.slot_dias, j.slot_hora, j.frase_id, m.canal
+     FROM commercial_build_jobs j JOIN moldes m ON m.id = j.molde_id
+     WHERE j.status = 'done'`,
+  ).all<{ media_id: string; series_id: string; slot_dias: string; slot_hora: string; frase_id: string | null; canal: string }>()
+
+  const comerciais = jobs.filter((j) => {
+    let dias: number[] = []
+    try { dias = diasCanon(JSON.parse(j.slot_dias)) } catch { /* job antigo */ }
+    const usados = [
+      j.frase_id && marcado.has(j.frase_id) ? j.frase_id : null,
+      porChave.get(`${j.canal}|nome|${j.series_id}`),
+      porChave.get(`${j.canal}|horario|${limpaHora(j.slot_hora) ?? j.slot_hora}`),
+      dias.length > 0 ? porChave.get(`${j.canal}|frequencia|${freqKey(dias)}`) : undefined,
+      porChave.get(`${j.canal}|conector|encerramento`),
+    ].filter(Boolean)
+    return usados.length > 0
+  }).map((j) => ({ media_id: j.media_id, canal: j.canal, series_id: j.series_id, hora: j.slot_hora }))
+
+  return c.json({
+    total: clipes.length,
+    clipes,
+    comerciais,
+    como_refazer: [
+      '1. assinar o ElevenLabs (a voz clonada do canal volta a funcionar)',
+      '2. para cada clipe da lista: DELETE /voice-clips/:id e recriar com o MESMO rotulo, sem voz_id',
+      '3. desativar e apagar os comerciais listados (DELETE /admin/media/:id exige status disabled)',
+      '4. POST /reconciliar-grade — a fábrica remonta com o áudio novo',
+    ],
+  })
+})
+
 // ── blocos nomeados (Cinescópio, Toonami, Hora Acme...) ────────────────────
 // O bloco não põe programa no ar — quem faz isso é o channel_slots. Ele dá
 // NOME, hora e dias a um conjunto de faixas, e é isso que a fábrica anuncia.
@@ -871,12 +932,16 @@ fabricaComerciais.post('/voice-clips', async (c) => {
 
   const id = `vc_${hex()}`
   let audioKey: string
+  let provisoria = false
   if (b.sintetizar) {
     // Voz automática (ElevenLabs): o próprio `rotulo` é o texto falado. Usa a voz
     // do canal, ou um override no corpo (ex.: a voz jovem da Jetix num clipe só).
     const override = String(b.voz_id ?? '').trim()
     const { vozId, config } = await canalVoz(c.env.DB, canal)
     const voz = override || vozId
+    // voz diferente da do canal = PROVISÓRIA: nasce marcada pra ser regravada
+    // quando a assinatura do ElevenLabs voltar (ver migration 0031)
+    provisoria = Boolean(voz && vozId && voz !== vozId)
     if (!voz) return c.json({ error: `canal ${canal} está sem voz configurada` }, 400)
     try {
       // O texto sintetizado pode trazer tags de emoção/pausa do v3 (`tts_text`),
@@ -899,10 +964,10 @@ fabricaComerciais.post('/voice-clips', async (c) => {
   }
   const clipSeries = categoria === 'nome' || categoria === 'frase' ? seriesId : null
   await c.env.DB.prepare(
-    `INSERT INTO voice_clips (id, canal, categoria, series_id, chave, rotulo, audio_key)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
-  ).bind(id, canal, categoria, clipSeries, chave || null, rotulo, audioKey).run()
-  return c.json({ ok: true, id, canal, audio_key: audioKey }, 201)
+    `INSERT INTO voice_clips (id, canal, categoria, series_id, chave, rotulo, audio_key, voz_provisoria)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+  ).bind(id, canal, categoria, clipSeries, chave || null, rotulo, audioKey, provisoria ? 1 : 0).run()
+  return c.json({ ok: true, id, canal, audio_key: audioKey, voz_provisoria: provisoria }, 201)
 })
 
 fabricaComerciais.delete('/voice-clips/:id', async (c) => {
@@ -1012,15 +1077,16 @@ fabricaComerciais.post('/canais/:id/biblioteca-base', async (c) => {
   // (docs/features/fabrica-comerciais.md → "Voz provisória").
   const vozId = String(b.voz_id ?? '').trim() || vozCanal
   if (!vozId) return c.json({ error: `canal ${canal} está sem voz configurada` }, 400)
+  const provisoria = Boolean(vozCanal && vozId !== vozCanal) ? 1 : 0
   const limit = Math.max(1, Math.min(40, Number(b.limit ?? 20)))
   let gerados = 0
   for (const it of faltando.slice(0, limit)) {
     try {
       const audioKey = await sintetizaClip(c.env, vozId, it.tts, config)
       await c.env.DB.prepare(
-        `INSERT INTO voice_clips (id, canal, categoria, series_id, chave, rotulo, audio_key)
-         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6)`,
-      ).bind(`vc_${hex()}`, canal, it.categoria, it.chave, it.rotulo, audioKey).run()
+        `INSERT INTO voice_clips (id, canal, categoria, series_id, chave, rotulo, audio_key, voz_provisoria)
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7)`,
+      ).bind(`vc_${hex()}`, canal, it.categoria, it.chave, it.rotulo, audioKey, provisoria).run()
       gerados++
     } catch (e) {
       // Sem chave/cota: para e informa quantos faltam — o resto espera a assinatura.
