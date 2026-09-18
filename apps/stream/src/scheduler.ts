@@ -288,10 +288,14 @@ export async function scheduleChannel(
 
   const now = Math.floor(Date.now() / 1000)
   const nowSlot = Math.floor(now / SEGMENT_DURATION) * SEGMENT_DURATION
+  // DESC de propósito: a grade é contígua e sem sobreposição, então a linha no
+  // ar é a de MAIOR start <= agora — achada no primeiro passo do índice. Com
+  // ASC o banco varria todo o passado do canal (7 dias, ~4.650 linhas medidas
+  // em 18/09/2026) até topar com ela; o resultado é o mesmo.
   const onAir = await env.DB.prepare(
     `SELECT end_time_virtual e FROM epg_virtual
      WHERE canal = ?1 AND start_time_virtual <= ?2 AND end_time_virtual > ?2
-     ORDER BY start_time_virtual LIMIT 1`,
+     ORDER BY start_time_virtual DESC LIMIT 1`,
   ).bind(canal, now).first<{ e: number }>()
 
   if (rebuild) {
@@ -318,10 +322,21 @@ export async function scheduleChannel(
   // SEM filtro de canal de propósito: mídia compartilhada (ex.: padrinhos no
   // jetix E na disney) continua de onde o OUTRO canal parou, em vez de tocar o
   // mesmo episódio nos dois no mesmo dia — série sindicada, como TV real.
-  const { results: futRows } = await env.DB.prepare(
-    `SELECT media_id id, MAX(start_time_virtual) t FROM epg_virtual
-     WHERE start_time_virtual > ?1 GROUP BY media_id`,
-  ).bind(now).all<{ id: string; t: number }>()
+  // INDEXED BY: sem a dica, o planner escolhe agrupar por media_id e varre a
+  // tabela INTEIRA (18.506 linhas medidas em 18/09/2026) em vez de percorrer só
+  // o futuro pelo índice de start (7.982). `rows_read` do D1 conta entrada de
+  // índice também, então o que importa é quantas ele PERCORRE, não se usa índice.
+  // O try/catch cobre banco sem a migration 0028: cai na consulta sem dica.
+  const sqlFuturo = `SELECT media_id id, MAX(start_time_virtual) t FROM epg_virtual
+     %IDX% WHERE start_time_virtual > ?1 GROUP BY media_id`
+  let futRows: Array<{ id: string; t: number }>
+  try {
+    futRows = (await env.DB.prepare(sqlFuturo.replace('%IDX%', 'INDEXED BY idx_epg_start'))
+      .bind(now).all<{ id: string; t: number }>()).results
+  } catch {
+    futRows = (await env.DB.prepare(sqlFuturo.replace('%IDX%', ''))
+      .bind(now).all<{ id: string; t: number }>()).results
+  }
   const futuroDe = new Map(futRows.map((r) => [r.id, r.t]))
   for (const m of contents) {
     const f = futuroDe.get(m.id)
@@ -899,12 +914,19 @@ export async function runScheduler(
  */
 export async function commitAired(env: Env): Promise<number> {
   const now = Math.floor(Date.now() / 1000)
+  // Janela de 3 dias em vez do passado inteiro (7 dias de retenção): o carimbo é
+  // idempotente e monotônico, então o que passou antes disso JÁ foi carimbado
+  // numa run anterior — reler tudo custava 33.021 linhas por chamada contra
+  // 4.347 de um dia (medido em 18/09/2026). Três dias dão dois de folga sobre o
+  // cron diário; se a TV ficar mais que isso sem planejar, o que escapar do
+  // carimbo apenas volta ao rodízio mais cedo.
   const { results } = await env.DB.prepare(
     `SELECT e.media_id id, MAX(e.start_time_virtual) t, m.last_played_at lp
      FROM epg_virtual e JOIN media_items m ON m.id = e.media_id
-     WHERE e.start_time_virtual <= ?1 AND m.tipo IN ('episodio','filme')
+     WHERE e.start_time_virtual <= ?1 AND e.start_time_virtual > ?2
+       AND m.tipo IN ('episodio','filme')
      GROUP BY e.media_id`,
-  ).bind(now).all<{ id: string; t: number; lp: number | null }>()
+  ).bind(now, now - 3 * DAY).all<{ id: string; t: number; lp: number | null }>()
   const mudou = results.filter((r) => r.lp == null || r.lp < r.t)
   for (let i = 0; i < mudou.length; i += 50) {
     await env.DB.batch(
