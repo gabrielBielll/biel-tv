@@ -563,11 +563,26 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
   ).all<{ id: string; series_id: string }>()).results) {
     if (!amostraDe.has(r.series_id)) amostraDe.set(r.series_id, r.id)
   }
+  // Molde automático do canal: PREFERE o que NÃO tem cama musical.
+  //
+  // Comercial de programa toca a trilha de ABERTURA DO PRÓPRIO PROGRAMA — o
+  // montador faz isso sozinho quando o molde não traz cama (comerciais.mjs:
+  // "sem cama, a abertura do próprio programa acompanha o comercial em volume
+  // baixo"). Um molde COM cama é peça especializada (o "Jetix — Power Rangers"
+  // tem a abertura de PR embutida) e só deve ser usado quando escolhido de
+  // propósito, no `molde_id` do job.
+  //
+  // Antes daqui a escolha era "o mais recente do canal", e o molde de Power
+  // Rangers (criado 47min depois do de horário) virou o padrão do Jetix: 19
+  // comerciais saíram com a abertura de Power Rangers por trás — inclusive
+  // Pucca, W.I.T.C.H. e Padrinhos. Bug notado pelo Gabriel em 18/09/2026.
   const { results: moldeRows } = await env.DB.prepare(
-    'SELECT id, canal FROM moldes ORDER BY created_at DESC',
-  ).all<{ id: string; canal: string }>()
+    'SELECT id, canal, musica_key FROM moldes ORDER BY created_at DESC',
+  ).all<{ id: string; canal: string; musica_key: string | null }>()
   const moldeDe = new Map<string, string>()
-  for (const m of moldeRows) if (!moldeDe.has(m.canal)) moldeDe.set(m.canal, m.id)
+  for (const m of moldeRows.filter((m) => !m.musica_key).concat(moldeRows.filter((m) => m.musica_key))) {
+    if (!moldeDe.has(m.canal)) moldeDe.set(m.canal, m.id)
+  }
 
   const subconjunto = (a: number[], b: number[]) => a.every((n) => b.includes(n))
   // canal|série|hora → conjunto de FRASES já cobertas (uma versão do comercial
