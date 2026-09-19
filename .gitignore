@@ -14,3 +14,10 @@ dist/
 
 # área de trabalho do pipeline de ingestão (fase 2)
 .ingest-work/
+
+# diretórios de scratch e downloads locais (vídeos pesados)
+scratch/
+downloads/
+comerciais_16x9/
+*.mp4
+*.png.bak

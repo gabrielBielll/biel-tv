@@ -1,0 +1,68 @@
+{
+  "canal": "disney_channel",
+  "nome": "Disney Channel",
+  "narrador": {
+    "nome": "Camilla (Locutora Acolhedora e Expressiva)",
+    "voz_id": "YklVF5l1Q8os8glyd5SM",
+    "model_id": "eleven_multilingual_v2",
+    "settings": {
+      "stability": 0.25,
+      "similarity_boost": 0.85,
+      "style": 0.65,
+      "use_speaker_boost": true
+    }
+  },
+  "audio": {
+    "trilha_path": "assets/comerciais/disney_channel/moldes/trilha_disney_lineup_3janelas.m4a",
+    "volume_voz": 1.7,
+    "volume_trilha": 0.28,
+    "delay_voz_ms": 1000,
+    "fade_out_st": 19.0,
+    "fade_out_d": 1.0
+  },
+  "visual": {
+    "duracao_seg": 20.0,
+    "molde_path": "assets/comerciais/disney_channel/moldes/image-comercial-disney-3janelas.png",
+    "colorkey": "0x000000:0.18:0.08",
+    "janelas": [
+      {
+        "slot": 1,
+        "rotulo_padrao": "A SEGUIR",
+        "scale": "500:281",
+        "crop": "500:255:0:15",
+        "overlay": "50:30"
+      },
+      {
+        "slot": 2,
+        "rotulo_padrao": "DEPOIS",
+        "scale": "510:287",
+        "crop": "510:205:0:40",
+        "overlay": "70:280"
+      },
+      {
+        "slot": 3,
+        "rotulo_padrao": "MAIS TARDE",
+        "scale": "470:264",
+        "crop": "470:170:0:45",
+        "overlay": "140:495"
+      }
+    ],
+    "tipografia": {
+      "tipo": "neon_badges",
+      "font_path": "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+      "pointsize": 20,
+      "badge_w": 190,
+      "badge_h": 44,
+      "badge_bg": "rgba(8, 45, 120, 0.88)",
+      "badge_border": "#00D2FF",
+      "badge_border_width": 2.5,
+      "badge_radius": 12,
+      "fill": "#FFFFFF",
+      "posicoes": [
+        { "slot": 1, "x": 565, "y": 135, "texto": "A SEGUIR" },
+        { "slot": 2, "x": 590, "y": 360, "texto": "DEPOIS" },
+        { "slot": 3, "x": 625, "y": 565, "texto": "MAIS TARDE" }
+      ]
+    }
+  }
+}

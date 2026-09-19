@@ -1,0 +1,122 @@
+{
+  "versao": "1.0",
+  "descricao": "Templates modulares de chamadas e lineups da Biel TV por canal e tipo de bloco",
+  "canais": {
+    "jetix": {
+      "nome": "Jetix",
+      "templates": {
+        "lineup_3_telas": [
+          {
+            "id": "jetix_lineup_padrao",
+            "formato": "{gancho} Você tá assistindo {s1}! {conector_1} {s2}! {conector_2} {s3}! {fechamento}",
+            "ganchos": [
+              "Se liga só!",
+              "Fica super ligado!",
+              "Não saia daí!"
+            ],
+            "conectores_1": [
+              "Em seguida, vem",
+              "A seguir tem",
+              "Logo depois vem"
+            ],
+            "conectores_2": [
+              "E fica ligado que mais tarde tem",
+              "E logo mais tem",
+              "E mais tarde vem"
+            ],
+            "fechamentos": [
+              "Tudo isso... só aqui, na Jetix!",
+              "Tudo isso... só na Jetix!",
+              "É pura ação... só na Jetix!"
+            ]
+          }
+        ],
+        "durante": [
+          "Você tá assistindo {s1}! Tudo isso... só aqui, na Jetix!",
+          "Não saia daí! Você tá curtindo {s1}, só na Jetix!"
+        ],
+        "a_seguir_proximo": [
+          "Fica ligado! A seguir na Jetix, tem {s1}!",
+          "Não desgruda da tela! A seguir vem {s1}, na Jetix!"
+        ]
+      }
+    },
+    "disney_channel": {
+      "nome": "Disney Channel",
+      "templates": {
+        "lineup_3_telas": [
+          {
+            "id": "disney_lineup_padrao",
+            "formato": "{gancho} Você tá com {s1}! {conector_1} {s2}! {conector_2} {s3}! {fechamento}",
+            "ganchos": [
+              "É muita diversão!",
+              "Não sai daí!",
+              "Fica ligadinho!"
+            ],
+            "conectores_1": [
+              "A seguir, prepare-se para",
+              "Logo depois vem",
+              "Em seguida tem"
+            ],
+            "conectores_2": [
+              "E logo mais tem",
+              "E mais tarde você vai ver",
+              "E fique ligadinho que mais tarde tem"
+            ],
+            "fechamentos": [
+              "É muita diversão... só no Disney Channel!",
+              "Tudo isso... só aqui, no Disney Channel!",
+              "Toda a magia... só no Disney Channel!"
+            ]
+          }
+        ],
+        "durante": [
+          "Você tá com {s1}! É muita diversão no Disney Channel!",
+          "Você tá curtindo {s1}, só no Disney Channel!"
+        ],
+        "a_seguir_proximo": [
+          "Prepare-se! A seguir no Disney Channel, tem {s1}!",
+          "Não saia daí! A seguir vem {s1}, no Disney Channel!"
+        ]
+      }
+    },
+    "cartoon_network": {
+      "nome": "Cartoon Network",
+      "templates": {
+        "lineup_3_telas": [
+          {
+            "id": "cartoon_lineup_padrao",
+            "formato": "{gancho} Você tá assistindo {s1}! {conector_1} {s2}! {conector_2} {s3}! {fechamento}",
+            "ganchos": [
+              "Fica super ligado!",
+              "Não desgruda daí!",
+              "Se liga só!"
+            ],
+            "conectores_1": [
+              "Logo depois vem",
+              "A seguir tem",
+              "Em seguida vem"
+            ],
+            "conectores_2": [
+              "E fica super ligado que mais tarde tem",
+              "E logo mais tem",
+              "E mais tarde você confere"
+            ],
+            "fechamentos": [
+              "Tudo isso... só no Cartoon Network!",
+              "Só aqui... no Cartoon Network!"
+            ]
+          }
+        ],
+        "durante": [
+          "Você tá assistindo {s1}! Fica ligado no Cartoon Network!",
+          "Você tá curtindo {s1}, só no Cartoon Network!"
+        ],
+        "a_seguir_proximo": [
+          "Não desgruda da tela! A seguir no Cartoon Network, tem {s1}!",
+          "Fica ligado! A seguir vem {s1}, no Cartoon Network!"
+        ]
+      }
+    }
+  }
+}

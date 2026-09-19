@@ -1,0 +1,66 @@
+{
+  "canal": "jetix",
+  "nome": "Jetix",
+  "narrador": {
+    "nome": "Will (Locutor Jovem SP)",
+    "voz_id": "NNbmtunmMPGBeyrKu6KD",
+    "model_id": "eleven_multilingual_v2",
+    "settings": {
+      "stability": 0.25,
+      "similarity_boost": 0.85,
+      "style": 0.70,
+      "use_speaker_boost": true
+    }
+  },
+  "audio": {
+    "trilha_path": "assets/comerciais/jetix/moldes/trilha_jetix_lineup_3janelas.m4a",
+    "volume_voz": 1.8,
+    "volume_trilha": 0.30,
+    "delay_voz_ms": 1000,
+    "fade_out_st": 19.0,
+    "fade_out_d": 1.0
+  },
+  "visual": {
+    "duracao_seg": 20.0,
+    "molde_path": "assets/comerciais/jetix/moldes/image-comercial-jtx-2.png",
+    "colorkey": "0x000000:0.05:0.02",
+    "janelas": [
+      {
+        "slot": 1,
+        "rotulo_padrao": "A SEGUIR",
+        "scale": "580:326",
+        "crop": "580:266:0:30",
+        "overlay": "705:0"
+      },
+      {
+        "slot": 2,
+        "rotulo_padrao": "DEPOIS",
+        "scale": "614:345",
+        "crop": "614:205:0:70",
+        "overlay": "666:259"
+      },
+      {
+        "slot": 3,
+        "rotulo_padrao": "MAIS TARDE",
+        "scale": "660:371",
+        "crop": "660:245:0:60",
+        "overlay": "625:475"
+      }
+    ],
+    "tipografia": {
+      "tipo": "white_thick_text",
+      "font_path": "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+      "pointsize": 32,
+      "fill": "#FFFFFF",
+      "stroke": "white",
+      "stroke_width": 2.8,
+      "shadow_stroke_width": 7.0,
+      "shadow_color": "rgba(0, 5, 20, 0.95)",
+      "posicoes": [
+        { "slot": 1, "x": 435, "y": 158, "texto": "A SEGUIR" },
+        { "slot": 2, "x": 450, "y": 360, "texto": "DEPOIS" },
+        { "slot": 3, "x": 390, "y": 575, "texto": "MAIS TARDE" }
+      ]
+    }
+  }
+}

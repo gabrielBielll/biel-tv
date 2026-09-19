@@ -1,0 +1,61 @@
+{
+  "canal": "cartoon_network",
+  "nome": "Cartoon Network",
+  "narrador": {
+    "nome": "Larissa B. (Locutora Jovem e Animada)",
+    "voz_id": "YfD2qVn2wwK9QFehYxSa",
+    "model_id": "eleven_multilingual_v2",
+    "settings": {
+      "stability": 0.26,
+      "similarity_boost": 0.85,
+      "style": 0.65,
+      "use_speaker_boost": true
+    }
+  },
+  "audio": {
+    "trilha_path": "assets/comerciais/cartoon_network/moldes/trilha_cartoon_lineup_3janelas.m4a",
+    "volume_voz": 1.75,
+    "volume_trilha": 0.30,
+    "delay_voz_ms": 1000,
+    "fade_out_st": 19.0,
+    "fade_out_d": 1.0
+  },
+  "visual": {
+    "duracao_seg": 20.0,
+    "molde_path": "assets/comerciais/cartoon_network/moldes/image-comercial-cartoon-3telas.png",
+    "colorkey": "0x000000:0.05:0.02",
+    "janelas": [
+      {
+        "slot": 1,
+        "rotulo_padrao": "A SEGUIR",
+        "scale": "295:148",
+        "crop": "295:148",
+        "overlay": "136:311"
+      },
+      {
+        "slot": 2,
+        "rotulo_padrao": "DEPOIS",
+        "scale": "303:155",
+        "crop": "303:155",
+        "overlay": "488:305"
+      },
+      {
+        "slot": 3,
+        "rotulo_padrao": "MAIS TARDE",
+        "scale": "294:160",
+        "crop": "294:160",
+        "overlay": "849:300"
+      }
+    ],
+    "tipografia": {
+      "tipo": "horizontal_badges",
+      "font_path": "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+      "pointsize": 18,
+      "posicoes": [
+        { "slot": 1, "x": 170, "y": 335, "texto": "A SEGUIR" },
+        { "slot": 2, "x": 545, "y": 335, "texto": "DEPOIS" },
+        { "slot": 3, "x": 920, "y": 335, "texto": "MAIS TARDE" }
+      ]
+    }
+  }
+}

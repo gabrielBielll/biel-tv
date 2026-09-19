@@ -5,10 +5,11 @@
 > locução pronta por programa, o sistema **concatena** a locução a partir de um
 > **banco de falas reutilizáveis** (horário/frequência/assinatura gravados uma vez servem
 > todos os programas) e monta o vídeo em duas fases dentro do molde do canal.
-> Estado: 🧱 V1 IMPLEMENTADA (2026-07-18): banco de falas/moldes/amostras,
-> painel admin, fila própria e montador ffmpeg que entrega `comercial` no
-> pipeline normal. Ainda falta a fase 2 ("a seguir" com 3 janelas) e o
-> agendador cumprir automaticamente `bloco_horario`.
+> Estado: ✅ V1 e V2 IMPLEMENTADAS (2026-09-19): banco de falas/moldes/amostras,
+> painel admin, fila própria, montador ffmpeg que entrega `comercial` no
+> pipeline normal e o construtor modular de 3 janelas para vinhetas "a seguir"
+> (Jetix, Disney Channel e Cartoon Network) documentado em
+> [construtor-lineup-3janelas.md](construtor-lineup-3janelas.md).
 >
 > **Uma frase:** o Diretor escolhe *programa + horário*, a fábrica **concatena a
 > locução** ("...frase... Power Rangers Força Animal, de segunda a sexta, às
