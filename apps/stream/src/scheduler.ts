@@ -985,23 +985,85 @@ export async function commitAired(env: Env): Promise<number> {
   return mudou.length
 }
 
+/** Quantas mídias uma passada do reconcile confere (ver o doc da função). */
+const RECONCILE_LOTE = 150
+/** HEADs em paralelo dentro do lote: o custo é latência de rede, não CPU. */
+const RECONCILE_PARALELO = 15
+
+/** Cursor do reconcile: o id da última mídia conferida, guardado no
+ * `last_reconcile`. String vazia = começa do início do acervo. */
+async function cursorDoReconcile(env: Env): Promise<string> {
+  const row = await env.DB.prepare("SELECT v FROM config WHERE k = 'last_reconcile'")
+    .first<{ v: string }>()
+  if (!row?.v) return ''
+  try {
+    const c = (JSON.parse(row.v) as { cursor?: unknown }).cursor
+    return typeof c === 'string' ? c : ''
+  } catch {
+    return ''
+  }
+}
+
 /**
  * Reconciliação catálogo ↔ R2: mídia "ready" cujos segmentos sumiram do
  * storage vira "disabled", sai da grade futura e os canais afetados são
- * replanejados (append-only). Roda no cron antes do planejamento.
+ * replanejados (append-only). Roda no cron DEPOIS de estender as grades.
+ *
+ * **FATIADA (18/09/2026).** Cada mídia custa 2 HEAD no R2 e o acervo passou de
+ * 1.300 `ready` = ~2.700 HEADs — acima do teto de **1.000 subrequisições por
+ * invocação**. Medido nesse dia: 960 HEADs passam em 28s (CPU de 289ms!), 1.200
+ * estouram com `Too many API requests by single Worker invocation`. Não é tempo
+ * nem CPU: é contagem, e chamada de binding (D1 e R2) gasta do mesmo teto sem
+ * aparecer no `subrequests` da analítica. Por isso o `last_reconcile` ficou
+ * congelado de 02/08 a 18/09 e o cron estourava `scriptThrewException` todo dia
+ * (quem levantava era a etapa seguinte, já sem orçamento — ver `index.ts`).
+ * Agora cada run confere um LOTE a partir do cursor salvo e dá a volta no
+ * acervo em poucos dias. Orçamento: 2 × LOTE subrequisições, e o resto do cron
+ * (D1 do agendador, fetch do editorial) divide o mesmo teto — por isso 150.
+ *
+ * `seco: true` é o ENSAIO: diz o que cairia sem desabilitar nada e sem andar
+ * com o cursor (rede de segurança pra primeira passada depois de muito tempo).
  */
-export async function reconcileAndRepair(env: Env) {
+export async function reconcileAndRepair(
+  env: Env,
+  opts: { lote?: number; seco?: boolean } = {},
+) {
+  const lote = Math.min(Math.max(1, Math.floor(opts.lote ?? RECONCILE_LOTE)), 2000)
+  const cursor = await cursorDoReconcile(env)
   const { results } = await env.DB.prepare(
-    "SELECT id, path_prefix, segment_count FROM media_items WHERE status = 'ready'",
-  ).all<{ id: string; path_prefix: string; segment_count: number }>()
+    `SELECT id, path_prefix, segment_count FROM media_items
+      WHERE status = 'ready' AND id > ?1 ORDER BY id LIMIT ?2`,
+  ).bind(cursor, lote).all<{ id: string; path_prefix: string; segment_count: number }>()
 
   const disabled: string[] = []
-  for (const m of results) {
-    const first = await env.MEDIA.head(`${m.path_prefix}/seg00000.ts`)
-    const last = await env.MEDIA.head(
-      `${m.path_prefix}/seg${String(m.segment_count - 1).padStart(5, '0')}.ts`,
+  for (let i = 0; i < results.length; i += RECONCILE_PARALELO) {
+    const checados = await Promise.all(
+      results.slice(i, i + RECONCILE_PARALELO).map(async (m) => {
+        const [first, last] = await Promise.all([
+          env.MEDIA.head(`${m.path_prefix}/seg00000.ts`),
+          env.MEDIA.head(`${m.path_prefix}/seg${String(m.segment_count - 1).padStart(5, '0')}.ts`),
+        ])
+        return { id: m.id, ok: Boolean(first && last) }
+      }),
     )
-    if (!first || !last) disabled.push(m.id)
+    for (const c of checados) if (!c.ok) disabled.push(c.id)
+  }
+
+  // Lote incompleto = deu a volta no acervo: a próxima run recomeça do início.
+  const fechou = results.length < lote
+  const proximoCursor = fechou ? '' : (results.at(-1)?.id ?? cursor)
+  const ciclo = fechou ? 'fechado' : 'em curso'
+
+  if (opts.seco) {
+    return {
+      seco: true,
+      varridas: results.length,
+      de: cursor || '(inicio)',
+      ate: proximoCursor || '(fim)',
+      ciclo,
+      disabled,
+      repaired: [] as string[],
+    }
   }
 
   const repaired: string[] = []
@@ -1022,7 +1084,14 @@ export async function reconcileAndRepair(env: Env) {
   }
 
   await env.DB.prepare("INSERT OR REPLACE INTO config (k, v) VALUES ('last_reconcile', ?1)")
-    .bind(JSON.stringify({ at: Math.floor(Date.now() / 1000), disabled, repaired }))
+    .bind(JSON.stringify({
+      at: Math.floor(Date.now() / 1000),
+      cursor: proximoCursor,
+      varridas: results.length,
+      ciclo,
+      disabled,
+      repaired,
+    }))
     .run()
-  return { disabled, repaired }
+  return { varridas: results.length, cursor: proximoCursor, ciclo, disabled, repaired }
 }

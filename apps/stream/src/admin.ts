@@ -961,8 +961,12 @@ admin.post('/schedule/run', async (c) => {
   return c.json(reports)
 })
 
+// `lote` = quantas mídias conferir nesta passada (default no scheduler);
+// `seco: true` = ensaio, diz o que cairia sem desabilitar nada.
 admin.post('/reconcile', async (c) => {
-  return c.json(await reconcileAndRepair(c.env))
+  const b = await c.req.json<{ lote?: number; seco?: boolean }>().catch(() => ({}))
+  const lote = Number.isFinite(Number(b?.lote)) ? Number(b?.lote) : undefined
+  return c.json(await reconcileAndRepair(c.env, { lote, seco: Boolean(b?.seco) }))
 })
 
 // ── Diretor IA (chat do Modo God) ──────────────────────────────────────────

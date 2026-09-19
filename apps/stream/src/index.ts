@@ -205,14 +205,24 @@ export default {
       try { comerciais = await reconciliaComerciaisGrade(env) } catch (e) { comerciais = String(e) }
 
       // Reconcile catálogo↔R2 por ÚLTIMO: se morrer no limite, as grades já
-      // foram estendidas e os canais continuam no ar.
+      // foram estendidas e os canais continuam no ar. Desde 18/09/2026 ele é
+      // FATIADO (um lote por run, cursor no `last_reconcile`): varrer o acervo
+      // inteiro pedia ~2.700 HEADs no R2 e o teto é de 1.000 SUBREQUISIÇÕES por
+      // invocação (medido 18/09: 960 HEADs passam, 1.200 estouram com
+      // "Too many API requests by single Worker invocation"). D1 e R2 não
+      // aparecem no `subrequests` da analítica, mas gastam do mesmo teto.
       let rec: unknown = null
       try { rec = await reconcileAndRepair(env) } catch (e) { rec = String(e) }
 
       // rede de segurança da fábrica: dispatch perdido ou run morta no
-      // timeout → o cron re-acorda o GitHub Actions enquanto houver fila
-      await dispatchSeTemFila(env)
-      console.log('[diretor]', JSON.stringify({ rec, plano, comerciais, reports }))
+      // timeout → o cron re-acorda o GitHub Actions enquanto houver fila.
+      // EM TRY/CATCH de propósito (18/09/2026): era a única etapa solta, e
+      // quando o teto de subrequisições já estava queimado ela levantava a
+      // exceção que matava a invocação — `scriptThrewException` todo dia, sem
+      // o relatório abaixo sair. Agora o cron sempre CONTA o que deu errado.
+      let dispatch: unknown = 'ok'
+      try { await dispatchSeTemFila(env) } catch (e) { dispatch = String(e) }
+      console.log('[diretor]', JSON.stringify({ rec, plano, comerciais, dispatch, reports }))
     })())
   },
 }
