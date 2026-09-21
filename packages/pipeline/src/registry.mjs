@@ -31,7 +31,12 @@ VALUES
     `DELETE FROM media_cue_points WHERE media_id = '${esc(id)}';`,
   ]
   if (cues.length > 0) {
-    const values = cues.map((c) => `('${esc(id)}',${c},'black')`).join(',')
+    // cue pode ser número (legado: sempre tela preta) ou {t, kind} — o kind
+    // distingue 'black' (fade real) de 'silencio' (meio de um silêncio medido),
+    // o que permite auditar e desfazer só os derivados. Ver cuepoints.mjs.
+    const values = cues
+      .map((c) => (typeof c === 'number' ? { t: c, kind: 'black' } : c))
+      .map((c) => `('${esc(id)}',${c.t},'${esc(c.kind || 'black')}')`).join(',')
     lines.push(`INSERT INTO media_cue_points (media_id, time_seg, kind) VALUES ${values};`)
   }
   if (canais.length > 0) {

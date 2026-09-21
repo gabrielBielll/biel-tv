@@ -37,6 +37,7 @@
     "verify:nomear": "node scripts/verify-nomear.mjs",
     "verify:marcador": "node scripts/verify-marcador.mjs",
     "verify:link": "node scripts/verify-link.mjs",
+    "verify:cuepoints": "node scripts/verify-cuepoints-fontes.mjs",
     "verify:playlist": "node scripts/verify-playlist.mjs",
     "verify:playlist:modo": "node --import ./scripts/_ts-registra.mjs scripts/verify-playlist-modo.mjs",
     "verify:playback": "node scripts/verify-playback.mjs"

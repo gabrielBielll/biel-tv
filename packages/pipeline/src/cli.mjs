@@ -13,7 +13,8 @@ import { existsSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SEG, FFMPEG, probe, normalize, segment, detectBlack, detectCrop } from './ffmpeg.mjs'
-import { snapCuePoints } from './cuepoints.mjs'
+import { cuesDeCena, cuesDeSilencio, escolhePiso, fundeCues, snapCuePoints } from './cuepoints.mjs'
+import { detectScene, detectSilence } from './ffmpeg.mjs'
 import { buildRegisterSql, runD1 } from './registry.mjs'
 import { listSegments, uploadLocal, uploadRemote } from './upload.mjs'
 
@@ -68,6 +69,11 @@ const { values: opt, positionals } = parseArgs({
 
 const [cmd, input] = positionals
 const TIPOS = ['episodio', 'filme', 'comercial', 'vinheta', 'placeholder']
+// Quantos intervalos um episódio precisa oferecer. A conta: slot de 30min com
+// episódio de ~22min deixa ~8min de vão, e o pod do scheduler mira 120s
+// (break_target_seg) → 8min / 2min = 4 intervalos. Com menos que isso o vão não
+// cabe distribuído e vira bloco sólido antes da âncora.
+const ALVO_CUES = 4
 
 function die(msg) {
   console.error(`✖ ${msg}`)
@@ -196,9 +202,52 @@ console.log(`3/5 segmentado: ${segCount} × ${SEG}.0s ✓`)
 let cues = []
 if (!opt['no-cues'] && opt.tipo !== 'comercial' && opt.tipo !== 'vinheta') {
   const blacks = await detectBlack(normalized)
-  cues = snapCuePoints(blacks, { duration: paddedDur, minEdge: Number(opt['min-edge']) })
+  const pretos = snapCuePoints(blacks, { duration: paddedDur, minEdge: Number(opt['min-edge']) })
+  // Sem fade-to-black (metade do acervo) o episódio ia INTEIRO e o vão do slot
+  // virava bloco sólido de comercial. O plano B é o SILÊNCIO — mesmo motor do
+  // cortador: achaThreshold() mede o piso de ruído DESTE arquivo (threshold
+  // fixo acha zero num rip chiado) e só então procura os silêncios. Sem platô
+  // estável ele devolve null e a gente NÃO inventa corte: fica só com o preto.
+  let silencios = []
+  if (pretos.length < ALVO_CUES) {
+    try {
+      const amostras = []
+      for (const db of [-50, -45, -40, -35]) {
+        amostras.push({ db, gaps: await detectSilence(normalized, { noise: db, d: 1.5 }) })
+      }
+      const piso = escolhePiso(amostras, { alvo: ALVO_CUES })
+      if (piso) {
+        silencios = cuesDeSilencio(piso.gaps, {
+          duration: paddedDur, minEdge: Number(opt['min-edge']), alvo: ALVO_CUES, minGap: 1.5,
+        })
+        console.log(`    silêncio: piso ${piso.db}dB → ${piso.gaps.length} pausa(s) ≥1.5s`)
+      } else {
+        console.log('    silêncio: áudio sem pausa real — nenhum corte inventado')
+      }
+    } catch (e) {
+      console.log(`    silêncio: falhou (${e.message}) — segue só com o preto`)
+    }
+  }
+  // 3ª fonte: TROCA DE CENA. O corte cai na emenda entre dois planos — que é
+  // onde o episódio já mudou de assunto, e o telespectador não sente. Medido no
+  // EP03 do SPD (sem preto e sem silêncio útil): as trocas mais próximas dos
+  // pontos ideais ficaram a 2s, 0s, 4s e 6s deles. Só roda se ainda faltar cue:
+  // é a varredura mais cara das três.
+  let cenas = []
+  if (pretos.length + silencios.length < ALVO_CUES) {
+    try {
+      const brutas = await detectScene(normalized)
+      cenas = cuesDeCena(brutas, { duration: paddedDur, minEdge: Number(opt['min-edge']), alvo: ALVO_CUES })
+      console.log(`    cena: ${brutas.length} troca(s) → ${cenas.length} corte(s) candidato(s)`)
+    } catch (e) {
+      console.log(`    cena: falhou (${e.message}) — segue com o que tem`)
+    }
+  }
+  cues = fundeCues(pretos, silencios, cenas, { alvo: ALVO_CUES })
   const desc = blacks.map((b) => `${b.start.toFixed(1)}–${b.end.toFixed(1)}s`).join(', ') || 'nenhum'
-  console.log(`4/5 cue points: preto em [${desc}] → cortes em [${cues.join(', ') || '—'}]s`)
+  const MARCA = { black: '', silencio: '~', cena: '*' }
+  const resumo = cues.map((c) => `${c.t}${MARCA[c.kind] ?? ''}`).join(', ')
+  console.log(`4/5 cue points: preto em [${desc}] → cortes em [${resumo || '—'}]s  (~ silêncio, * cena)`)
 } else {
   console.log('4/5 cue points: pulado')
 }
