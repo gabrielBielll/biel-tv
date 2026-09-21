@@ -4,7 +4,11 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 const API = import.meta.env.VITE_API_BASE ?? ''
 const TOKEN_KEY = 'bieltv_admin_token'
 
-const token = ref(localStorage.getItem(TOKEN_KEY) ?? '')
+// Rodando local (vite dev), o token pode vir da env — colar 48 chars na
+// telinha do celular erra fácil, e um token velho no localStorage travava a
+// entrada. Em build de produção isto é sempre '' (DEV é false).
+const devToken = import.meta.env.DEV ? (import.meta.env.VITE_ADMIN_TOKEN ?? '') : ''
+const token = ref(devToken || localStorage.getItem(TOKEN_KEY) || '')
 const authed = ref(false)
 const authMsg = ref('')
 
