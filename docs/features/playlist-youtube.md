@@ -26,6 +26,47 @@
 > classificação, ordenação, detecção de buraco, criação dos jobs, download
 > múltiplo e concat — é exercitado de ponta a ponta.
 
+## ⚠️ Correção 2026-09-21: nem toda playlist é de PARTES (Power Rangers SPD)
+
+O Gabriel mandou `PLGO2xg6h_bXPoAckHaLtltw7B-kb1KYss` (Power Rangers S.P.D.) e
+**30 dos 38 episódios reprovaram** na revisão — "parte(s) 1 faltando" nos que
+tinham "( parte 2 )" no título, "nenhuma parte numerada" em todo o resto.
+
+Não era bug de download: era a **premissa** da feature. Medindo a playlist com
+`yt-dlp --flat-playlist`, os 38 vídeos têm **21m58 a 22m46** — nenhum abaixo de
+10min. É **1 vídeo = 1 episódio INTEIRO**. O "( parte 1 )/( parte 2 )" do título
+é o nome da **HISTÓRIA em duas partes**, e na série essas duas metades são dois
+episódios NUMERADOS: `EP01 - O Começo ( parte 1 )` e `EP02 - O Começo ( parte 2 )`.
+Cobrar "as partes formam 1..N" aí reprova o acervo inteiro.
+
+Então existem DOIS tipos de playlist, e confundi-los é o erro nº 1:
+
+| | FRAGMENTOS (Jake Long) | INTEIROS (SPD) |
+|---|---|---|
+| duração do vídeo | ~4min | ~22min |
+| "(Parte 2)" significa | 2º PEDAÇO do episódio | nome da 2ª metade da história |
+| vídeos por nº de episódio | vários (6) | um |
+| faltar a parte 1 | buraco de verdade → reprova | não existe buraco |
+
+**O sinal que separa os dois** (em `montaGrupos`, sem depender da redação do
+título): num acervo de fragmentos a **MAIORIA dos vídeos divide o nº do episódio
+com outro**. Se cada episódio tem um vídeo só, não há o que juntar — o "parte"
+do título é nome, não índice, e o episódio aprova com 1 parte.
+
+É por MAIORIA, e não "algum grupo com 2 vídeos", de propósito: o próprio SPD tem
+um título errado no acervo (`EP07 - Sam ( parte 1)` e `EP08 - Sam ( parte 1)`),
+e um deslize desses não pode virar a playlist inteira do avesso. No modo inteiro,
+grupo com 2 vídeos continua sendo reportado como ambiguidade pro operador — nunca
+escolhe um em silêncio.
+
+Detalhe que evita confusão no guia: no modo inteiro o nº de parte **vira NOME**
+(`… (Parte 2)` no título), senão as duas metades de uma história aparecem com o
+mesmo nome no EPG, uma atrás da outra.
+
+Teste: `pnpm verify:playlist:modo` (15 checagens, sem servidor e sem LLM — usa os
+38 títulos REAIS do SPD + o Jake Long embaralhado, e garante que fragmento com
+buraco continua reprovando).
+
 ## O problema
 
 Muitos acervos no YouTube têm **episódios partidos em pedaços de ~4min** dentro
