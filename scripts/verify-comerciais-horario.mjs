@@ -49,11 +49,20 @@ export function horaFalada(txt) {
   const t = norm(txt)
   if (/meia[- ]noite/.test(t)) return '00:00'
   if (/meio[- ]dia/.test(t)) return '12:00'
-  const m = t.match(
-    /\ba?s\s+(uma|duas|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze)\s*(e meia\s*)?(?:da\s+(manha|tarde|noite|madrugada)|horas?\b|em ponto\b)/,
-  )
+  // Duas formas, e a diferença entre elas não é estética:
+  //  A) com PERÍODO ("seis da tarde") — o "às" pode faltar, porque peça de
+  //     acervo diz "Sexta, sete e meia da noite" ou "Seis da tarde". O período
+  //     é o que garante que é relógio.
+  //  B) só "N horas" — aí o "às" é OBRIGATÓRIO, senão DURAÇÃO vira horário:
+  //     "sem parar por duas horas" (Votatoon) virava 02:00 e "dez horas de
+  //     sono" (campanha O Movimento) virava 10:00. Falsos positivos reais,
+  //     achados em 21/09 ao ampliar o parser pras peças de acervo.
+  const NUMS = 'uma|duas|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze|\\d{1,2}'
+  const m = t.match(new RegExp(`(?:\\ba?s\\s+)?\\b(${NUMS})\\s*(e meia\\s*)?da\\s+(manha|tarde|noite|madrugada)`))
+    ?? t.match(new RegExp(`\\ba?s\\s+(${NUMS})\\s*(e meia\\s*)?(?:horas?\\b|em ponto\\b)()`))
   if (!m) return null
-  let h = NUM[m[1]]
+  let h = NUM[m[1]] ?? Number(m[1])
+  if (!Number.isFinite(h) || h < 0 || h > 23) return null
   const per = m[3] ?? ''
   if ((per === 'tarde' || per === 'noite') && h < 12) h += 12
   if ((per === 'manha' || per === 'madrugada') && h === 12) h = 0

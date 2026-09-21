@@ -19,6 +19,13 @@ export interface Proposta {
   series_id?: string | null
   descricao?: string
   confianca?: number
+  // O QUE a promessa de horário afirma. O scheduler já lia `cond.hora`/`cond.dias`
+  // pra decidir se a grade cumpre o anunciado, mas nada os gravava — então a
+  // promessa valia pela SÉRIE só, e um comercial de "Scooby às três da tarde"
+  // destravava com a faixa das 15:30. Foi assim que 7 comerciais viraram mentira
+  // sem ninguém editar nada (auditoria de 21/09: `pnpm verify:comerciais-horario`).
+  hora?: string | null // 'HH:MM'
+  dias?: number[] | null // ISO 1=seg … 7=dom
 }
 
 const SCHEMA_GEMINI = {

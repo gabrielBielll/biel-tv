@@ -539,7 +539,24 @@ admin.post('/promessas/:id/decidir', async (c) => {
         return c.json({ error: `"${cd.series_id}" não tem episódio/filme pronto — agrupe os episódios da série alvo no catálogo primeiro` }, 400)
       }
     }
-    condicao = JSON.stringify({ tipo: cd.tipo, series_id: cd.series_id ?? null, descricao: cd.descricao ?? '' })
+    // hora/dias são o CORPO da promessa de horário — sem eles a condição vale
+    // pela série só, e a peça destrava numa faixa que não é a anunciada.
+    let hora: string | null = null
+    if (cd.hora != null && String(cd.hora).trim() !== '') {
+      const h = String(cd.hora).trim()
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(h)) return c.json({ error: 'hora deve ser HH:MM' }, 400)
+      hora = h
+    }
+    let dias: number[] | null = null
+    if (cd.dias != null) {
+      if (!Array.isArray(cd.dias) || !cd.dias.every((n) => Number.isInteger(n) && n >= 1 && n <= 7)) {
+        return c.json({ error: 'dias deve ser lista ISO 1..7 (1=seg, 7=dom)' }, 400)
+      }
+      dias = [...new Set(cd.dias as number[])].sort()
+    }
+    condicao = JSON.stringify({
+      tipo: cd.tipo, series_id: cd.series_id ?? null, descricao: cd.descricao ?? '', hora, dias,
+    })
   }
   const r = await c.env.DB.prepare(
     `UPDATE media_promises SET status = ?2, condicao = ?3, updated_at = unixepoch() WHERE media_id = ?1`,
