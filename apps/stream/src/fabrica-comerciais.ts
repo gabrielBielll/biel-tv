@@ -399,6 +399,25 @@ fabricaComerciais.get('/', async (c) => {
   try {
     ancoras = (await c.env.DB.prepare('SELECT * FROM channel_slots ORDER BY canal, hora, created_at DESC').all()).results
   } catch { /* channel_slots ausente: sem âncoras */ }
+  // Cards editoriais de comerciais ainda a produzir. São pedidos humanos, não
+  // jobs automáticos da fábrica; migration ausente não pode derrubar o painel.
+  let pedidos: unknown[] = []
+  try {
+    pedidos = (await c.env.DB.prepare(
+      `SELECT * FROM commercial_requests
+       ORDER BY CASE status WHEN 'pendente' THEN 0 ELSE 1 END,
+                prioridade DESC, canal, hora, created_at`,
+    ).all()).results
+  } catch { /* migration 0032 ainda não aplicada: sem cards */ }
+  let pedidosAcervo: unknown[] = []
+  try {
+    pedidosAcervo = (await c.env.DB.prepare(
+      `SELECT * FROM content_requests
+       ORDER BY canal, CASE status WHEN 'pendente' THEN 0 ELSE 1 END,
+                CASE tipo WHEN 'programa' THEN 0 ELSE 1 END,
+                prioridade DESC, titulo`,
+    ).all()).results
+  } catch { /* migration 0033 ainda não aplicada: sem checklist de acervo */ }
   return c.json({
     voice_clips: voice.results,
     moldes: moldes.results,
@@ -407,8 +426,57 @@ fabricaComerciais.get('/', async (c) => {
     series: series.results.filter((s: any) => s.sid),
     canais: canais.results,
     ancoras,
+    pedidos,
+    pedidos_acervo: pedidosAcervo,
     tts_disponivel: Boolean(c.env.ELEVENLABS_API_KEY),
   })
+})
+
+// Pedido concluído continua no histórico e pode ser reaberto. Não o ligamos a
+// um commercial_build_job porque algumas peças virão editadas de fora da
+// fábrica; o card é a encomenda editorial, não a implementação da mídia.
+fabricaComerciais.post('/pedidos/:id/status', async (c) => {
+  const id = c.req.param('id')
+  if (!/^req_[a-z0-9_]{3,60}$/.test(id)) return c.json({ error: 'pedido inválido' }, 400)
+  const b = await c.req.json<{ status?: string }>().catch(() => ({}))
+  const status = String(b.status ?? '')
+  if (status !== 'pendente' && status !== 'concluido') {
+    return c.json({ error: 'status deve ser pendente ou concluido' }, 400)
+  }
+  try {
+    const r = await c.env.DB.prepare(
+      'UPDATE commercial_requests SET status=?2, updated_at=unixepoch() WHERE id=?1',
+    ).bind(id, status).run()
+    if ((r.meta.changes ?? 0) === 0) return c.json({ error: 'pedido não encontrado' }, 404)
+  } catch (e) {
+    if (String((e as Error).message ?? e).includes('no such table')) {
+      return c.json({ error: 'migration 0032 ainda não aplicada' }, 503)
+    }
+    throw e
+  }
+  return c.json({ ok: true, id, status })
+})
+
+fabricaComerciais.post('/pedidos-acervo/:id/status', async (c) => {
+  const id = c.req.param('id')
+  if (!/^acv_[a-z0-9_]{3,70}$/.test(id)) return c.json({ error: 'pedido inválido' }, 400)
+  const b = await c.req.json<{ status?: string }>().catch(() => ({}))
+  const status = String(b.status ?? '')
+  if (status !== 'pendente' && status !== 'concluido') {
+    return c.json({ error: 'status deve ser pendente ou concluido' }, 400)
+  }
+  try {
+    const r = await c.env.DB.prepare(
+      'UPDATE content_requests SET status=?2, updated_at=unixepoch() WHERE id=?1',
+    ).bind(id, status).run()
+    if ((r.meta.changes ?? 0) === 0) return c.json({ error: 'pedido não encontrado' }, 404)
+  } catch (e) {
+    if (String((e as Error).message ?? e).includes('no such table')) {
+      return c.json({ error: 'migration 0033 ainda não aplicada' }, 503)
+    }
+    throw e
+  }
+  return c.json({ ok: true, id, status })
 })
 
 // ── âncoras de grade (slots fixos) ──────────────────────────────────────────

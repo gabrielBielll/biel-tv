@@ -123,8 +123,8 @@ const promPendentes = computed(() => promessas.value.filter((p) => p.status === 
 const promDecididas = computed(() => promessas.value.filter((p) => p.status === 'confirmada' || p.status === 'ignorar'))
 
 // ── fábrica de comerciais (fala + amostra + molde) ─────────────────────────
-const fabrica = ref<{ voice_clips: any[]; moldes: any[]; samples: any[]; jobs: any[]; series: any[]; canais: any[]; ancoras: any[]; tts_disponivel: boolean }>({
-  voice_clips: [], moldes: [], samples: [], jobs: [], series: [], canais: [], ancoras: [], tts_disponivel: false,
+const fabrica = ref<{ voice_clips: any[]; moldes: any[]; samples: any[]; jobs: any[]; series: any[]; canais: any[]; ancoras: any[]; pedidos: any[]; pedidos_acervo: any[]; tts_disponivel: boolean }>({
+  voice_clips: [], moldes: [], samples: [], jobs: [], series: [], canais: [], ancoras: [], pedidos: [], pedidos_acervo: [], tts_disponivel: false,
 })
 const fabBusy = ref(false)
 const clipFile = ref<File | null>(null)
@@ -174,6 +174,15 @@ function ancoraDias(a: any): number[] {
   try { return JSON.parse(a.dias) } catch { return [] }
 }
 const fabJobsAtivos = computed(() => fabrica.value.jobs.filter((j) => j.status === 'queued' || j.status === 'processing'))
+const pedidosComercialPendentes = computed(() => (fabrica.value.pedidos ?? []).filter((p) => p.status === 'pendente'))
+const pedidosComercialOrdenados = computed(() => [...(fabrica.value.pedidos ?? [])].sort((a, b) => {
+  if (a.status !== b.status) return a.status === 'pendente' ? -1 : 1
+  return Number(b.prioridade ?? 0) - Number(a.prioridade ?? 0)
+}))
+const pedidoDias = (p: any): string => diasFabLabel(ancoraDias(p))
+const pedidosAcervoPendentes = computed(() => (fabrica.value.pedidos_acervo ?? []).filter((p) => p.status === 'pendente'))
+const pedidosAcervoDe = (canal: string, tipo: 'programa' | 'filme'): any[] =>
+  (fabrica.value.pedidos_acervo ?? []).filter((p) => p.canal === canal && p.tipo === tipo)
 const canalDoMolde = computed(() =>
   fabrica.value.moldes.find((m) => m.id === buildForm.value.molde_id)?.canal ?? '',
 )
@@ -190,6 +199,8 @@ const slugFab = (s: string) =>
 async function carregaFabrica() {
   try {
     fabrica.value = await (await api('/fabrica-comerciais')).json()
+    fabrica.value.pedidos ??= []
+    fabrica.value.pedidos_acervo ??= []
     if (!buildForm.value.molde_id && fabrica.value.moldes[0]) buildForm.value.molde_id = fabrica.value.moldes[0].id
     if (!channels.value.some((c) => c.id === clipForm.value.canal)) clipForm.value.canal = channels.value[0]?.id ?? ''
     // sem chave do ElevenLabs, cai pro upload manual de áudio
@@ -203,6 +214,32 @@ async function carregaFabrica() {
       }
     }
   } catch { /* poll cobre */ }
+}
+
+async function mudarStatusPedidoComercial(p: any) {
+  const status = p.status === 'pendente' ? 'concluido' : 'pendente'
+  try {
+    const res = await postJson(`/fabrica-comerciais/pedidos/${p.id}/status`, { status })
+    const body = await res.json().catch(() => ({} as { error?: string }))
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    msg.value = status === 'concluido' ? '✔ pedido de comercial concluído' : '✔ pedido reaberto'
+    await carregaFabrica()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  }
+}
+
+async function mudarStatusPedidoAcervo(p: any) {
+  const status = p.status === 'pendente' ? 'concluido' : 'pendente'
+  try {
+    const res = await postJson(`/fabrica-comerciais/pedidos-acervo/${p.id}/status`, { status })
+    const body = await res.json().catch(() => ({} as { error?: string }))
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    msg.value = status === 'concluido' ? '✔ item do acervo concluído' : '✔ item do acervo reaberto'
+    await carregaFabrica()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  }
 }
 
 async function uploadAsset(f: File): Promise<string> {
@@ -1460,7 +1497,11 @@ onBeforeUnmount(() => clearInterval(poll))
       </button>
       <button class="nav-item" :class="{ on: aba === 'fabrica' }" @click="aba = 'fabrica'">
         <span class="nav-ico">🏭</span> Fábrica
-        <span v-if="fabJobsAtivos.length" class="nav-badge azul" title="comerciais em montagem">{{ fabJobsAtivos.length }}</span>
+        <span
+          v-if="fabJobsAtivos.length || pedidosComercialPendentes.length || pedidosAcervoPendentes.length"
+          class="nav-badge"
+          title="pedidos de acervo/comerciais + comerciais em montagem"
+        >{{ fabJobsAtivos.length + pedidosComercialPendentes.length + pedidosAcervoPendentes.length }}</span>
       </button>
       <button class="nav-item" :class="{ on: aba === 'fila' }" @click="aba = 'fila'">
         <span class="nav-ico">⚙️</span> Fila
@@ -1722,6 +1763,88 @@ onBeforeUnmount(() => clearInterval(poll))
 
       <section v-show="aba === 'fabrica'" class="card">
         <h2>Fábrica de comerciais</h2>
+
+        <div class="pedidos-acervo">
+          <div class="pedidos-head">
+            <div>
+              <h3>O que baixar para a grade</h3>
+              <p class="dim small">Programas e filmes desejados, agrupados por canal. Marque cada item quando ele entrar no acervo.</p>
+            </div>
+            <span class="chip">{{ pedidosAcervoPendentes.length }} pendente(s)</span>
+          </div>
+          <p v-if="!(fabrica.pedidos_acervo ?? []).length" class="dim">
+            Nenhum card ainda — aplique a migration 0033 para carregar o checklist dos três canais.
+          </p>
+          <div v-else class="acervo-card-grid">
+            <article v-for="c in fabrica.canais" :key="c.id" class="acervo-card">
+              <h4>{{ c.nome }}</h4>
+              <div class="acervo-colunas">
+                <div>
+                  <h5>Programas</h5>
+                  <button
+                    v-for="p in pedidosAcervoDe(c.id, 'programa')"
+                    :key="p.id"
+                    class="acervo-pedido"
+                    :class="{ feito: p.status === 'concluido', urgente: p.prioridade >= 95 }"
+                    :title="p.observacao || ''"
+                    @click="mudarStatusPedidoAcervo(p)"
+                  >
+                    <span>{{ p.status === 'concluido' ? '✓' : '○' }}</span>
+                    <span class="grow-text"><b>{{ p.titulo }}</b><small>{{ p.destino }}</small></span>
+                  </button>
+                </div>
+                <div>
+                  <h5>Filmes</h5>
+                  <button
+                    v-for="p in pedidosAcervoDe(c.id, 'filme')"
+                    :key="p.id"
+                    class="acervo-pedido"
+                    :class="{ feito: p.status === 'concluido', urgente: p.prioridade >= 95 }"
+                    :title="p.observacao || ''"
+                    @click="mudarStatusPedidoAcervo(p)"
+                  >
+                    <span>{{ p.status === 'concluido' ? '✓' : '○' }}</span>
+                    <span class="grow-text"><b>{{ p.titulo }}</b><small>{{ p.destino }}</small></span>
+                  </button>
+                </div>
+              </div>
+            </article>
+          </div>
+        </div>
+
+        <div class="pedidos-comerciais">
+          <div class="pedidos-head">
+            <div>
+              <h3>Pedidos de comerciais</h3>
+              <p class="dim small">Peças que a nova grade precisa. São encomendas editoriais: não entram na fila automaticamente.</p>
+            </div>
+            <span class="chip">{{ pedidosComercialPendentes.length }} pendente(s)</span>
+          </div>
+          <p v-if="pedidosComercialOrdenados.length === 0" class="dim">
+            Nenhum card ainda — aplique a migration 0032 para carregar os pedidos da grade de fim de semana.
+          </p>
+          <div v-else class="pedido-grid">
+            <article
+              v-for="p in pedidosComercialOrdenados"
+              :key="p.id"
+              class="pedido-card"
+              :class="{ feito: p.status === 'concluido' }"
+            >
+              <div class="pedido-top">
+                <span class="chip">{{ nomeCanal(p.canal) }}</span>
+                <span class="chip">{{ p.tipo }}</span>
+                <span class="mono">{{ pedidoDias(p) }} · {{ p.hora }}</span>
+              </div>
+              <h4>{{ p.titulo }}</h4>
+              <p class="pedido-texto">“{{ p.texto_sugerido }}”</p>
+              <p v-if="p.observacao" class="dim small">{{ p.observacao }}</p>
+              <button class="ghost" @click="mudarStatusPedidoComercial(p)">
+                {{ p.status === 'pendente' ? '✓ marcar concluído' : '↻ reabrir pedido' }}
+              </button>
+            </article>
+          </div>
+        </div>
+
         <div class="fab-grid">
           <div class="fab-panel fab-main">
             <h3>Montar comercial</h3>
@@ -2439,6 +2562,35 @@ button.ghost:hover { color: var(--text); }
 .pl-error { color: #ff6b6b; border-color: rgba(255, 107, 107, 0.5); }
 
 /* fábrica de comerciais */
+.pedidos-acervo, .pedidos-comerciais { margin-bottom: 16px; border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px; background: var(--panel-2); }
+.pedidos-head { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.pedidos-head h3 { font-size: 13px; margin: 0; }
+.acervo-card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.acervo-card { min-width: 0; border: 1px solid var(--line); border-radius: 9px;
+  padding: 11px; background: var(--panel); }
+.acervo-card h4 { font-size: 15px; margin: 0 0 10px; }
+.acervo-card h5 { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-dim); margin: 10px 0 5px; }
+.acervo-colunas { max-height: 610px; overflow-y: auto; padding-right: 3px; }
+.acervo-pedido { width: 100%; display: flex; align-items: flex-start; gap: 7px; text-align: left;
+  border: 0; border-left: 2px solid transparent; background: transparent; color: var(--text);
+  padding: 6px; border-radius: 5px; cursor: pointer; }
+.acervo-pedido:hover { background: var(--panel-2); }
+.acervo-pedido.urgente { border-left-color: #ffb020; }
+.acervo-pedido.feito { opacity: 0.45; text-decoration: line-through; border-left-color: var(--ok); }
+.acervo-pedido .grow-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.acervo-pedido b { font-size: 12px; font-weight: 600; }
+.acervo-pedido small { color: var(--text-dim); font-size: 10px; line-height: 1.3; }
+.pedido-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.pedido-card { min-width: 0; border: 1px solid var(--line); border-left: 3px solid #ffb020;
+  border-radius: 9px; padding: 11px; background: var(--panel); }
+.pedido-card.feito { opacity: 0.58; border-left-color: var(--ok); }
+.pedido-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pedido-top .mono { margin-left: auto; }
+.pedido-card h4 { font-size: 14px; margin: 10px 0 6px; }
+.pedido-texto { font-size: 13px; line-height: 1.45; margin: 0 0 6px; }
+.pedido-card button { margin-top: 4px; }
 .fab-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; align-items: start; min-width: 0; }
 .fab-panel { min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--panel-2); }
 .fab-main { grid-row: span 2; }
@@ -2454,10 +2606,14 @@ button.ghost:hover { color: var(--text); }
 .fab-check input { width: auto; flex: 0 0 auto; }
 .fab-mini select { width: auto; flex: 0 0 auto; }
 @media (max-width: 980px) {
+  .acervo-card-grid { grid-template-columns: 1fr; }
+  .acervo-colunas { max-height: none; }
+  .pedido-grid { grid-template-columns: 1fr; }
   .fab-grid { grid-template-columns: 1fr; }
   .fab-main { grid-row: auto; }
 }
 @media (max-width: 620px) {
+  .pedidos-head { align-items: stretch; flex-direction: column; }
   .fab-panel .row { flex-direction: column; align-items: stretch; }
   .fab-mini { flex-wrap: wrap; }
   .fab-mini .grow { white-space: normal; }

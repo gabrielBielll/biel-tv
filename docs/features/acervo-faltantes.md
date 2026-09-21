@@ -1,4 +1,4 @@
-# O que falta baixar — acervo × grade-alvo (15/09/2026)
+# O que falta baixar — acervo × grade nostálgica 2005–2008 (21/09/2026)
 
 > Cruzamento **atual** entre o catálogo real (`media_items` + `media_channels`,
 > só `status='ready'`) e [grade-alvo-2005.md](grade-alvo-2005.md). Substitui os
@@ -9,6 +9,13 @@
 > Prioridade: **✓ real** (horário copiado de grade da Folha de 2005) vem antes de
 > **~ reconstruído** (madrugada/manhã estimadas). Um título que a grade repete em
 > vários horários rende mais que um que aparece uma vez.
+
+> **Curadoria mantida:** títulos emprestados ou fora do canal histórico não são
+> mais pendência de remoção. O Gabriel prefere mantê-los nos canais atuais. Ver
+> a decisão completa e os slots de filme em
+> [grade-fim-de-semana-2005-2008.md](grade-fim-de-semana-2005-2008.md).
+> O mesmo levantamento agora aparece como checklist clicável no painel, por
+> canal, a partir da migration `0033_pedidos_acervo_grade.sql`.
 
 Hoje (18/09): **1.074 programas** no ar — CN 474 (23 séries), Jetix 394 (16),
 Disney 206 (9).
@@ -47,10 +54,10 @@ Johnny Bravo
 |---|---:|---|
 | Coragem, o Cão Covarde | 7 | ocupa 09:30 todo dia; 7 eps repetem rápido |
 | A Vida e Aventuras de Juniper Lee | 5 | 2005, in-era |
-| Hey Arnold | 2 | ⚠️ é **Nickelodeon**, não CN — decidir se fica |
+| Hey Arnold | 2 | **Manter na CN** por decisão de curadoria do Gabriel |
 | O Que Há de Novo, Scooby-Doo? | 7 | ⚠️ está **misturado** no mesmo `series_id` do Scooby clássico (32 eps): a grade-alvo trata como dois programas (04:30 clássico × 11:00/14:00/18:00/21:30 OQHDN). Separar em `scooby_doo` e `scooby_doo_oqhdn`. |
-| Capitão Lento | 2 | ⚠️ o Gabriel já confirmou que é **comercial**, não episódio — tirar do pool de conteúdo |
-| O Show dos Looney Tunes | 7 | ⚠️ é de **2011** — anacrônico pro alvo 2005 (o clássico, 32 eps, esse sim é da época) |
+| Capitão Lento | 2 | Manter ligado à CN, mas corrigir para `comercial` se as peças não forem episódios |
+| O Show dos Looney Tunes | 7 | **Manter na CN** como exceção nostálgica de curadoria |
 
 ## 🔴 Jetix
 
@@ -117,7 +124,7 @@ Hércules: A Série
 | Os Feiticeiros de Waverly Place | 11 | |
 | As Visões da Raven | 17 | ⚠️ caiu de 31 → 17: a leva `s2_e01-15` foi rebaixada por tarja (pillarbox). **Re-subir em 16:9.** |
 
-**Emprestados de outros canais** (decisão antiga do Gabriel, mantida):
+**Emprestados de outros canais** (decisão confirmada novamente em 21/09/2026):
 `padrinhos_magicos` (68), `danny_phantom` (19), `yin_yang_yo` (9) — Nick/Jetix
 tocando na Disney.
 
@@ -165,11 +172,13 @@ não está completo antes de rebaixar. Ao re-baixar, seguir
 [[verificar-fonte-antes-de-ingest]]: conferir truncamento (pacotes ≈ duração)
 ANTES de gastar transcodificação.
 
-## 🎬 Filmes — a faixa que hoje não existe
+## 🎬 Filmes — slots permanentes, acervo em chegada
 
 O acervo tem **um filme só**: `filme_as_meninas_superpoderosas_2002` (69 min, CN).
-A grade-alvo da Disney tem **duas faixas de filme por dia** (00:00 e 20:30, ~2h
-cada) que hoje não têm o que exibir.
+Os horários de cinema não serão convertidos em maratonas definitivas só porque o
+acervo ainda está incompleto. Os slots permanentes de fim de semana estão em
+[grade-fim-de-semana-2005-2008.md](grade-fim-de-semana-2005-2008.md); especiais
+de episódios apenas os ocupam provisoriamente.
 
 **Disney — "O Maravilhoso Mundo de Disney" / DCOM** (dublados, da época)
 High School Musical (2006) · High School Musical 2 (2007) · Camp Rock (2008) ·
@@ -181,8 +190,7 @@ Halloween (1998) · Casa Inteligente (1999) · Programa de Proteção para Princ
 **Cartoon Network — filmes/especiais que a CN exibia**
 Scooby-Doo animados (Ilha dos Zumbis · O Monstro do México · A Lenda do Vampiro
 · Cyber Perseguição) · Os Jovens Titãs: Missão Tóquio (2006) · Tom e Jerry: O
-Filme · A Mansão Foster: especiais · ⚠️ Ben 10: O Segredo do Omnitrix é 2007 —
-fora do alvo 2005
+Filme · A Mansão Foster: especiais · Ben 10: O Segredo do Omnitrix (2007)
 
 **Jetix — a "sessão de filme" do canal**
 Os Padrinhos Mágicos: Abracatástrofe / Já Não Era Sem Tempo (os TV-movies, muito

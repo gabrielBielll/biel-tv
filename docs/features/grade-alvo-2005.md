@@ -1,4 +1,9 @@
-# Grade-alvo histórica — 2005 (Jetix · Cartoon Network · Disney Channel)
+# Grade-alvo histórica — base de 2005 (Jetix · Cartoon Network · Disney Channel)
+
+> **Escopo ampliado em 21/09/2026:** a programação final passou a ser uma
+> reconstrução nostálgica de **2005–2008**. Este arquivo continua como fonte da
+> base de 2005; fins de semana, slots permanentes de filme e exceções de
+> curadoria estão em [grade-fim-de-semana-2005-2008.md](grade-fim-de-semana-2005-2008.md).
 
 > Documento de **referência/meta**, criado em 2026-07-28.
 > Não é código nem spec de feature: é o **alvo** que queremos que a grade de

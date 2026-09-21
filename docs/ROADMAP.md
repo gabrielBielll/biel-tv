@@ -115,12 +115,13 @@ montar blocos/sequências justamente porque tem a promo perfeita pra eles.
 
 ## 📦 Backlog (sem fase definida)
 
-- **Chegar na grade-alvo histórica de ~2005** — meta editorial do Gabriel
-  (2026-07-28): reconstruir os 3 canais no auge de 2005, o mais fiel possível
-  às grades reais da Folha. Grade completa (48 faixas/canal, com o que é real
-  vs. reconstruído) em [features/grade-alvo-2005.md](features/grade-alvo-2005.md).
-  Próximos passos lá: cruzar os ~120 títulos com o acervo do D1, decidir Disney
-  (2005 reconstruído vs. 2002 real) e alimentar a `identidade` de cada canal.
+- **Chegar na grade nostálgica 2005–2008** — escopo ampliado pelo Gabriel em
+  21/09/2026: reconstruir os três canais com base nas grades reais e chamadas
+  da época, sem exigir que tudo pertença ao mesmo dia de 2005. A base histórica
+  continua em [features/grade-alvo-2005.md](features/grade-alvo-2005.md); os
+  modelos distintos de sábado/domingo e os slots permanentes de filme estão em
+  [features/grade-fim-de-semana-2005-2008.md](features/grade-fim-de-semana-2005-2008.md).
+  Títulos emprestados atualmente nos canais permanecem por curadoria.
 
 - **Diretor encomenda comerciais + vinhetas "a seguir" GERADAS por IA** —
   pedido do Gabriel (2026-07-13). A inversão genial do problema da fase 12:
