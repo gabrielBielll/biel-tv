@@ -165,6 +165,10 @@ async function listaPlaylist(pl) {
 async function tickPlaylist() {
   const res = await fetch(`${BASE}/admin/playlist/claim`, { method: 'POST', headers: HDR })
   if (res.status === 204) return false
+  // 5xx não derruba o processo — e aqui importa mais que nos outros: este é o
+  // PRIMEIRO tick do laço de drenagem, então um 500 daqui mataria a fábrica
+  // antes de ela chegar nos episódios. Ver a nota no tickFabricaComerciais.
+  if (res.status >= 500) { log(`playlist indisponível (HTTP ${res.status}) — sigo com os outros ticks`); return false }
   if (!res.ok) throw new Error(`playlist claim HTTP ${res.status}`)
   const pl = await res.json()
   try {
@@ -361,6 +365,16 @@ async function tickFabricaComerciais() {
   const res = await fetch(`${BASE}/admin/fabrica-comerciais/claim`, { method: 'POST', headers: HDR })
   if (res.status === 204) return false
   if (res.status === 404) return false
+  // 5xx = problema do SERVIDOR, e o mais comum é cota diária de escrita do D1
+  // estourada (o Worker devolve 500 nu; o erro real só aparece no wrangler
+  // tail). Cota é transitória por definição — derrubar o processo por causa
+  // dela troca "esperar" por "parar", e para a fila de EPISÓDIOS junto.
+  //
+  // Medido em 22/09/2026: a cota estourou, este claim passou a devolver 500, o
+  // `throw` matou o processo em 9s e 33 episódios de Power Rangers S.P.D.
+  // ficaram o dia inteiro em `queued` — por causa do subsistema de COMERCIAIS.
+  // É a mesma lição do 404 logo abaixo (`tickComercial`), com outro status.
+  if (res.status >= 500) { log(`fábrica de comerciais indisponível (HTTP ${res.status}) — sigo com os outros ticks`); return false }
   if (!res.ok) throw new Error(`fábrica de comerciais claim HTTP ${res.status}`)
   const job = await res.json()
   const workdir = join(ROOT, '.ingest-work', `fabcom_${job.id}`)
@@ -454,6 +468,9 @@ async function tickComercial() {
   // Regra: um tick de feature nova nunca pode quebrar os ticks que já
   // funcionam. Endpoint ausente ⇒ sem trabalho, segue o baile.
   if (res.status === 404) return false
+  // …e 5xx pelo mesmo motivo: servidor fora do ar ou cota estourada não pode
+  // parar a fila de episódios. Ver a nota no tickFabricaComerciais.
+  if (res.status >= 500) { log(`cortador indisponível (HTTP ${res.status}) — sigo com os outros ticks`); return false }
   if (!res.ok) throw new Error(`comerciais claim HTTP ${res.status}`)
   const cc = await res.json()
   const workdir = join(ROOT, '.ingest-work', `cc_${cc.id}`)
