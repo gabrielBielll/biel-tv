@@ -755,23 +755,60 @@ admin.post('/media/:id/tipo', async (c) => {
   return c.json({ ok: true, canais_replanejados: chs.map((x) => x.ch) })
 })
 
+// Muda o status de N mídias e replaneja cada canal afetado UMA vez — mesmo
+// padrão do `aplicaCanais` logo acima, e pelo mesmo motivo.
+//
+// ⚠️ REPLAN É CARO. `epg_virtual` tem 5 índices, então cada linha custa 6
+// escritas (tabela + índices); com ~1.100 linhas futuras por canal, um replan
+// (delete + insert) sai por ~13 mil linhas. O teto diário do D1 free tier é
+// 100 mil.
+//
+// Medido em 22/09/2026: um laço de 19 peças do MESMO canal pelo endpoint
+// antigo (que replanejava por chamada) escreveu 397 mil linhas numa hora —
+// quatro dias de orçamento, pra fazer o que um replan faria. A fábrica ficou
+// parada o dia inteiro e 33 episódios não ingeriram. Daí o lote.
+async function aplicaStatus(
+  env: { DB: D1Database; MEDIA: R2Bucket },
+  mediaIds: string[],
+  status: 'ready' | 'disabled',
+): Promise<string[]> {
+  if (mediaIds.length === 0) return []
+  const afetados = new Set<string>()
+  const now = Math.floor(Date.now() / 1000)
+  for (const id of mediaIds) {
+    await env.DB.prepare('UPDATE media_items SET status = ?2 WHERE id = ?1').bind(id, status).run()
+    if (status !== 'disabled') continue
+    // sai da grade futura já agendada; o replan vem depois, uma vez por canal
+    await env.DB.prepare('DELETE FROM epg_virtual WHERE media_id = ?1 AND start_time_virtual > ?2')
+      .bind(id, now).run()
+    const { results } = await env.DB.prepare(
+      'SELECT DISTINCT channel_id ch FROM media_channels WHERE media_id = ?1',
+    ).bind(id).all<{ ch: string }>()
+    for (const r of results) afetados.add(r.ch)
+  }
+  for (const ch of afetados) await scheduleChannel(env, ch, 48, true)
+  return [...afetados]
+}
+
 admin.post('/media/:id/status', async (c) => {
   const { status } = await c.req.json<{ status: string }>().catch(() => ({ status: '' }))
   if (!['ready', 'disabled'].includes(status)) return c.json({ error: 'status inválido' }, 400)
-  const id = c.req.param('id')
-  await c.env.DB.prepare('UPDATE media_items SET status = ?2 WHERE id = ?1').bind(id, status).run()
+  const canais = await aplicaStatus(c.env, [c.req.param('id')], status as 'ready' | 'disabled')
+  return c.json({ ok: true, canais_replanejados: canais })
+})
 
-  // desativou → sai da grade futura e os canais dela são replanejados
-  if (status === 'disabled') {
-    const now = Math.floor(Date.now() / 1000)
-    await c.env.DB.prepare('DELETE FROM epg_virtual WHERE media_id = ?1 AND start_time_virtual > ?2')
-      .bind(id, now).run()
-    const { results } = await c.env.DB.prepare(
-      'SELECT DISTINCT channel_id ch FROM media_channels WHERE media_id = ?1',
-    ).bind(id).all<{ ch: string }>()
-    for (const r of results) await scheduleChannel(c.env, r.ch, 48, true)
-  }
-  return c.json({ ok: true })
+// Versão em LOTE: desativar N peças custa o mesmo replan que desativar uma.
+// Use esta em qualquer limpeza — ver o aviso de custo no `aplicaStatus`.
+admin.post('/media/status', async (c) => {
+  type Corpo = { ids?: string[]; status?: string }
+  const b = await c.req.json<Corpo>().catch(() => ({} as Corpo))
+  const status = String(b.status ?? '')
+  if (!['ready', 'disabled'].includes(status)) return c.json({ error: 'status inválido' }, 400)
+  const ids = Array.isArray(b.ids) ? b.ids.filter((x: unknown): x is string => typeof x === 'string' && !!x) : null
+  if (!ids || ids.length === 0) return c.json({ error: 'ids deve ser uma lista não vazia' }, 400)
+  if (ids.length > 200) return c.json({ error: 'no máximo 200 por chamada' }, 400)
+  const canais = await aplicaStatus(c.env, ids, status as 'ready' | 'disabled')
+  return c.json({ ok: true, mudados: ids.length, canais_replanejados: canais })
 })
 
 // Zona de perigo: deleção FÍSICA e irreversível de uma mídia (segmentos no

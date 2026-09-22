@@ -21,9 +21,15 @@
 // e a cama ainda serve pro bloco Geração Power Rangers. É só renomeado para
 // deixar de parecer molde de uso geral.
 //
-// ⚠️ CUSTO DE ESCRITA: desativar mídia replaneja a grade do canal (o endpoint
-//    chama scheduleChannel). 19 peças = muita linha no D1. Rode com a cota
-//    fresca, logo depois das 21:00, nunca no fim do dia.
+// ⚠️ CUSTO DE ESCRITA — e esta é a lição cara de 22/09/2026: a primeira versão
+//    deste script desativava peça por peça pelo `/media/:id/status`, e AQUELE
+//    endpoint replanejava o canal a cada chamada. As 19 peças são todas do
+//    jetix, então saíram 19 replans do mesmo canal em fila: 397 MIL linhas numa
+//    hora, quatro vezes o teto diário do D1 free tier. A fábrica morreu e 33
+//    episódios ficaram o dia inteiro parados.
+//    Agora usa `POST /admin/media/status` (lote), que replaneja cada canal UMA
+//    vez — mesmo padrão do `aplicaCanais`. Custo: ~13 mil linhas em vez de 397
+//    mil.
 //
 // Uso:  node scripts/conserta-comerciais-cama.mjs            (dry-run)
 //       node scripts/conserta-comerciais-cama.mjs --aplicar
@@ -75,15 +81,15 @@ if (!ADMIN) { console.error('\nfalta ADMIN_TOKEN'); process.exit(2) }
 await d1('UPDATE moldes SET nome = ?2 WHERE id = ?1', [MOLDE_COM_CAMA, NOVO_NOME])
 console.log('✔ 1/3 molde renomeado')
 
-// 2. desativar
-let ok = 0, erro = 0
-for (const p of pecas) {
-  const res = await admin(`/media/${p.media_id}/status`, { status: 'disabled' })
-  if (res.ok) ok++
-  else { erro++; console.log(`  ✖ ${p.media_id} HTTP ${res.status}`) }
+// 2. desativar EM LOTE — um replan por canal, não um por peça
+const res2 = await admin('/media/status', { ids: pecas.map((p) => p.media_id), status: 'disabled' })
+const body2 = await res2.json().catch(() => ({}))
+if (!res2.ok) {
+  console.error(`✖ 2/3 desativar HTTP ${res2.status}`, JSON.stringify(body2).slice(0, 200))
+  console.error('parou: não reconcilio com peça pendurada')
+  process.exit(1)
 }
-console.log(`✔ 2/3 desativadas: ${ok} | erros: ${erro}`)
-if (erro) { console.error('parou: não reconcilio com peça pendurada'); process.exit(1) }
+console.log(`✔ 2/3 desativadas: ${body2.mudados} | canais replanejados: ${(body2.canais_replanejados ?? []).join(', ') || '—'}`)
 
 // 3. reconciliar → gera as novas
 const rec = await admin('/fabrica-comerciais/reconciliar-grade', {})
