@@ -481,32 +481,70 @@ function toggleDiaAncora(n: number) {
   ancoraForm.value.dias = cur.includes(n) ? cur.filter((x) => x !== n) : [...cur, n].sort((a, b) => a - b)
 }
 
-async function salvarAncora() {
+// ── leva de mudanças da grade ───────────────────────────────────────────────
+// Mexer numa âncora replaneja o canal INTEIRO, e isso custa ~13 mil linhas no
+// D1 (epg_virtual tem 5 índices, então cada linha da grade custa 6 escritas).
+// O teto diário do plano gratuito é 100 mil.
+//
+// Antes, cada clique aqui era uma chamada — e uma sessão de ajuste de grade
+// virava uma sessão de estouro de cota. Medido em 21-22/09/2026: 11 mudanças
+// numa hora = 144 mil linhas; noutro dia, 397 mil. Nos dois a cota estourou e a
+// FÁBRICA morreu junto, deixando 33 episódios parados — porque sem cota o
+// `/admin/jobs/claim` também falha.
+//
+// Agora os cliques enchem uma leva e vão num POST só (`/slots/lote`), que
+// replaneja cada canal UMA vez. Onze mudanças passam de 143 mil linhas para 13
+// mil. O lote é atômico: se uma faixa estiver errada, NADA é aplicado.
+const levaGrade = ref<{ criar: any[]; apagar: { id: string; rotulo: string }[] }>({ criar: [], apagar: [] })
+const temPendentes = computed(() => levaGrade.value.criar.length + levaGrade.value.apagar.length)
+const apagandoIds = computed(() => new Set(levaGrade.value.apagar.map((x) => x.id)))
+
+function salvarAncora() {
   if (!ancoraForm.value.series_id || ancoraForm.value.dias.length === 0) {
     msg.value = '✖ escolha programa e dias'
     return
   }
+  levaGrade.value.criar.push({ ...ancoraForm.value, dias: [...ancoraForm.value.dias] })
+  msg.value = `✔ na leva — ${temPendentes.value} mudança(s) esperando "aplicar"`
+}
+
+function apagarAncora(a: any) {
+  const id = typeof a === 'string' ? a : a.id
+  if (apagandoIds.value.has(id)) { // clicou de novo no ✕: desfaz
+    levaGrade.value.apagar = levaGrade.value.apagar.filter((x) => x.id !== id)
+    return
+  }
+  const rotulo = typeof a === 'string' ? id : `${tituloSerieFab(a.series_id)} · ${a.hora}`
+  levaGrade.value.apagar.push({ id, rotulo })
+  msg.value = `✔ na leva — ${temPendentes.value} mudança(s) esperando "aplicar"`
+}
+
+function descartarPendentes() {
+  levaGrade.value = { criar: [], apagar: [] }
+  msg.value = 'leva descartada — nada foi alterado'
+}
+
+async function aplicarPendentes() {
+  if (!temPendentes.value) return
   fabBusy.value = true
   try {
-    const res = await postJson('/fabrica-comerciais/slots', { ...ancoraForm.value })
+    const res = await postJson('/fabrica-comerciais/slots/lote', {
+      criar: levaGrade.value.criar,
+      apagar: levaGrade.value.apagar.map((x) => x.id),
+    })
     const body = await res.json().catch(() => ({} as { error?: string }))
     if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
-    msg.value = '✔ âncora criada — grade replanejada'
+    msg.value = `✔ ${body.criados?.length ?? 0} criada(s), ${body.apagados ?? 0} removida(s) — ${(body.canais_replanejados ?? []).length} canal(is) replanejado(s) UMA vez`
+    levaGrade.value = { criar: [], apagar: [] }
     await carregaFabrica()
     refresh()
   } catch (e) {
-    msg.value = `✖ ${(e as Error).message}`
+    // o lote é atômico: erro aqui significa que NADA foi aplicado, e a leva
+    // continua intacta pra correção — por isso não limpo `levaGrade`.
+    msg.value = `✖ ${(e as Error).message} — nada foi aplicado, a leva continua aqui`
   } finally {
     fabBusy.value = false
   }
-}
-
-async function apagarAncora(id: string) {
-  const res = await api(`/fabrica-comerciais/slots/${id}`, { method: 'DELETE' })
-  const body = await res.json().catch(() => ({} as { error?: string }))
-  msg.value = res.ok ? '✔ âncora removida — grade replanejada' : `✖ ${body.error ?? res.status}`
-  await carregaFabrica()
-  refresh()
 }
 
 async function gerarComercialAncora(a: any) {
@@ -2060,14 +2098,45 @@ onBeforeUnmount(() => clearInterval(poll))
                   @click="toggleDiaAncora(d.n)"
                 >{{ d.label }}</button>
               </div>
-              <button class="ghost" :disabled="fabBusy" @click="salvarAncora">salvar âncora</button>
+              <button class="ghost" :disabled="fabBusy" @click="salvarAncora">+ adicionar à leva</button>
+
+              <!-- A leva existe porque mexer numa âncora replaneja o canal inteiro
+                   (~13 mil linhas no D1). Clique a clique, um dia de ajuste de grade
+                   estoura a cota diária e derruba a fábrica junto. Aqui as mudanças
+                   se acumulam e vão num POST só. -->
+              <div v-if="temPendentes" class="leva-box">
+                <div class="leva-head">
+                  <b>{{ temPendentes }} mudança(s) na leva</b>
+                  <span class="dim small">nada foi gravado ainda</span>
+                </div>
+                <div v-for="(c, i) in levaGrade.criar" :key="'c' + i" class="leva-item">
+                  <span class="leva-tag nova">＋</span>
+                  <span class="grow">{{ tituloSerieFab(c.series_id) }} · {{ c.canal }} · {{ diasFabLabel(c.dias) }} · {{ c.hora }}<span v-if="c.episodios > 1"> · {{ c.episodios }}ep</span></span>
+                  <button class="ghost" title="tirar da leva" @click="levaGrade.criar.splice(i, 1)">✕</button>
+                </div>
+                <div v-for="r in levaGrade.apagar" :key="r.id" class="leva-item">
+                  <span class="leva-tag remove">－</span>
+                  <span class="grow risca">{{ r.rotulo }}</span>
+                  <button class="ghost" title="tirar da leva" @click="apagarAncora(r.id)">✕</button>
+                </div>
+                <div class="row">
+                  <button class="primary" :disabled="fabBusy" @click="aplicarPendentes">
+                    {{ fabBusy ? 'aplicando…' : `aplicar ${temPendentes} mudança(s) — 1 replan por canal` }}
+                  </button>
+                  <button class="ghost" :disabled="fabBusy" @click="descartarPendentes">descartar</button>
+                </div>
+              </div>
             </div>
             <div class="fab-list">
-              <div v-for="a in fabrica.ancoras" :key="a.id" class="fab-mini">
+              <div v-for="a in fabrica.ancoras" :key="a.id" class="fab-mini" :class="{ 'a-sair': apagandoIds.has(a.id) }">
                 <span class="mono">{{ a.canal }}</span>
-                <span class="dim grow">{{ tituloSerieFab(a.series_id) }} · {{ diasFabLabel(ancoraDias(a)) }} · {{ a.hora }}<span v-if="a.episodios > 1"> · {{ a.episodios }}ep</span></span>
+                <span class="dim grow" :class="{ risca: apagandoIds.has(a.id) }">{{ tituloSerieFab(a.series_id) }} · {{ diasFabLabel(ancoraDias(a)) }} · {{ a.hora }}<span v-if="a.episodios > 1"> · {{ a.episodios }}ep</span></span>
                 <button class="ghost" title="gerar comercial deste horário" @click="gerarComercialAncora(a)">📢</button>
-                <button class="ghost" title="remover âncora" @click="apagarAncora(a.id)">✕</button>
+                <button
+                  class="ghost"
+                  :title="apagandoIds.has(a.id) ? 'está na leva pra sair — clique pra desfazer' : 'pôr na leva pra remover'"
+                  @click="apagarAncora(a)"
+                >{{ apagandoIds.has(a.id) ? '↩' : '✕' }}</button>
               </div>
             </div>
           </div>
@@ -2564,6 +2633,16 @@ button.ghost:hover { color: var(--text); }
 .pl-revisar { color: #ffb020; border-color: rgba(255, 176, 32, 0.5); }
 .pl-confirmado { color: var(--ok); border-color: rgba(56, 217, 122, 0.5); }
 .pl-error { color: #ff6b6b; border-color: rgba(255, 107, 107, 0.5); }
+
+/* leva de mudanças da grade (ver o comentário em `pendentes`) */
+.leva-box { margin-top: 10px; border: 1px solid var(--line); border-radius: 9px; padding: 10px; background: var(--panel-2); }
+.leva-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.leva-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; }
+.leva-tag { width: 18px; text-align: center; font-weight: 700; }
+.leva-tag.nova { color: #4ade80; }
+.leva-tag.remove { color: #ff6b6b; }
+.risca { text-decoration: line-through; opacity: 0.6; }
+.a-sair { opacity: 0.55; }
 
 /* fábrica de comerciais */
 .pedidos-acervo, .pedidos-comerciais { margin-bottom: 16px; border: 1px solid var(--line); border-radius: 10px;
