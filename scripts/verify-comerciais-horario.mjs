@@ -69,8 +69,14 @@ export function horaFalada(txt) {
   return `${String(h % 24).padStart(2, '0')}:${m[2] ? '30' : '00'}`
 }
 export const horaDoId = (id) => { const m = id.match(/_(\d{2})h(\d{2})/); return m ? `${m[1]}:${m[2]}` : null }
+// ASSINATURA de canal exige PREPOSIÇÃO — "na Jetix", "no Cartoon Network", "no
+// Disney Channel". Sem isso o comercial de PRODUTO entra na rede: "bonecas da
+// Disney", "Disney DVD e Blu-ray" e "lojas americanas… DVDs da Disney" citam a
+// marca sem prometer canal nenhum (3 peças reais, medidas em 21/09).
 export const canalFalado = (t) =>
-  /cartoon\s*network/i.test(t) ? 'cartoon_network' : /jetix/i.test(t) ? 'jetix' : /disney/i.test(t) ? 'disney_channel' : null
+  /n[oa]s?\s+cartoon\s*network/i.test(t) ? 'cartoon_network'
+    : /n[oa]s?\s+jetix/i.test(t) ? 'jetix'
+      : /n[oa]s?\s+disney\s*channel/i.test(t) ? 'disney_channel' : null
 // do id `com_looney_tunes_show_17h00_635a` tira `looney_tunes_show`
 export const serieDoId = (id) => id.replace(/^com_/, '').replace(/_\d{2}h\d{2}.*$/, '').replace(/_[0-9a-f]{4,}$/, '')
 
@@ -82,6 +88,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       WHERE m.tipo = ?1 AND m.status = ?2 AND p.transcript IS NOT NULL`,
     ['comercial', 'ready'],
   )
+  // Peça RETIDA não está no ar: a promessa dela é `ignorar` (bloco/especial) ou
+  // `confirmada` com `bloco_horario`, que o scheduler segura fora do rodízio até
+  // a grade cumprir. Acusá-la de mentir é medir o que já foi consertado — foi o
+  // que aconteceu na primeira rodada pós-retenção (6 "mentindo" que eram os 6
+  // que acabaram de sair do ar).
+  const retidas = new Set((await d1(
+    `SELECT media_id FROM media_promises
+      WHERE status = ?1 OR (status = ?2 AND condicao LIKE ?3)`,
+    ['ignorar', 'confirmada', '%bloco_horario%'],
+  )).map((r) => r.media_id))
   const slots = await d1('SELECT canal, series_id, dias, hora FROM channel_slots WHERE status = ?1', ['ativa'])
   const semTransc = (await d1(
     `SELECT COUNT(*) n FROM media_items m
@@ -91,6 +107,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
   const mente = [], vazamento = [], vozId = [], naoVerificavel = []
   for (const c of coms) {
+    if (retidas.has(c.media_id)) continue
     const tx = c.transcript ?? ''
     const canais = (c.canais ?? '').split(',').filter(Boolean)
     const hv = horaFalada(tx), hid = horaDoId(c.media_id), cf = canalFalado(tx)
@@ -119,7 +136,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
   }
   const uniq = (a) => [...new Map(a.map((x) => [x.id + (x.canal ?? ''), x])).values()]
-  console.log(`comerciais NO AR com transcrição: ${coms.length}   |   ponto cego (sem transcrição): ${semTransc}\n`)
+  console.log(`comerciais com transcrição: ${coms.length}  |  retidos (fora do rodízio): ${retidas.size}  |  ponto cego (sem transcrição): ${semTransc}\n`)
   const bloco = (titulo, lista) => {
     console.log(`${lista.length ? '🔴' : '✅'} ${titulo}: ${lista.length}`)
     for (const e of lista.slice(0, 25)) console.log('    ' + JSON.stringify(e))

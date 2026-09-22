@@ -42,7 +42,7 @@ async function d1(sql, params = []) {
 // chamada de BLOCO/especial — o scheduler só destrava por série, então essas
 // ficam retidas como 'ignorar' até virarem grade e alguém decidir.
 const ACERVO = {
-  com_cn_colecao_referencia_cn_chamada_tom_e_jerry: { serie: 'tom_e_jerry', hora: '07:30', dias: [1, 2, 3, 4, 5] },
+  com_cn_invasao_referencia_cn_chamada_tom_e_jerry: { serie: 'tom_e_jerry', hora: '07:30', dias: [1, 2, 3, 4, 5] },
   com_cn_colecao_referencia_cn_chamada_meninas_superpoderosas: { serie: 'meninas_superpoderosas', hora: '19:30', dias: [5] },
   com_cn_colecao_referencia_cn_chamada_mansao_foster_01: { serie: 'mansao_foster', hora: '19:30', dias: [5] },
   com_cn_invasao_referencia_cn_chamada_meu_amigo_escola_macaco: { serie: 'meu_amigo_macaco', hora: '19:30', dias: [5] },
@@ -56,7 +56,7 @@ const ACERVO = {
   com_cartoon_network_votatoon_201: { serie: null, hora: '18:00', dias: [6] },
   com_oshwdscbdep02gjhgj: { serie: null, hora: '18:00', dias: [6] },
   com_cn_colecao_referencia_cn_especial_ultima_gargalhada: { serie: null, hora: '05:00', dias: [6] },
-  com_cn_colecao_referencia_cn_chamada_especial_invasao_01: { serie: null, hora: '10:00', dias: null },
+  com_cn_invasao_referencia_cn_chamada_especial_invasao_01: { serie: null, hora: '10:00', dias: null },
 }
 const DIAS_TXT = [
   [/de segunda a sexta/, [1, 2, 3, 4, 5]], [/de segunda a quinta/, [1, 2, 3, 4]],
@@ -73,12 +73,17 @@ const coms = await d1(
   ['comercial', 'ready'],
 )
 const slots = await d1('SELECT canal, series_id, dias, hora FROM channel_slots WHERE status = ?1', ['ativa'])
-const cumpreGrade = (canais, serie, hora, dias) => canais.some((canal) => slots.some((s) => {
+// Chamada de BLOCO não tem série alvo. O scheduler só destrava por série, então
+// ela NUNCA é cumprida por uma faixa comum — sem este `false` explícito a
+// checagem pulava a comparação de série e qualquer programa naquele horário
+// "cumpria" a promessa. Era como o Teatro Cartoon das 19:00 passava batido:
+// existe Jackie Chan às 19:00, e isso bastava.
+const cumpreGrade = (canais, serie, hora, dias) => (serie == null ? false : canais.some((canal) => slots.some((s) => {
   if (s.canal !== canal || s.hora !== hora) return false
   if (serie && s.series_id !== serie && !s.series_id.startsWith(serie) && !serie.startsWith(s.series_id)) return false
   if (Array.isArray(dias)) { const d = JSON.parse(s.dias); if (!dias.every((n) => d.includes(n))) return false }
   return true
-}))
+})))
 
 const reter = []
 for (const c of coms) {
