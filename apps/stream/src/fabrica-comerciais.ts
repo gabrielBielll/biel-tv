@@ -270,9 +270,42 @@ async function serieTitulo(db: D1Database, sid: string): Promise<string> {
   return row?.titulo ?? sid
 }
 
-async function clip(db: D1Database, where: string, ...binds: unknown[]): Promise<ClipRow | null> {
-  return db.prepare(`SELECT * FROM voice_clips WHERE ${where} ORDER BY created_at DESC LIMIT 1`)
-    .bind(...binds).first<ClipRow>()
+// A VOZ do canal é a das falas de HORÁRIO: são 73 por canal, o maior e mais
+// antigo lote, e é o que NÃO dá pra regerar sem assinatura de TTS. Então ela é
+// a régua — todo o resto do comercial tem que casar com ela.
+//
+// Sem isto o comercial troca de narrador no meio. Medido em 21/09/2026: em
+// 19/09 às 13:34 entrou um lote de `nome` e `conector` numa voz DIFERENTE, nos
+// três canais. Como a escolha era `ORDER BY created_at DESC`, os novos sempre
+// ganhavam — e a peça saía com a frase e o horário numa voz e o nome da série
+// noutra. Queixa do Gabriel: "partes saem do narrador original e partes parece
+// que saem do novo narrador, isso não pode acontecer".
+//
+// É o MESMO padrão do bug do molde (eb537ee): "mais recente" não é critério de
+// qualidade, é só ordem de chegada.
+const vozCache = new Map<string, string | null>()
+async function vozDoCanal(db: D1Database, canal: string): Promise<string | null> {
+  if (vozCache.has(canal)) return vozCache.get(canal)!
+  const row = await db.prepare(
+    `SELECT audio_key, COUNT(*) n FROM voice_clips
+      WHERE canal = ?1 AND categoria = 'horario' AND audio_key LIKE 'fabrica/tts/%'
+      GROUP BY substr(audio_key, 1, instr(substr(audio_key, 14), '/') + 12)
+      ORDER BY n DESC LIMIT 1`,
+  ).bind(canal).first<{ audio_key: string }>()
+  // 'fabrica/tts/<voz>/<hash>.mp3' → 'fabrica/tts/<voz>/%'
+  const m = row?.audio_key?.match(/^(fabrica\/tts\/[^/]+\/)/)
+  const pref = m ? `${m[1]}%` : null
+  vozCache.set(canal, pref)
+  return pref
+}
+
+// `vozPref` entra como PREFERÊNCIA, não filtro: se a voz do canal não tiver
+// clipe pra esse papel, é melhor a peça sair com timbre trocado do que não sair.
+async function clip(db: D1Database, vozPref: string | null, where: string, ...binds: unknown[]): Promise<ClipRow | null> {
+  const ordem = vozPref ? `(audio_key LIKE ?${binds.length + 1}) DESC, ` : ''
+  const args = vozPref ? [...binds, vozPref] : binds
+  return db.prepare(`SELECT * FROM voice_clips WHERE ${where} ORDER BY ${ordem}created_at DESC LIMIT 1`)
+    .bind(...args).first<ClipRow>()
 }
 
 async function resolvePayload(env: Bindings, job: BuildJobRow) {
@@ -294,9 +327,10 @@ async function resolvePayload(env: Bindings, job: BuildJobRow) {
   if (!sample) throw new Error(`cadastre uma amostra de vídeo ou link do YouTube para ${job.series_id}`)
 
   // clipes comuns aos dois tipos de comercial (grade fixa e maratona)
-  const nome = await clip(env.DB, "categoria = 'nome' AND series_id = ?1 AND canal = ?2", job.series_id, molde.canal)
-  const horario = await clip(env.DB, "categoria = 'horario' AND chave = ?1 AND canal = ?2", hora, molde.canal)
-  const assinatura = await clip(env.DB, "categoria = 'conector' AND chave = 'encerramento' AND canal = ?1", molde.canal)
+  const voz = await vozDoCanal(env.DB, molde.canal)
+  const nome = await clip(env.DB, voz, "categoria = 'nome' AND series_id = ?1 AND canal = ?2", job.series_id, molde.canal)
+  const horario = await clip(env.DB, voz, "categoria = 'horario' AND chave = ?1 AND canal = ?2", hora, molde.canal)
+  const assinatura = await clip(env.DB, voz, "categoria = 'conector' AND chave = 'encerramento' AND canal = ?1", molde.canal)
 
   // A locução é uma LISTA de 5 fragmentos concatenados (o montador exige 5 e usa
   // o clipe de papel 'frase' pra cronometrar a cartela). Duas montagens:
@@ -310,8 +344,8 @@ async function resolvePayload(env: Bindings, job: BuildJobRow) {
 
   if (evento) {
     const diaN = dias[0] // o slot do evento tem um único dia (o do start da maratona)
-    const nesteDia = await clip(env.DB, "categoria = 'conector' AND chave = ?1 AND canal = ?2", `evento_dia_${diaN}`, molde.canal)
-    const maratona = await clip(env.DB, "categoria = 'conector' AND chave = 'maratona' AND canal = ?1", molde.canal)
+    const nesteDia = await clip(env.DB, voz, "categoria = 'conector' AND chave = ?1 AND canal = ?2", `evento_dia_${diaN}`, molde.canal)
+    const maratona = await clip(env.DB, voz, "categoria = 'conector' AND chave = 'maratona' AND canal = ?1", molde.canal)
     const faltando = [
       !nesteDia && `abertura de evento "neste ${DIA_NOME[diaN]}" (${molde.canal})`,
       !maratona && `conector "maratona de" (${molde.canal})`,
@@ -332,9 +366,11 @@ async function resolvePayload(env: Bindings, job: BuildJobRow) {
     const frase = job.frase_id
       ? await env.DB.prepare("SELECT * FROM voice_clips WHERE id = ?1 AND categoria = 'frase' AND series_id = ?2 AND canal = ?3")
         .bind(job.frase_id, job.series_id, molde.canal).first<ClipRow>()
-      : await env.DB.prepare("SELECT * FROM voice_clips WHERE categoria = 'frase' AND series_id = ?1 AND canal = ?2 ORDER BY RANDOM() LIMIT 1")
-        .bind(job.series_id, molde.canal).first<ClipRow>()
-    const frequencia = await clip(env.DB, "categoria = 'frequencia' AND chave = ?1 AND canal = ?2", fk, molde.canal)
+      : await env.DB.prepare(
+        `SELECT * FROM voice_clips WHERE categoria = 'frase' AND series_id = ?1 AND canal = ?2
+         ORDER BY ${voz ? '(audio_key LIKE ?3) DESC, ' : ''}RANDOM() LIMIT 1`,
+      ).bind(...(voz ? [job.series_id, molde.canal, voz] : [job.series_id, molde.canal])).first<ClipRow>()
+    const frequencia = await clip(env.DB, voz, "categoria = 'frequencia' AND chave = ?1 AND canal = ?2", fk, molde.canal)
     const faltando = [
       !frase && `frase de ${job.series_id} (${molde.canal})`,
       !nome && `nome de ${job.series_id} (${molde.canal})`,
