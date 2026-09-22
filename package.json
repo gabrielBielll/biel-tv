@@ -31,14 +31,8 @@
     "verify:nomear": "node scripts/verify-nomear.mjs",
     "verify:marcador": "node scripts/verify-marcador.mjs",
     "verify:link": "node scripts/verify-link.mjs",
-<<<<<<< HEAD
-    "verify:playlist": "node scripts/verify-playlist.mjs"
-=======
     "verify:cuepoints": "node scripts/verify-cuepoints-fontes.mjs",
-    "verify:playlist": "node scripts/verify-playlist.mjs",
-    "verify:playlist:modo": "node --import ./scripts/_ts-registra.mjs scripts/verify-playlist-modo.mjs",
-    "verify:playback": "node scripts/verify-playback.mjs"
->>>>>>> c0118f2 (feat(cuepoints): tres fontes de corte — preto, silencio e TROCA DE CENA)
+    "verify:playlist": "node scripts/verify-playlist.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"
