@@ -519,17 +519,20 @@ fabricaComerciais.post('/pedidos-acervo/:id/status', async (c) => {
 // CRUD dos horários fixos que o scheduler honra. Criar uma âncora torna VERDADE
 // um comercial "programa X toda [dias] às [hora]" — por isso o botão de gerar o
 // comercial de horário vive aqui, ao lado do slot que ele anuncia.
-fabricaComerciais.post('/slots', async (c) => {
-  const b = await c.req.json<Record<string, unknown>>().catch(() => null)
-  if (!b) return c.json({ error: 'JSON inválido' }, 400)
+// Valida um pedido de faixa e devolve a linha pronta, ou a mensagem de erro.
+// Separado do handler pra que o LOTE valide TUDO antes de escrever QUALQUER
+// coisa — meia grade aplicada é pior que nenhuma.
+async function validaSlot(db: D1Database, b: Record<string, unknown>): Promise<
+  { erro: string } | { canal: string; seriesId: string; dias: number[]; hora: string; episodios: number; reprise: number; bloco: string | null }
+> {
   const canal = slugify(String(b.canal ?? ''))
-  if (!SLUG.test(canal) || !(await canalExiste(c.env.DB, canal))) return c.json({ error: 'canal desconhecido' }, 400)
+  if (!SLUG.test(canal) || !(await canalExiste(db, canal))) return { erro: 'canal desconhecido' }
   const seriesId = slugify(String(b.series_id ?? ''))
-  if (!SLUG.test(seriesId)) return c.json({ error: 'série inválida' }, 400)
+  if (!SLUG.test(seriesId)) return { erro: 'série inválida' }
   const dias = diasCanon(b.dias)
-  if (dias.length === 0) return c.json({ error: 'escolha ao menos um dia' }, 400)
+  if (dias.length === 0) return { erro: 'escolha ao menos um dia' }
   const hora = limpaHora(b.hora)
-  if (!hora) return c.json({ error: 'hora deve ser HH:MM' }, 400)
+  if (!hora) return { erro: 'hora deve ser HH:MM' }
   const episodios = Math.max(1, Math.min(20, Math.floor(Number(b.episodios ?? 1)) || 1))
   // reprise: repete o que a série já exibiu hoje em vez de gastar episódio novo
   // (o trilho manhã/tarde/noite das grades de 2005 — ver migration 0029)
@@ -537,17 +540,89 @@ fabricaComerciais.post('/slots', async (c) => {
   // `bloco`: slug do bloco nomeado a que esta faixa pertence (Cinescópio,
   // Toonami...). É o que faz a fábrica anunciar o bloco — ver migration 0030.
   const bloco = b.bloco ? slugify(String(b.bloco)) : null
-  if (bloco && !SLUG.test(bloco)) return c.json({ error: 'bloco inválido' }, 400)
+  if (bloco && !SLUG.test(bloco)) return { erro: 'bloco inválido' }
+  return { canal, seriesId, dias, hora, episodios, reprise, bloco }
+}
+
+fabricaComerciais.post('/slots', async (c) => {
+  const b = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!b) return c.json({ error: 'JSON inválido' }, 400)
+  const v = await validaSlot(c.env.DB, b)
+  if ('erro' in v) return c.json({ error: v.erro }, 400)
   const id = `sl_${hex()}`
   await c.env.DB.prepare(
     `INSERT INTO channel_slots (id, canal, series_id, dias, hora, episodios, reprise, bloco)
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
-  ).bind(id, canal, seriesId, JSON.stringify(dias), hora, episodios, reprise, bloco).run()
+  ).bind(id, v.canal, v.seriesId, JSON.stringify(v.dias), v.hora, v.episodios, v.reprise, v.bloco).run()
   // replaneja a grade do canal pra âncora já valer (append-only, preserva o no ar)
-  await scheduleChannel(c.env, canal, 48, true)
+  await scheduleChannel(c.env, v.canal, 48, true)
   // âncora nova pode merecer comercial (e aposentar um antigo) — em background
   c.executionCtx.waitUntil(reconciliaComerciaisGrade(c.env).catch(() => { /* cron cobre */ }))
   return c.json({ ok: true, id }, 201)
+})
+
+// LOTE de faixas: cria e apaga N âncoras replanejando cada canal UMA vez.
+//
+// ⚠️ SEM ISTO, AJUSTAR A GRADE NÃO CABE NO PLANO GRATUITO. Replan é caro:
+// `epg_virtual` tem 5 índices, então cada linha custa 6 escritas; com ~1.100
+// linhas futuras por canal, um replan (delete + insert) sai por ~13 mil linhas.
+// O teto diário do D1 free tier é 100 mil.
+//
+// Medido em 21-22/09/2026, dois dias seguidos: o Gabriel ajustando horários
+// pelos endpoints singulares escreveu 144 mil linhas numa hora (≈11 faixas) e
+// 397 mil noutra. A cota estourou nos dois dias e a fábrica morreu junto — 33
+// episódios ficaram parados. Com replan por item ele tem um teto de ~7 ajustes
+// por dia; a grade-alvo inteira (~150 faixas) custaria 19 DIAS de orçamento.
+// Em lote, a mesma grade custa ~3 replans.
+//
+// O padrão não é novo: `reconciliaComerciaisGrade` já faz exatamente isto
+// (`for (const canal of canaisMexidos) await scheduleChannel(...)`) e o
+// `aplicaCanais` do admin.ts também. Aqui é aplicar o que a base já sabe.
+//
+// Valida TUDO antes de escrever qualquer coisa: se uma faixa do lote está
+// errada, nada é aplicado. Meia grade no ar é pior que nenhuma.
+fabricaComerciais.post('/slots/lote', async (c) => {
+  type Corpo = { criar?: Record<string, unknown>[]; apagar?: string[] }
+  const b = await c.req.json<Corpo>().catch(() => ({} as Corpo))
+  const criar = Array.isArray(b.criar) ? b.criar : []
+  const apagar = Array.isArray(b.apagar) ? b.apagar.filter((x: unknown): x is string => typeof x === 'string' && !!x) : []
+  if (criar.length === 0 && apagar.length === 0) return c.json({ error: 'informe "criar" e/ou "apagar"' }, 400)
+  if (criar.length + apagar.length > 300) return c.json({ error: 'no máximo 300 operações por chamada' }, 400)
+
+  const afetados = new Set<string>()
+  // 1) valida tudo — e já coleta os canais, sem escrever nada
+  const prontos: Array<{ id: string; v: Exclude<Awaited<ReturnType<typeof validaSlot>>, { erro: string }> }> = []
+  for (const [i, item] of criar.entries()) {
+    const v = await validaSlot(c.env.DB, item ?? {})
+    if ('erro' in v) return c.json({ error: `criar[${i}]: ${v.erro}` }, 400)
+    prontos.push({ id: `sl_${hex()}`, v })
+    afetados.add(v.canal)
+  }
+  const aApagar: string[] = []
+  for (const id of apagar) {
+    const row = await c.env.DB.prepare('SELECT canal FROM channel_slots WHERE id = ?1')
+      .bind(id).first<{ canal: string }>()
+    if (!row) return c.json({ error: `apagar: âncora não encontrada (${id})` }, 404)
+    aApagar.push(id)
+    afetados.add(row.canal)
+  }
+
+  // 2) escreve — apagar antes de criar, pra troca de faixa no mesmo horário
+  //    não conviver com a antiga nem por um instante
+  for (const id of aApagar) {
+    await c.env.DB.prepare('DELETE FROM channel_slots WHERE id = ?1').bind(id).run()
+  }
+  for (const p of prontos) {
+    await c.env.DB.prepare(
+      `INSERT INTO channel_slots (id, canal, series_id, dias, hora, episodios, reprise, bloco)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+    ).bind(p.id, p.v.canal, p.v.seriesId, JSON.stringify(p.v.dias), p.v.hora, p.v.episodios, p.v.reprise, p.v.bloco).run()
+  }
+
+  // 3) UM replan por canal, e UMA reconciliação no fim — é aqui que mora a economia
+  for (const canal of afetados) await scheduleChannel(c.env, canal, 48, true)
+  c.executionCtx.waitUntil(reconciliaComerciaisGrade(c.env).catch(() => { /* cron cobre */ }))
+  return c.json({ ok: true, criados: prontos.map((p) => p.id), apagados: aApagar.length, canais_replanejados: [...afetados] }, 201)
 })
 
 // ── reconciliador grade ↔ comerciais ────────────────────────────────────────
