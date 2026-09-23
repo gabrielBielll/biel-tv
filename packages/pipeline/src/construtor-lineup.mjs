@@ -27,11 +27,15 @@ async function runImageMagick(args) {
   }
 }
 
-// Os configs apontam as fontes do sistema do Ubuntu (/usr/share/fonts/...),
-// caminho que não existe no Termux — lá o ImageMagick recusa o overlay
-// ("unable to read font"). Fora do Ubuntu, procura o MESMO arquivo, pelo nome,
-// nas pastas de fonte locais. Sem alternativa, devolve o caminho original e o
-// erro continua sendo o do ImageMagick, como antes.
+// Os configs apontam as fontes do sistema do Ubuntu (/usr/share/fonts/...).
+// Esse caminho não existe no Termux, e no runner do Actions nem sempre existe
+// (ou é outra versão). Por isso a PRIMEIRA escolha é a cópia versionada em
+// assets/comerciais/fontes/, que é byte a byte o arquivo dos renders aprovados
+// (sha256 conferido em 23/09/2026). Depois vem o caminho do config e, por
+// último, o MESMO nome de arquivo nas pastas de fonte locais. Sem nenhuma
+// alternativa, devolve o caminho original e o erro continua sendo o do
+// ImageMagick, como antes.
+const FONTES_DO_REPO = join(ROOT, 'assets/comerciais/fontes')
 const PASTAS_FONTE = [
   process.env.LINEUP_FONTS_DIR,
   process.env.HOME && join(process.env.HOME, '.fonts'),
@@ -39,7 +43,10 @@ const PASTAS_FONTE = [
 ].filter(Boolean)
 
 function resolveFonte(caminho) {
-  if (!caminho || existsSync(caminho)) return caminho
+  if (!caminho) return caminho
+  const doRepo = join(FONTES_DO_REPO, basename(caminho))
+  if (existsSync(doRepo)) return doRepo
+  if (existsSync(caminho)) return caminho
   const alt = PASTAS_FONTE.map((dir) => join(dir, basename(caminho))).find((p) => existsSync(p))
   return alt ?? caminho
 }

@@ -263,11 +263,13 @@ Precisa de duas coisas que o Ubuntu do GitHub Actions já traz:
    use `pkg upgrade` geral: ele também atualiza o `nodejs-lts` que roda o
    Claude Code.
 2. **Fontes:** os configs apontam para `/usr/share/fonts/...`, caminho que não
-   existe no Termux. Quando o caminho configurado não existe, o
-   `carregarConfigCanal` procura o arquivo de mesmo nome em `$LINEUP_FONTS_DIR`,
-   `~/.fonts` e `$PREFIX/share/fonts/TTF`. Só o mesmo nome de arquivo serve:
-   nunca troca a família. No celular ficam em `~/.fonts` os **mesmos arquivos
-   das amostras aprovadas**, conferidos pelo sha256. Eles estão no R2 em
+   existe no Termux e nem sempre existe (ou é outra versão) no runner do
+   Actions. Por isso o `carregarConfigCanal` usa **primeiro a cópia versionada
+   em `assets/comerciais/fontes/`** (com as licenças UFL e OFL), depois o
+   caminho do config e, por último, o arquivo de mesmo nome em
+   `$LINEUP_FONTS_DIR`, `~/.fonts` e `$PREFIX/share/fonts/TTF`. Só o mesmo
+   nome de arquivo serve: nunca troca a família. São os **mesmos arquivos das
+   amostras aprovadas**, conferidos pelo sha256, que também estão no R2 em
    `lineup-insumos/2026-09-23/fontes/`:
    - `Ubuntu-B.ttf`: `28c4c189a44803b1986fd16074187034dc6d94ad35f5e87de13dd0e786b70b73`
    - `LiberationSans-Bold.ttf`: `3973aa5054fb467dd5627245d3dc82e37bf16fe075756156a570455871351582`
