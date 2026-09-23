@@ -120,12 +120,13 @@ const CANAIS_VOZES = {
   },
   disney_channel: {
     nome: 'Disney Channel',
-    voz_id: 'YklVF5l1Q8os8glyd5SM', // Camilla (Acolhedora e expressiva)
+    voz_id: 'NNbmtunmMPGBeyrKu6KD', // Will — SP Capital, reserva aprovada enquanto a oficial está pausada
     config: {
       model_id: 'eleven_multilingual_v2',
-      stability: 0.25,
-      similarity_boost: 0.85,
-      style: 0.65,
+      stability: 0.38,
+      similarity_boost: 0.80,
+      style: 0.50,
+      speed: 1.08,
       use_speaker_boost: true,
     },
     itens: [
@@ -142,9 +143,9 @@ const CANAIS_VOZES = {
       { categoria: 'nome', series_id: 'padrinhos_magicos', rotulo: 'Os Padrinhos Mágicos', tts: 'Os Padrinhos Mágicos!' },
       { categoria: 'nome', series_id: 'yin_yang_yo', rotulo: 'Yin Yang Yo!', tts: 'Yin Yang Yo!' },
       { categoria: 'conector', chave: 'encerramento', rotulo: 'só no Disney Channel!', tts: 'só no Disney Channel!' },
-      { categoria: 'conector', chave: 'a_seguir', rotulo: 'a seguir', tts: 'a seguir...' },
-      { categoria: 'conector', chave: 'depois', rotulo: 'logo depois', tts: 'logo depois...' },
-      { categoria: 'conector', chave: 'mais_tarde', rotulo: 'mais tarde', tts: 'mais tarde...' },
+      { categoria: 'conector', chave: 'a_seguir', rotulo: 'a seguir', tts: 'A seguir.' },
+      { categoria: 'conector', chave: 'depois', rotulo: 'logo depois', tts: 'Logo depois.' },
+      { categoria: 'conector', chave: 'mais_tarde', rotulo: 'mais tarde', tts: 'Mais tarde.' },
     ],
   },
   cartoon_network: {

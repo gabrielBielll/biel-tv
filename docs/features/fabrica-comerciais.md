@@ -210,9 +210,10 @@ CREATE TABLE IF NOT EXISTS program_samples (
 );
 ```
 
-O job de montagem espelha o `ingest_job` (novo modo/coluna, como `corte` no
-cortador): payload `{ molde_id, series_id, slot:{dias,hora}, frase_id? }`
-(`frase_id` nulo = sorteia uma variação).
+O job de montagem espelha o `ingest_job`. Comerciais de horário usam o payload
+`{ molde_id, series_id, slot:{dias,hora}, frase_id? }`. O lineup usa
+`job_type=lineup_3_janelas` e preserva separadamente `request_payload` (snapshot
+imutável da grade) e `payload` (insumos resolvidos + resultado técnico).
 
 ## O montador (na fábrica — tudo ffmpeg)
 
@@ -259,6 +260,11 @@ cortador): payload `{ molde_id, series_id, slot:{dias,hora}, frase_id? }`
 2. **Montador** (concatena locução + 2 fases de vídeo + texto + música).
 3. **UI do painel:** cadastrar clipes por categoria; escolher programa + slot e
    "montar vinheta".
+
+O executor remoto do lineup de três janelas foi implementado em 2026-09-22. Ele
+opera em modo dry-run/prévia enquanto a nova grade não está confirmada. A
+ativação automática e a colocação condicional no scheduler continuam etapas
+separadas e deliberadamente bloqueadas.
 
 ## Operação em produção: como povoar a base
 

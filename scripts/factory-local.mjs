@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 import { FFMPEG, concatParts, extraiTrecho, detectSilence, detectBlack, detectScene, probe } from '../packages/pipeline/src/ffmpeg.mjs'
 import { achaBuracos, ancoraCorte, fundePelaGrade, classificaPeca } from '../packages/pipeline/src/cortador.mjs'
 import { montaComercialPrograma } from '../packages/pipeline/src/comerciais.mjs'
+import { montarLineup3Janelas, carregarConfigCanal } from '../packages/pipeline/src/construtor-lineup.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8787'
@@ -57,6 +58,18 @@ async function baixaR2Key(key, dest) {
   const res = await fetch(`${BASE}/admin/staging/${encodeURIComponent(key)}`, { headers: HDR })
   if (!res.ok) throw new Error(`download de asset ${key} HTTP ${res.status}`)
   await streamPipeline(Readable.fromWeb(res.body), createWriteStream(dest))
+}
+
+async function enviaStaging(file, name) {
+  const safe = String(name || 'preview.mp4').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(-80)
+  const res = await fetch(`${BASE}/admin/upload?name=${encodeURIComponent(safe)}`, {
+    method: 'POST',
+    headers: HDR,
+    body: readFileSync(file),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok || !data.staging_key) throw new Error(data.error ?? `upload da prévia HTTP ${res.status}`)
+  return data.staging_key
 }
 
 // Cookies do YouTube (fase 11d): busca UMA vez os cookies self-service do
@@ -356,9 +369,145 @@ async function ingerePeca(file, { id, title, canais, series, noTranscript = fals
   })
 }
 
+/**
+ * O catálogo transmite segmentos de 10 s. O Disney aprovado tem 19 s para não
+ * correr o risco de virar 30 s, mas o segundo que falta não pode entrar depois
+ * da resolução musical. Para publicação, ele é colocado no começo: congela o
+ * primeiro quadro e atrasa o áudio, preservando o fechamento no instante 20.
+ */
+async function preparaMasterEntregaLineup(file, dest, deliveryDuration = 20) {
+  const info = await probe(file)
+  const prepend = Number(deliveryDuration) - info.duration
+  if (!Number.isFinite(prepend) || prepend < -0.05) {
+    throw new Error(`lineup de ${info.duration.toFixed(3)}s excede o master de ${deliveryDuration}s`)
+  }
+  if (prepend <= 0.01) return file
+  const delayMs = Math.round(prepend * 1000)
+  await new Promise((ok, fail) => {
+    const p = spawn(FFMPEG(), [
+      '-y', '-hide_banner', '-loglevel', 'error', '-i', file,
+      '-filter_complex',
+      `[0:v]tpad=start_mode=clone:start_duration=${prepend.toFixed(3)},trim=duration=${Number(deliveryDuration).toFixed(3)},setpts=PTS-STARTPTS[v];` +
+      `[0:a]adelay=${delayMs}:all=1,atrim=duration=${Number(deliveryDuration).toFixed(3)},asetpts=PTS-STARTPTS[a]`,
+      '-map', '[v]', '-map', '[a]',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+      '-profile:v', 'high', '-pix_fmt', 'yuv420p', '-color_range', 'tv', '-sc_threshold', '0',
+      '-force_key_frames', 'expr:gte(t,n_forced*10)',
+      '-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2',
+      '-t', Number(deliveryDuration).toFixed(3), dest,
+    ], { stdio: ['ignore', 'ignore', 'pipe'] })
+    let tail = ''
+    p.stderr.on('data', (d) => { tail = (tail + String(d)).slice(-2000) })
+    p.on('error', fail)
+    p.on('close', (code) => code === 0 ? ok() : fail(new Error(`master de entrega falhou: ${tail.trim()}`)))
+  })
+  const master = await probe(dest)
+  if (Math.abs(master.duration - Number(deliveryDuration)) > 0.06) {
+    throw new Error(`master de entrega ficou com ${master.duration.toFixed(3)}s`)
+  }
+  return dest
+}
+
 function extDeKey(key, fallback) {
   const ext = extname(String(key ?? '').split('?')[0] ?? '').toLowerCase()
   return ext && ext.length <= 8 ? ext : fallback
+}
+
+async function processaLineupRemoto(job, workdir) {
+  log(`montando lineup remoto "${job.media_id}" (${job.schedule_revision})`)
+  await postJson(`/admin/fabrica-comerciais/${job.id}/progress`, { pct: 5 }, 1).catch(() => {})
+
+  if (!Array.isArray(job.samples) || job.samples.length !== 3) {
+    throw new Error('lineup remoto exige exatamente três amostras')
+  }
+  const videos = []
+  for (const [i, sample] of job.samples.entries()) {
+    const dest = join(workdir, `sample_${i + 1}${sample.source_url ? '.mp4' : extDeKey(sample.video_key, '.mp4')}`)
+    if (sample.source_url) {
+      const cookies = await cookieFile()
+      await baixarUrl(sample.source_url, dest, cookies)
+      await devolveCookies(cookies)
+    } else {
+      await baixaR2Key(sample.video_key, dest)
+    }
+    videos.push(dest)
+  }
+  const voice = join(workdir, `voice${extDeKey(job.voice?.audio_key, '.mp3')}`)
+  await baixaR2Key(job.voice.audio_key, voice)
+  await postJson(`/admin/fabrica-comerciais/${job.id}/progress`, { pct: 30 }, 1).catch(() => {})
+
+  const cfg = carregarConfigCanal(job.canal)
+  if (job.template_version !== cfg.remote?.template_version) {
+    throw new Error(`template não versionado: ${job.template_version}`)
+  }
+  if (job.music_variant_id !== cfg.audio.remote_variant_id) {
+    throw new Error(`variação musical não versionada: ${job.music_variant_id}`)
+  }
+  const out = join(workdir, `${job.media_id}.mp4`)
+  const render = await montarLineup3Janelas({
+    canal: job.canal,
+    videos,
+    vozAudio: voice,
+    outFile: out,
+  })
+  const info = await probe(out)
+  const expected = Number(job.constraints?.target_duration ?? cfg.visual.duracao_seg)
+  const errors = [
+    Math.abs(info.duration - expected) > 0.06 && `duração ${info.duration.toFixed(3)}s (esperada ${expected.toFixed(3)}s)`,
+    info.duration > Number(job.constraints?.max_duration ?? 20) + 0.001 && `ultrapassou 20s`,
+    (info.width !== 1280 || info.height !== 720) && `resolução ${info.width}x${info.height}`,
+    info.vcodec !== 'h264' && `vídeo ${info.vcodec}`,
+    info.acodec !== 'aac' && `áudio ${info.acodec}`,
+    info.asampleRate !== 48000 && `áudio ${info.asampleRate}Hz`,
+    info.achannels !== 2 && `áudio com ${info.achannels} canais`,
+  ].filter(Boolean)
+  if (errors.length) throw new Error(`lineup reprovado na validação: ${errors.join(', ')}`)
+  await postJson(`/admin/fabrica-comerciais/${job.id}/progress`, { pct: 75 }, 1).catch(() => {})
+
+  const trace = {
+    ...render,
+    duration: info.duration,
+    schedule_revision: job.schedule_revision,
+    template_version: job.template_version,
+    voice_profile: job.voice_profile,
+    music_variant_id: job.music_variant_id,
+    renderer_revision: process.env.GITHUB_SHA || 'local-worktree',
+    snapshot: job.snapshot,
+  }
+  if (job.publish) {
+    const deliveryDuration = Number(job.constraints?.delivery_duration ?? 20)
+    const deliveryMaster = await preparaMasterEntregaLineup(
+      out,
+      join(workdir, `${job.media_id}-delivery-${deliveryDuration}s.mp4`),
+      deliveryDuration,
+    )
+    trace.delivery = {
+      duration: deliveryDuration,
+      padding: 'start',
+      preserve_music_ending: true,
+    }
+    await ingerePeca(deliveryMaster, {
+      id: job.media_id,
+      title: job.title,
+      canais: job.canal,
+      series: job.series_id,
+      noTranscript: true,
+    })
+    await postJson(`/admin/fabrica-comerciais/${job.id}/done`, {
+      media_id: job.media_id,
+      transcript: job.transcript,
+      render: trace,
+    })
+    log(`✔ ${job.media_id}: lineup publicado (${info.duration.toFixed(3)}s)`)
+  } else {
+    const stagingKey = await enviaStaging(out, `${job.media_id}.mp4`)
+    const done = await postJson(`/admin/fabrica-comerciais/${job.id}/done`, {
+      staging_key: stagingKey,
+      transcript: job.transcript,
+      render: trace,
+    })
+    log(`✔ ${job.media_id}: prévia remota pronta em ${done.preview_key}`)
+  }
 }
 
 async function tickFabricaComerciais() {
@@ -380,6 +529,10 @@ async function tickFabricaComerciais() {
   const workdir = join(ROOT, '.ingest-work', `fabcom_${job.id}`)
   mkdirSync(workdir, { recursive: true })
   try {
+    if (job.kind === 'lineup_3_janelas') {
+      await processaLineupRemoto(job, workdir)
+      return true
+    }
     log(`montando comercial "${job.media_id}" (${job.series_id} · ${job.slot.texto_tela})`)
     await postJson(`/admin/fabrica-comerciais/${job.id}/progress`, { pct: 5 }, 1).catch(() => {})
 

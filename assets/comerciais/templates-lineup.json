@@ -64,9 +64,9 @@
               "E fique ligadinho que mais tarde tem"
             ],
             "fechamentos": [
-              "É muita diversão... só no Disney Channel!",
-              "Tudo isso... só aqui, no Disney Channel!",
-              "Toda a magia... só no Disney Channel!"
+              "É muita diversão. Só no Disney Channel!",
+              "Tudo isso, só aqui no Disney Channel!",
+              "Toda a magia, só no Disney Channel!"
             ]
           }
         ],
@@ -75,8 +75,8 @@
           "Você tá curtindo {s1}, só no Disney Channel!"
         ],
         "a_seguir_proximo": [
-          "Prepare-se! A seguir no Disney Channel, tem {s1}!",
-          "Não saia daí! A seguir vem {s1}, no Disney Channel!"
+          "Prepare-se! A seguir no Disney Channel tem {s1}!",
+          "Não saia daí! A seguir vem {s1} no Disney Channel!"
         ]
       }
     },

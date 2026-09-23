@@ -1,10 +1,12 @@
-# Feature: Construtor Modular de Lineup em 3 Janelas (20s)
+# Feature: Construtor Modular de Lineup em 3 Janelas (até 20s)
 
 > **Status:** ✅ renderização local implementada e aprovada; integração automática
 > com a grade e publicação em produção ainda bloqueadas (2026-09-22). Ver
 > [módulo de comerciais Jetix](modulo-comerciais-jetix.md).
 > O módulo aprovado do Cartoon Network está registrado em
 > [modulo-comerciais-cartoon-network.md](modulo-comerciais-cartoon-network.md).
+> O protótipo em avaliação do Disney Channel está registrado em
+> [modulo-comerciais-disney-channel.md](modulo-comerciais-disney-channel.md).
 > **Arquitetura:** Multi-Canal (Jetix, Disney Channel, Cartoon Network), Modular, Dinâmico com a Grade de Programação (EPG/Diretor), 100% Determinístico em FFmpeg e Serverless (R2 + D1).
 
 ---
@@ -12,7 +14,8 @@
 ## 1. Visão Geral
 
 O **Construtor Modular de Lineup** é o motor responsável por gerar vinhetas e chamadas dinâmicas de programação no formato clássico de TV a cabo dos anos 2000:
-- **Duração Estrita de 20.0 segundos** (dois blocos de 10s padrão Biel TV, sem preenchimento de tela preta ao final).
+- **Duração máxima de 20,0 segundos**. O Disney Channel mira 19,0 s por
+  segurança, impedindo que o segmentador acrescente outro bloco de 10 s.
 - **Três Janelas / Telas Simultâneas**: exibem o programa atual e os dois seguintes (*"Você está assistindo {Série 1}, a seguir {Série 2}, e depois {Série 3}"*).
 - **Trilha Sonora Oficial da Emissora**: iniciada no segundo 10 e atenuada sob a locução com mixagem sidechain balanceada.
 - **Narradores Oficiais por Canal**: timbres selecionados com dicção jovem, alta empolgação e sotaque neutro/paulistano da capital.
@@ -35,7 +38,8 @@ assets/comerciais/
 │   ├── lineup.config.json               # Badges neon ciano, voz Camilla e trilha Asfalto Quente
 │   └── moldes/
 │       ├── image-comercial-disney-3janelas.png
-│       └── trilha_disney_lineup_3janelas.m4a
+│       ├── trilha_disney_wand_v01_v03_20s.m4a
+│       └── variacoes/                    # Oito instrumentais Wand ID recortados
 └── cartoon_network/
     ├── lineup.config.json               # Badges horizontais, voz Larissa B. e trilha clássica CN
     └── moldes/
@@ -49,6 +53,11 @@ scripts/
 └── gera-vozes-catalogo.mjs              # Gerador em lote de nomes/conectivos no ElevenLabs com upload R2/D1
 ```
 
+O mesmo motor também é chamado por `scripts/factory-local.mjs` quando o Worker
+entrega um job `lineup_3_janelas`. O caminho remoto não possui uma segunda
+implementação visual: ele usa os mesmos JSONs e assets do Git, evitando diferença
+entre a amostra aprovada e o vídeo produzido no GitHub Actions.
+
 ---
 
 ## 3. Identidade dos Canais e Narradores Oficiais
@@ -56,7 +65,7 @@ scripts/
 | Canal | Narrador | Voice ID (ElevenLabs) | Hiperparâmetros | Estilo Visual dos Rótulos |
 |---|---|---|---|---|
 | **Jetix** | Liam (provisória aprovada) | `TX3LPaxmHKxFdv7VOQHJ` | Eleven v3 · Creative (`0.0`) | **Texto branco puro, extra grosso** (`Ubuntu-B` reforçado) com contorno e sombra nítida, sem caixa/badge, alinhado às facetas 3D. |
-| **Disney Channel** | Camilla | `YklVF5l1Q8os8glyd5SM` | Multilingual v2 · stab 0.25 · style 0.65 | **Badges luminosos em neon azul/ciano** com cantos arredondados (`roundrectangle`). |
+| **Disney Channel** | Will — SP Capital (reserva aprovada) | `NNbmtunmMPGBeyrKu6KD` | Multilingual v2 · stab 0.38 · style 0.50 · speed 1.08 | **Badges luminosos em neon azul/ciano** com cantos arredondados (`roundrectangle`). |
 | **Cartoon Network** | Larissa B. | `YfD2qVn2wwK9QFehYxSa` | Multilingual v2 · stab 0.26 · style 0.65 | **Badges horizontais compactos** sobre o topo de cada quadro. |
 
 ---

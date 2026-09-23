@@ -1,6 +1,6 @@
 // Motor modular de montagem de vinhetas e comerciais de lineup em 3 janelas para Biel TV.
 // Lê as configurações declarativas por canal (assets/comerciais/<canal>/lineup.config.json)
-// e executa a renderização determinística em FFmpeg entregando 20.0s exatos (sem padding preto).
+// e executa a renderização determinística em FFmpeg dentro do limite de 20s.
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -12,6 +12,20 @@ import { FFMPEG, FFPROBE } from './ffmpeg.mjs'
 const execFileAsync = promisify(execFile)
 const BUF = { maxBuffer: 64 * 1024 * 1024 }
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
+let imageMagickBin = process.env.IMAGEMAGICK_BIN || null
+
+async function runImageMagick(args) {
+  if (imageMagickBin) return execFileAsync(imageMagickBin, args, BUF)
+  try {
+    const result = await execFileAsync('magick', args, BUF)
+    imageMagickBin = 'magick'
+    return result
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+    imageMagickBin = 'convert'
+    return execFileAsync(imageMagickBin, args, BUF)
+  }
+}
 
 /**
  * Lê a configuração de lineup de um canal específico.
@@ -72,7 +86,7 @@ export async function gerarOverlayTipografia(config, destPng, rotulosCustom = []
       '-annotate', geometria(p3), txt3,
       destPng,
     ]
-    await execFileAsync('magick', args, BUF)
+    await runImageMagick(args)
     return destPng
   }
 
@@ -90,28 +104,35 @@ export async function gerarOverlayTipografia(config, destPng, rotulosCustom = []
     const badge2 = join(dirname(destPng), `_badge_2_${Date.now()}.png`)
     const badge3 = join(dirname(destPng), `_badge_3_${Date.now()}.png`)
 
-    const makeBadge = async (txt, out) => {
-      await execFileAsync('magick', [
-        '-size', `${t.badge_w}x${t.badge_h}`, 'xc:none',
+    const makeBadge = async (txt, pos, out) => {
+      const width = Number(pos.width ?? t.badge_w)
+      const height = Number(pos.height ?? t.badge_h)
+      const pointsize = Number(pos.pointsize ?? (txt.length > 17 ? t.long_pointsize ?? t.pointsize : t.pointsize))
+      await runImageMagick([
+        '-size', `${width}x${height}`, 'xc:none',
         '-fill', t.badge_bg,
         '-stroke', t.badge_border, '-strokewidth', String(t.badge_border_width),
-        '-draw', `roundrectangle 1,1 ${t.badge_w - 2},${t.badge_h - 2} ${t.badge_radius},${t.badge_radius}`,
+        '-draw', `roundrectangle 1,1 ${width - 2},${height - 2} ${t.badge_radius},${t.badge_radius}`,
         '-fill', t.fill, '-stroke', 'none',
-        '-font', t.font_path, '-pointsize', String(t.pointsize),
+        '-font', t.font_path, '-pointsize', String(pointsize),
         '-gravity', 'center', '-annotate', '+0+0', txt,
         out,
-      ], BUF)
+      ])
     }
 
-    await Promise.all([makeBadge(txt1, badge1), makeBadge(txt2, badge2), makeBadge(txt3, badge3)])
+    await Promise.all([
+      makeBadge(txt1, p1, badge1),
+      makeBadge(txt2, p2, badge2),
+      makeBadge(txt3, p3, badge3),
+    ])
 
-    await execFileAsync('magick', [
+    await runImageMagick([
       '-size', '1280x720', 'xc:none',
       badge1, '-geometry', `+${p1.x}+${p1.y}`, '-composite',
       badge2, '-geometry', `+${p2.x}+${p2.y}`, '-composite',
       badge3, '-geometry', `+${p3.x}+${p3.y}`, '-composite',
       destPng,
-    ], BUF)
+    ])
 
     return destPng
   }
@@ -131,7 +152,7 @@ export async function gerarOverlayTipografia(config, destPng, rotulosCustom = []
         : Number(t.pointsize ?? 20)
       const accent = (t.accent_colors ?? ['#12bce8', '#ffd900', '#12bce8'])[i] ?? '#12bce8'
       const badge = join(dirname(destPng), `_cn_badge_${i + 1}_${Date.now()}.png`)
-      await execFileAsync('magick', [
+      await runImageMagick([
         '-size', `${width}x${height}`, 'xc:none',
         '-fill', t.badge_bg ?? '#050505',
         '-stroke', t.badge_border ?? '#ffffff', '-strokewidth', String(t.badge_border_width ?? 2),
@@ -142,7 +163,7 @@ export async function gerarOverlayTipografia(config, destPng, rotulosCustom = []
         '-font', t.font_path, '-pointsize', String(pointsize),
         '-gravity', 'center', '-annotate', '+0-2', txt,
         badge,
-      ], BUF)
+      ])
       badges.push({ badge, p })
     }
 
@@ -151,20 +172,20 @@ export async function gerarOverlayTipografia(config, destPng, rotulosCustom = []
       args.push(badge, '-geometry', `+${p.x}+${p.y}`, '-composite')
     }
     args.push(destPng)
-    await execFileAsync('magick', args, BUF)
+    await runImageMagick(args)
     return destPng
   }
 
   // Fallback padrão: badges horizontais simples
-  await execFileAsync('magick', [
+  await runImageMagick([
     '-size', '1280x720', 'xc:none',
     destPng,
-  ], BUF)
+  ])
   return destPng
 }
 
 /**
- * Monta um comercial completo de 20s em 3 janelas.
+ * Monta um comercial de até 20s em 3 janelas.
  * 
  * @param {object} params
  * @param {string} params.canal - 'jetix' | 'disney_channel' | 'cartoon_network'
@@ -216,9 +237,17 @@ export async function montarLineup3Janelas({
   const j2 = config.visual.janelas[2]
 
   const dur = config.visual.duracao_seg || 20.0
+  if (!Number.isFinite(Number(dur)) || Number(dur) <= 0 || Number(dur) > 20) {
+    throw new Error(`Duração do lineup fora do limite de 20s: ${dur}`)
+  }
   const volVoz = config.audio.volume_voz || 1.8
   const volTrilha = config.audio.volume_trilha || 0.30
   const delayMs = config.audio.delay_voz_ms || 1000
+  const fadeOutSt = Number(config.audio.fade_out_st ?? (dur - 1.0))
+  const fadeOutD = Number(config.audio.fade_out_d ?? 1.0)
+  const backgroundFadeFilter = fadeOutD > 0
+    ? `,afade=t=out:st=${fadeOutSt}:d=${fadeOutD}`
+    : ''
   const fimDur = encerramento ? Number(encerramento.duracao_seg) : 0
   const corpoDur = dur - fimDur
   const audioCrossfade = encerramento ? Number(encerramento.audio_crossfade_seg ?? 0.2) : 0
@@ -229,14 +258,17 @@ export async function montarLineup3Janelas({
   if (encerramento && (!Number.isFinite(audioCrossfade) || audioCrossfade < 0 || audioCrossfade >= fimDur)) {
     throw new Error(`Crossfade de áudio inválido: ${encerramento.audio_crossfade_seg}`)
   }
+  if (!Number.isFinite(fadeOutSt) || !Number.isFinite(fadeOutD) || fadeOutSt < 0 || fadeOutD < 0 || fadeOutSt + fadeOutD > dur) {
+    throw new Error(`Fade de áudio inválido: início ${config.audio.fade_out_st}, duração ${config.audio.fade_out_d}`)
+  }
 
   // 3. Monta o filtro complexo do FFmpeg
   const filtrosBase = [
     `color=c=black:s=1280x720:d=${dur}:r=30[base]`,
-    `[0:v]fps=30,scale=${j0.scale},crop=${j0.crop}[v0]`,
-    `[1:v]fps=30,scale=${j1.scale},crop=${j1.crop}[v1]`,
-    `[2:v]fps=30,scale=${j2.scale},crop=${j2.crop}[v2]`,
-    `[3:v]scale=1280:720,colorkey=${config.visual.colorkey}[tmpl]`,
+    `[0:v]fps=30,scale=${j0.scale}:flags=lanczos,crop=${j0.crop}[v0]`,
+    `[1:v]fps=30,scale=${j1.scale}:flags=lanczos,crop=${j1.crop}[v1]`,
+    `[2:v]fps=30,scale=${j2.scale}:flags=lanczos,crop=${j2.crop}[v2]`,
+    `[3:v]scale=1280:720:flags=lanczos,format=rgba,colorkey=${config.visual.colorkey}[tmpl]`,
     `[base][v0]overlay=${j0.overlay}[b1]`,
     `[b1][v1]overlay=${j1.overlay}[b2]`,
     `[b2][v2]overlay=${j2.overlay}[b3]`,
@@ -258,8 +290,8 @@ export async function montarLineup3Janelas({
   ] : [
     `[layout]fade=t=out:st=${dur - 0.5}:d=0.5[vout]`,
     `[5:a]adelay=${delayMs}|${delayMs},volume=${volVoz}[a_voice]`,
-    `[6:a]atrim=0:${dur},volume=${volTrilha},afade=t=out:st=${dur - 1.0}:d=1.0[a_bg]`,
-    `[a_bg][a_voice]amix=inputs=2:duration=first:dropout_transition=2[aout]`,
+    `[6:a]atrim=0:${dur},volume=${volTrilha}${backgroundFadeFilter}[a_bg]`,
+    `[a_bg][a_voice]amix=inputs=2:duration=first:dropout_transition=2,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[aout]`,
   ]
 
   const filterComplex = [...filtrosBase, ...filtrosSaida].join(';\n')

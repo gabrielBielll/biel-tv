@@ -9,6 +9,7 @@ type Bindings = {
   ELEVENLABS_API_KEY?: string
   GH_DISPATCH_TOKEN?: string
   GH_REPO?: string
+  LINEUP_PUBLISH_ENABLED?: string
 }
 
 type ClipRow = {
@@ -58,8 +59,33 @@ type BuildJobRow = {
   sample_id: string | null
   payload: string | null
   event_id: number | null
+  job_type: string | null
+  request_payload: string | null
+  publish: number | null
+  preview_key: string | null
   created_at: number
   updated_at: number
+}
+
+type LineupSlotRequest = {
+  media_id: string
+  series_id: string
+  start: number
+  end: number
+  sample_id: string
+}
+
+type LineupRequest = {
+  canal: string
+  schedule_revision: string
+  window_start: number
+  current: LineupSlotRequest
+  next: [LineupSlotRequest, LineupSlotRequest]
+  molde_id: string
+  voice_clip_id: string
+  template_version: string
+  voice_profile: string
+  music_variant_id: string
 }
 
 export const fabricaComerciais = new Hono<{ Bindings: Bindings }>()
@@ -84,6 +110,17 @@ function slugify(s: string): string {
 
 function hex(n = 10): string {
   return crypto.randomUUID().replace(/-/g, '').slice(0, n)
+}
+
+async function digestHex(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value)
+  const hash = await crypto.subtle.digest('SHA-256', bytes)
+  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+function epoch(raw: unknown): number | null {
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null
 }
 
 function safeName(s: string): string {
@@ -361,6 +398,67 @@ async function resolvePayload(env: Bindings, job: BuildJobRow) {
     molde,
     sample,
     clips,
+  }
+}
+
+async function resolveLineupPayload(env: Bindings, job: BuildJobRow) {
+  if (!job.request_payload) throw new Error('job de lineup sem snapshot da grade')
+  let req: LineupRequest
+  try {
+    req = JSON.parse(job.request_payload) as LineupRequest
+  } catch {
+    throw new Error('snapshot do lineup está corrompido')
+  }
+  const molde = await env.DB.prepare('SELECT * FROM moldes WHERE id = ?1 AND canal = ?2')
+    .bind(req.molde_id, req.canal).first<MoldeRow>()
+  if (!molde) throw new Error(`molde ${req.molde_id} não pertence ao canal ${req.canal}`)
+
+  const slots = [req.current, ...req.next]
+  const samples: SampleRow[] = []
+  for (const slot of slots) {
+    const sample = await env.DB.prepare(
+      'SELECT * FROM program_samples WHERE id = ?1 AND series_id = ?2',
+    ).bind(slot.sample_id, slot.series_id).first<SampleRow>()
+    if (!sample) throw new Error(`amostra ${slot.sample_id} não pertence a ${slot.series_id}`)
+    samples.push(sample)
+  }
+  const voice = await env.DB.prepare(
+    `SELECT * FROM voice_clips
+     WHERE id = ?1 AND canal = ?2 AND categoria IN ('frase','conector')`,
+  ).bind(req.voice_clip_id, req.canal).first<ClipRow>()
+  if (!voice) throw new Error(`locução contínua ${req.voice_clip_id} não encontrada em ${req.canal}`)
+
+  return {
+    kind: 'lineup_3_janelas',
+    id: job.id,
+    media_id: job.media_id,
+    title: job.title,
+    canal: req.canal,
+    series_id: req.current.series_id,
+    publish: Boolean(job.publish),
+    schedule_revision: req.schedule_revision,
+    window_start: req.window_start,
+    snapshot: { current: req.current, next: req.next },
+    template_version: req.template_version,
+    voice_profile: req.voice_profile,
+    music_variant_id: req.music_variant_id,
+    molde,
+    samples,
+    voice,
+    transcript: voice.rotulo,
+    constraints: {
+      max_duration: 20,
+      target_duration: req.canal === 'disney_channel' ? 19 : 20,
+      delivery_duration: 20,
+      delivery_padding: 'start',
+      width: 1280,
+      height: 720,
+      video_codec: 'h264',
+      audio_codec: 'aac',
+      audio_rate: 48000,
+      channels: 2,
+      preserve_music_ending: true,
+    },
   }
 }
 
@@ -763,6 +861,139 @@ fabricaComerciais.post('/jobs', async (c) => {
   return c.json({ ok: true, id, media_id: mediaId }, 201)
 })
 
+// Lineup de três janelas resolvido a partir de um snapshot EXPLÍCITO da grade.
+// Não existe cron/seleção implícita aqui: enquanto a grade nova não for
+// confirmada, este endpoint só produz dry-run ou prévia remota no R2.
+fabricaComerciais.post('/lineup-jobs', async (c) => {
+  const b = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!b) return c.json({ error: 'JSON inválido' }, 400)
+  const canal = slugify(String(b.canal ?? ''))
+  if (!SLUG.test(canal) || !(await canalExiste(c.env.DB, canal))) {
+    return c.json({ error: 'canal desconhecido' }, 400)
+  }
+  const moldeId = String(b.molde_id ?? '').trim()
+  const molde = await c.env.DB.prepare('SELECT * FROM moldes WHERE id = ?1 AND canal = ?2')
+    .bind(moldeId, canal).first<MoldeRow>()
+  if (!molde) return c.json({ error: `molde ${moldeId || '(vazio)'} não pertence a ${canal}` }, 400)
+
+  const scheduleRevision = String(b.schedule_revision ?? '').trim().slice(0, 160)
+  if (scheduleRevision.length < 4) return c.json({ error: 'schedule_revision é obrigatório' }, 400)
+  const windowStart = epoch(b.window_start)
+  if (windowStart == null) return c.json({ error: 'window_start inválido' }, 400)
+
+  const resolveSlot = async (raw: unknown): Promise<LineupSlotRequest | null> => {
+    if (!raw || typeof raw !== 'object') return null
+    const r = raw as Record<string, unknown>
+    const mediaId = String(r.media_id ?? '').trim()
+    const seriesId = slugify(String(r.series_id ?? ''))
+    const start = epoch(r.start)
+    const end = epoch(r.end)
+    if (!ID_RE.test(mediaId) || !SLUG.test(seriesId) || start == null || end == null || end <= start) return null
+    const explicit = String(r.sample_id ?? '').trim()
+    if (!explicit) return null
+    const sample = await c.env.DB.prepare(
+      'SELECT * FROM program_samples WHERE id = ?1 AND series_id = ?2',
+    ).bind(explicit, seriesId).first<SampleRow>()
+    if (!sample || (!sample.video_key && !sample.source_url)) return null
+    return { media_id: mediaId, series_id: seriesId, start, end, sample_id: sample.id }
+  }
+
+  const nextRaw = Array.isArray(b.next) ? b.next : []
+  const current = await resolveSlot(b.current)
+  const next0 = await resolveSlot(nextRaw[0])
+  const next1 = await resolveSlot(nextRaw[1])
+  if (!current || !next0 || !next1) {
+    return c.json({ error: 'current e next[2] exigem mídia, série, tempos válidos e amostra cadastrada' }, 400)
+  }
+  if (current.start !== windowStart || current.end > next0.start || next0.end > next1.start) {
+    return c.json({ error: 'snapshot fora de ordem ou window_start diferente do programa atual' }, 400)
+  }
+
+  const voiceClipId = String(b.voice_clip_id ?? '').trim()
+  const voice = await c.env.DB.prepare(
+    `SELECT * FROM voice_clips
+     WHERE id = ?1 AND canal = ?2 AND categoria IN ('frase','conector')`,
+  ).bind(voiceClipId, canal).first<ClipRow>()
+  if (!voice) return c.json({ error: 'envie uma locução contínua já cacheada para este canal' }, 400)
+
+  const defaultMusicVariant = canal === 'disney_channel'
+    ? 'disney-wand-v01-v03-conclusive-19s-v1'
+    : ''
+  const musicVariantId = String(b.music_variant_id ?? defaultMusicVariant).trim().slice(0, 100)
+  if (!musicVariantId) return c.json({ error: 'music_variant_id é obrigatório para este canal' }, 400)
+
+  const publish = b.publish === true
+  if (publish && c.env.LINEUP_PUBLISH_ENABLED !== '1') {
+    return c.json({ error: 'publicação de lineup bloqueada até a nova grade ser confirmada' }, 423)
+  }
+  if (publish && String(b.confirm_publish ?? '') !== 'PUBLICAR_LINEUP') {
+    return c.json({ error: 'publicação exige confirm_publish=PUBLICAR_LINEUP' }, 400)
+  }
+
+  const req: LineupRequest = {
+    canal,
+    schedule_revision: scheduleRevision,
+    window_start: windowStart,
+    current,
+    next: [next0, next1],
+    molde_id: molde.id,
+    voice_clip_id: voice.id,
+    template_version: String(b.template_version ?? `${canal}-2026-09-22-v1`).trim().slice(0, 100),
+    voice_profile: String(b.voice_profile ?? voice.id).trim().slice(0, 100),
+    music_variant_id: musicVariantId,
+  }
+  const requestPayload = JSON.stringify(req)
+  const requestHash = await digestHex(JSON.stringify({ request: req, publish }))
+  const id = `cb_${requestHash.slice(0, 10)}`
+  const mediaIdRaw = String(b.media_id ?? '').trim()
+  const mediaId = mediaIdRaw || `com_lineup_${requestHash.slice(0, 12)}`
+  if (!ID_RE.test(mediaId)) return c.json({ error: 'media_id inválido (minúsculas/dígitos/_, 3–40)' }, 400)
+  const titulos = await Promise.all([current, next0, next1].map((s) => serieTitulo(c.env.DB, s.series_id)))
+  const title = String(b.title ?? '').trim().slice(0, 140) || `${titulos[0]} → ${titulos[1]} → ${titulos[2]}`
+
+  const resolved = {
+    kind: 'lineup_3_janelas', id, media_id: mediaId, title, publish,
+    request: req,
+    voice: { id: voice.id, rotulo: voice.rotulo, audio_key: voice.audio_key },
+    samples: [current.sample_id, next0.sample_id, next1.sample_id],
+  }
+  if (b.dry_run !== false) return c.json({ ok: true, dry_run: true, ...resolved })
+
+  const existing = await c.env.DB.prepare(
+    'SELECT id, status, preview_key FROM commercial_build_jobs WHERE id = ?1',
+  ).bind(id).first<{ id: string; status: string; preview_key: string | null }>()
+  if (existing) return c.json({ ok: true, reused: true, ...existing, media_id: mediaId }, 200)
+  const mediaExists = await c.env.DB.prepare('SELECT id FROM media_items WHERE id = ?1').bind(mediaId).first()
+  if (mediaExists) return c.json({ error: `mídia ${mediaId} já existe no catálogo` }, 409)
+
+  await c.env.DB.prepare(
+    `INSERT INTO commercial_build_jobs
+       (id, media_id, title, molde_id, series_id, slot_dias, slot_hora,
+        frase_id, sample_id, job_type, request_payload, publish)
+     VALUES (?1, ?2, ?3, ?4, ?5, '[]', '00:00', ?6, ?7,
+             'lineup_3_janelas', ?8, ?9)`,
+  ).bind(
+    id, mediaId, title, molde.id, current.series_id, voice.id, current.sample_id,
+    requestPayload, publish ? 1 : 0,
+  ).run()
+  c.executionCtx.waitUntil(dispatchFabrica(c.env))
+  return c.json({ ok: true, dry_run: false, ...resolved }, 201)
+})
+
+fabricaComerciais.get('/lineup-jobs/:id/preview', async (c) => {
+  const row = await c.env.DB.prepare(
+    `SELECT preview_key FROM commercial_build_jobs
+     WHERE id = ?1 AND job_type = 'lineup_3_janelas' AND status = 'done'`,
+  ).bind(c.req.param('id')).first<{ preview_key: string | null }>()
+  if (!row?.preview_key) return c.json({ error: 'prévia ainda não está disponível' }, 404)
+  const obj = await c.env.MEDIA.get(row.preview_key)
+  if (!obj) return c.json({ error: 'arquivo da prévia não encontrado no R2' }, 404)
+  return c.body(obj.body, 200, {
+    'content-type': 'video/mp4',
+    'cache-control': 'private, max-age=300',
+  })
+})
+
 fabricaComerciais.post('/claim', async (c) => {
   let job: BuildJobRow | null = null
   try {
@@ -776,7 +1007,9 @@ fabricaComerciais.post('/claim', async (c) => {
        RETURNING *`,
     ).first<BuildJobRow>()
     if (!job) return c.body(null, 204)
-    const payload = await resolvePayload(c.env, job)
+    const payload = job.job_type === 'lineup_3_janelas'
+      ? await resolveLineupPayload(c.env, job)
+      : await resolvePayload(c.env, job)
     await c.env.DB.prepare('UPDATE commercial_build_jobs SET payload = ?2 WHERE id = ?1')
       .bind(job.id, JSON.stringify(payload)).run()
     return c.json(payload)
@@ -857,11 +1090,50 @@ fabricaComerciais.post('/jobs/limpar', async (c) => {
 
 fabricaComerciais.post('/:id/done', async (c) => {
   const id = c.req.param('id')
-  const b = await c.req.json<{ media_id?: string; transcript?: string; proposta?: unknown; render?: unknown }>()
-    .catch(() => ({} as { media_id?: string; transcript?: string; proposta?: unknown; render?: unknown }))
+  const b = await c.req.json<{
+    media_id?: string
+    transcript?: string
+    proposta?: unknown
+    render?: unknown
+    staging_key?: string
+  }>().catch(() => ({} as {
+    media_id?: string
+    transcript?: string
+    proposta?: unknown
+    render?: unknown
+    staging_key?: string
+  }))
   const job = await c.env.DB.prepare('SELECT * FROM commercial_build_jobs WHERE id = ?1')
     .bind(id).first<BuildJobRow>()
   if (!job) return c.json({ error: 'job não encontrado' }, 404)
+
+  // Prévia de lineup: o runner envia o MP4 ao staging e o Worker o move para
+  // uma chave privada e rastreável. Não cria mídia, promessa nem mexe na grade.
+  if (job.job_type === 'lineup_3_janelas' && !job.publish) {
+    const stagingKey = String(b.staging_key ?? '').trim()
+    if (!stagingKey.startsWith('staging/')) return c.json({ error: 'staging_key da prévia é obrigatório' }, 400)
+    const previewKey = `fabrica/lineups/previews/${job.id}/${job.media_id}.mp4`
+    try {
+      await copiaAsset(c.env, stagingKey, previewKey)
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 400)
+    }
+    let payload = job.payload
+    try {
+      payload = JSON.stringify({
+        ...(job.payload ? JSON.parse(job.payload) : {}),
+        result: b.render ?? null,
+        preview_key: previewKey,
+      })
+    } catch { /* mantém o payload resolvido se o rastro antigo estiver quebrado */ }
+    await c.env.DB.prepare(
+      `UPDATE commercial_build_jobs
+       SET status='done', error=NULL, progress=100, preview_key=?2, payload=?3, updated_at=unixepoch()
+       WHERE id=?1`,
+    ).bind(id, previewKey, payload).run()
+    return c.json({ ok: true, preview_key: previewKey })
+  }
+
   const mediaId = String(b.media_id ?? job.media_id)
   const dias = diasCanon(JSON.parse(job.slot_dias))
   const hora = limpaHora(job.slot_hora) ?? job.slot_hora
@@ -870,7 +1142,28 @@ fabricaComerciais.post('/:id/done', async (c) => {
   ).bind(id)
 
   let promiseStmt
-  if (job.event_id != null) {
+  if (job.job_type === 'lineup_3_janelas') {
+    if (!job.request_payload) return c.json({ error: 'lineup sem snapshot de origem' }, 409)
+    const req = JSON.parse(job.request_payload) as LineupRequest
+    const cond = JSON.stringify({
+      tipo: 'lineup_grade',
+      canal: req.canal,
+      schedule_revision: req.schedule_revision,
+      window_start: req.window_start,
+      current: req.current,
+      next: req.next,
+      template_version: req.template_version,
+      voice_profile: req.voice_profile,
+      music_variant_id: req.music_variant_id,
+    })
+    promiseStmt = c.env.DB.prepare(
+      `INSERT INTO media_promises (media_id, transcript, proposta, condicao, status)
+       VALUES (?1, ?2, ?3, ?3, 'confirmada')
+       ON CONFLICT(media_id) DO UPDATE SET
+         transcript=excluded.transcript, proposta=excluded.proposta,
+         condicao=excluded.condicao, status='confirmada', updated_at=unixepoch()`,
+    ).bind(mediaId, String(b.transcript ?? '').slice(0, 8000), cond)
+  } else if (job.event_id != null) {
     // Fase B: comercial de MARATONA → promessa 'evento' já CONFIRMADA, amarrada à
     // SÉRIE do evento. O scheduler liga por series_id ao channel_events agendado e
     // toca só na janela agora→start_at, sumindo quando a maratona começa ou é
