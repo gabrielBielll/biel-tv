@@ -192,7 +192,7 @@ for (const [i, x] of faltam.entries()) {
       const r = spawnSync('timeout', ['120', 'node', 'scripts/monta-lineup-cli.mjs', '--canal', x.canal, '--voz', voz.arq,
         '--v0', vids[0], '--v1', vids[1], '--v2', vids[2], '--out', mp4], { cwd: REPO, stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8' })
       renderizou = r.status === 0 && Math.abs(dur(mp4) - DUR_ALVO[x.canal]) < 0.06
-      if (!renderizou) log(`  render falhou (tentativa ${tent}, exit ${r.status})`)
+      if (!renderizou) log(`  render falhou (tentativa ${tent}, exit ${r.status}): ${(r.stderr ?? '').split('\n').filter((l) => l.trim() && !/^\s*at /.test(l)).slice(-2).join(' | ').slice(0, 300)}`)
     }
     if (!renderizou) throw new Error('render falhou 3 vezes')
     const entrega = master20(mp4, join(CACHE, 'lote', `${x.id}-20s.mp4`))

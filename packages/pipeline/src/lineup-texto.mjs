@@ -114,7 +114,10 @@ function lev(a, b) {
 /** A palavra mais característica do nome foi OUVIDA? Tolera a grafia do transcritor ("Haven" por "Raven"). */
 export function ouviuNome(serie, ouvido) {
   const ws = semAcento(ouvido).split(/[^a-z0-9]+/).filter(Boolean)
-  const chave = semAcento(nomeFalado(serie)).split(/[^a-z0-9]+/).filter((w) => w.length >= 4).sort((a, b) => b.length - a.length)[0]
+  // palavra de ligação não identifica a série (e o transcritor escreve "vs")
+  const genericas = new Set(['versus', 'aventuras', 'terriveis'])
+  const chave = semAcento(nomeFalado(serie)).split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 4 && !genericas.has(w)).sort((a, b) => b.length - a.length)[0]
   if (!chave) return true
   return ws.some((w) => w === chave || lev(w, chave) <= Math.max(1, Math.floor(chave.length / 4)))
 }
