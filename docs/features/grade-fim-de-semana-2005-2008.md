@@ -58,7 +58,7 @@ Voltamos já / Estamos de volta no Teatro Cartoon.
   provisório).
 - **Filme só toca na sessão.** Filme fica fora do rodízio e do encaixe
   (`scheduler.ts`, `9ba1d54`). Para cair na sessão, basta subir o filme com
-  `--tipo filme` e o `series_id` da tabela. Um filme por domingo, em ordem de
+  `--tipo filme` e o `series_id` da tabela. Cada sessão toca o próximo filme, em ordem de
   `media_id`.
 - **O especial provisório cede ao filme** automaticamente quando as duas faixas
   caem no mesmo minuto e a do filme tem filme pronto (ex.: Dexter às 14h no CN).
