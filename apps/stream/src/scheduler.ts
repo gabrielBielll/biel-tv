@@ -317,6 +317,17 @@ export async function scheduleChannel(
   const porId = new Map(mediaTodas.map((m) => [m.id, m]))
   if (contents.length === 0) return { canal, added: 0, skipped: 'sem conteúdo' }
 
+  // FILME COM FAIXA SÓ TOCA NA FAIXA. Pedido do Gabriel (23/09/2026): "como
+  // temos poucos filmes, só aos domingos por enquanto". Filme de série que tem
+  // âncora neste canal sai do rodízio e do encaixe. Sem isso, um filme de 90 min
+  // caía como enchimento num vão qualquer da semana. Ele continua valendo para
+  // a âncora (episodiosDaSerie usa `contents`) e para a maratona. Filme SEM
+  // faixa segue no rodízio como sempre (o das Meninas no Cartoon). Episódio de
+  // série ancorada também segue: a grade usa esses episódios pra tapar vão.
+  const seriesAncoradas = new Set(slotsAtivos.map((s) => s.series_id))
+  const soNaFaixa = (m: MediaRow) => m.tipo === 'filme' && m.series_id != null && seriesAncoradas.has(m.series_id)
+  const rodizio = contents.some((m) => !soNaFaixa(m)) ? contents.filter((m) => !soNaFaixa(m)) : contents
+
   // Lineups deste canal que podem entrar na grade. Liga por canal no config
   // `lineup_grade:<canal>` (posição 'ultimo' ou 'meio'). Sem a chave, nenhum
   // lineup é encaixado, mas eles continuam fora do rodízio cego. O config só
@@ -524,7 +535,7 @@ export async function scheduleChannel(
   // rotação em BLOCOS: episódios da mesma série emendados (até N seguidos),
   // séries alternando em rodízio; menos-tocada lidera, empates pela seed do dia
   const blocoMax = Math.max(1, chan.episodios_por_bloco ?? 2)
-  const blocos = montaBlocos(contents, blocoMax, rnd)
+  const blocos = montaBlocos(rodizio, blocoMax, rnd)
   // FILA de comerciais (e outra de vinhetas): a peça que vai ao ar vai pro FIM
   // da fila, então só volta depois que todas as outras passaram. Antes era um
   // índice móvel sobre a lista filtrada por "cabe no alvo" — o que fazia a peça
@@ -588,7 +599,7 @@ export async function scheduleChannel(
   const alvoBase = chan.break_target_seg ?? 120
   // Menor programa do canal: é a régua do "ainda cabe alguém antes da âncora?".
   // Vão menor que isso não recebe mais programa nenhum — é intervalo garantido.
-  const menorConteudo = Math.min(...contents.map((m) => m.duracao_seg))
+  const menorConteudo = Math.min(...rodizio.map((m) => m.duracao_seg))
   let ultimoPodFim = -Infinity
   // serieCtx: série "dona" deste intervalo — no meio de um episódio dela, ou
   // entre dois episódios seguidos dela. O bumper de saída ("voltamos já com X")
@@ -724,8 +735,10 @@ export async function scheduleChannel(
   // montagem (o encaixe pode ter adiantado um episódio que estava mais à frente
   // na fila). Esgotado o acervo, a marca zera e a volta recomeça.
   const espiaRodizio = (): { item: MediaRow; continuacao: boolean } => {
-    if (usadoNaRun.size >= contents.length) usadoNaRun.clear()
-    for (let guarda = 0; guarda < contents.length; guarda++) {
+    // `usadoNaRun` também guarda o que entrou pela âncora (filme só-na-faixa),
+    // então "acervo todo usado" é conferido só contra o rodízio
+    if (rodizio.every((m) => usadoNaRun.has(m.id))) usadoNaRun.clear()
+    for (let guarda = 0; guarda < rodizio.length; guarda++) {
       const item = blocos[bi % blocos.length][ei]
       // continuação = não é o 1º do bloco E emenda a mesma série que saiu agora;
       // se um evento entrou no meio do bloco, ultimaSerie muda e o bloco reabre
@@ -755,7 +768,7 @@ export async function scheduleChannel(
   // própria âncora (senão o "bloco das 16h" começaria antes das 16h) e o que já
   // entrou nesta run.
   const encaixe = (espaco: number, serieDaAncora: string | null): MediaRow | null => {
-    const cands = contents.filter((m) =>
+    const cands = rodizio.filter((m) =>
       m.duracao_seg <= espaco && !usadoNaRun.has(m.id) &&
       !(serieDaAncora && m.series_id === serieDaAncora))
     if (cands.length === 0) return null

@@ -390,5 +390,33 @@ function ocorrencias(rows, catalogo) {
   check('reprise sem exibição anterior: EPG contígua', contigua(rows))
 }
 
+// ── FILME COM FAIXA SÓ TOCA NA FAIXA (pedido do Gabriel, 23/09/2026) ─────────
+//    Filme de série ancorada sai do rodízio/encaixe; filme SEM faixa continua.
+{
+  const filme = (id, sid) => ({ id, tipo: 'filme', duracao_seg: 5400, segment_count: 540, last_played_at: 0, series_id: sid })
+  const CAT = [...CATALOGO, filme('filme_a', 'bloco_filmes'), filme('filme_b', 'bloco_filmes'), filme('filme_solto', 'filme_sem_faixa')]
+  // sem faixa pros filmes: o rodízio de 24 h pega filme (é o comportamento de antes)
+  {
+    const { db, epg } = makeDB({ channel: CANAL, media: CAT, slots: [] })
+    await scheduleChannel({ DB: db }, 'ch', 24, true)
+    check('sem faixa de filme: filme entra no rodízio como antes', epg.some((r) => r.media_id.startsWith('filme_')))
+  }
+  // com faixa pra bloco_filmes: filme_a/filme_b só na hora da faixa; filme_solto segue no rodízio
+  {
+    const { db, epg } = makeDB({
+      channel: CANAL, media: CAT,
+      slots: [{ series_id: 'bloco_filmes', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 }],
+    })
+    await scheduleChannel({ DB: db }, 'ch', 24, true)
+    const rows = grade(epg)
+    const inicios = rows.filter((r) => /^filme_[ab]$/.test(r.media_id) && r.seg === 0).map((r) => r.start)
+    const fora = inicios.filter((s) => (s - A) % 86400 !== 0)
+    check('filme com faixa: só começa na hora da faixa', inicios.length >= 1 && fora.length === 0,
+      `${inicios.length} início(s), ${fora.length} fora da faixa`)
+    check('filme com faixa: grade contígua', contigua(rows))
+    check('filme SEM faixa continua no rodízio', rows.some((r) => r.media_id === 'filme_solto'))
+  }
+}
+
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)
 process.exit(fail === 0 ? 0 : 1)
