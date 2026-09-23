@@ -179,7 +179,7 @@ Regras operacionais:
   antes da nova grade e da integração da condição `lineup_grade` no scheduler.
   Enquanto isso, somente a prévia privada de 19 s está liberada.
 
-A migration `0026_lineup_remoto.sql` mantém no D1 o pedido original, o payload
+A migration `0035_lineup_remoto.sql` (nasceu `0026`, renumerada por colisão) mantém no D1 o pedido original, o payload
 resolvido, o resultado técnico e a chave da prévia. Assim outra IA consegue
 reproduzir exatamente quais programas, amostras, voz, molde e trilha formaram a
 peça.
