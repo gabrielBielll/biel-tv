@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { dispatchFabrica } from './fabrica'
-import { pedeReplan, scheduleChannel } from './scheduler'
+import { pedeReplan, proximaOcorrencia, scheduleChannel } from './scheduler'
 import { sintetizaClip, sintetizaBytes, TtsIndisponivel, type VozConfig } from './tts'
 
 type Bindings = {
@@ -561,11 +561,15 @@ fabricaComerciais.post('/slots', async (c) => {
   // canal, ~4s depois da última âncora. O `/slots/lote` continua sendo o
   // caminho certo (replan imediato, resposta já com a grade pronta); este aqui
   // passou a ser só BARATO, em vez de proibido.
+  // REBUILD PARCIAL: a faixa nova só vale da próxima ocorrência dela em diante,
+  // então a grade daqui até lá fica intacta — menos escrita e, principalmente,
+  // o guia que o app já mostrou não se embaralha por causa de uma faixa da noite.
+  const desde = proximaOcorrencia(v.dias, v.hora)
   c.executionCtx.waitUntil(
-    pedeReplan(c.env, v.canal, () => reconciliaComerciaisGrade(c.env))
+    pedeReplan(c.env, v.canal, () => reconciliaComerciaisGrade(c.env), desde)
       .catch(() => { /* marca fica de pé: o cron replaneja */ }),
   )
-  return c.json({ ok: true, id, replan: 'coalescido' }, 201)
+  return c.json({ ok: true, id, replan: 'coalescido', desde }, 201)
 })
 
 // LOTE de faixas: cria e apaga N âncoras replanejando cada canal UMA vez.
@@ -597,21 +601,30 @@ fabricaComerciais.post('/slots/lote', async (c) => {
   if (criar.length + apagar.length > 300) return c.json({ error: 'no máximo 300 operações por chamada' }, 400)
 
   const afetados = new Set<string>()
+  // por canal, a ocorrência mais CEDO entre as faixas mexidas: é de lá pra
+  // frente que a grade precisa ser refeita (rebuild parcial — ver scheduleChannel)
+  const desdeDe = new Map<string, number>()
+  const marcaDesde = (canal: string, quando: number) => {
+    afetados.add(canal)
+    desdeDe.set(canal, Math.min(desdeDe.get(canal) ?? Infinity, quando))
+  }
   // 1) valida tudo — e já coleta os canais, sem escrever nada
   const prontos: Array<{ id: string; v: Exclude<Awaited<ReturnType<typeof validaSlot>>, { erro: string }> }> = []
   for (const [i, item] of criar.entries()) {
     const v = await validaSlot(c.env.DB, item ?? {})
     if ('erro' in v) return c.json({ error: `criar[${i}]: ${v.erro}` }, 400)
     prontos.push({ id: `sl_${hex()}`, v })
-    afetados.add(v.canal)
+    marcaDesde(v.canal, proximaOcorrencia(v.dias, v.hora))
   }
   const aApagar: string[] = []
   for (const id of apagar) {
-    const row = await c.env.DB.prepare('SELECT canal FROM channel_slots WHERE id = ?1')
-      .bind(id).first<{ canal: string }>()
+    const row = await c.env.DB.prepare('SELECT canal, dias, hora FROM channel_slots WHERE id = ?1')
+      .bind(id).first<{ canal: string; dias: string; hora: string }>()
     if (!row) return c.json({ error: `apagar: âncora não encontrada (${id})` }, 404)
     aApagar.push(id)
-    afetados.add(row.canal)
+    let quando = 0
+    try { quando = proximaOcorrencia(JSON.parse(row.dias) as number[], row.hora) } catch { quando = 0 }
+    marcaDesde(row.canal, quando)
   }
 
   // 2) escreve — apagar antes de criar, pra troca de faixa no mesmo horário
@@ -626,8 +639,14 @@ fabricaComerciais.post('/slots/lote', async (c) => {
     ).bind(p.id, p.v.canal, p.v.seriesId, JSON.stringify(p.v.dias), p.v.hora, p.v.episodios, p.v.reprise, p.v.bloco).run()
   }
 
-  // 3) UM replan por canal, e UMA reconciliação no fim — é aqui que mora a economia
-  for (const canal of afetados) await scheduleChannel(c.env, canal, 48, true)
+  // 3) UM replan por canal, e UMA reconciliação no fim — é aqui que mora a economia.
+  //    Parcial quando dá: só reescreve da faixa mais cedo do lote em diante.
+  //    Num lote que refaz a grade inteira isso tende a zero de desconto (sempre
+  //    tem faixa de manhã), e está certo assim — não há o que preservar.
+  for (const canal of afetados) {
+    const d = desdeDe.get(canal)
+    await scheduleChannel(c.env, canal, 48, true, Number.isFinite(d) ? d : 0)
+  }
   c.executionCtx.waitUntil(reconciliaComerciaisGrade(c.env).catch(() => { /* cron cobre */ }))
   return c.json({ ok: true, criados: prontos.map((p) => p.id), apagados: aApagar.length, canais_replanejados: [...afetados] }, 201)
 })
@@ -1068,16 +1087,20 @@ fabricaComerciais.post('/reconciliar-grade', async (c) => {
 })
 
 fabricaComerciais.delete('/slots/:id', async (c) => {
-  const row = await c.env.DB.prepare('SELECT canal FROM channel_slots WHERE id = ?1')
-    .bind(c.req.param('id')).first<{ canal: string }>()
+  const row = await c.env.DB.prepare('SELECT canal, dias, hora FROM channel_slots WHERE id = ?1')
+    .bind(c.req.param('id')).first<{ canal: string; dias: string; hora: string }>()
   if (!row) return c.json({ error: 'âncora não encontrada' }, 404)
   await c.env.DB.prepare('DELETE FROM channel_slots WHERE id = ?1').bind(c.req.param('id')).run()
+  // a âncora some a partir da próxima ocorrência dela; antes disso a grade já
+  // planejada continua válida (dias corrompido ⇒ 0 ⇒ rebuild total, lado seguro)
+  let desde = 0
+  try { desde = proximaOcorrencia(JSON.parse(row.dias) as number[], row.hora) } catch { desde = 0 }
   // mesmo motivo do criar: apagar 20 âncoras em sequência custava 20 replans
   c.executionCtx.waitUntil(
-    pedeReplan(c.env, row.canal, () => reconciliaComerciaisGrade(c.env))
+    pedeReplan(c.env, row.canal, () => reconciliaComerciaisGrade(c.env), desde)
       .catch(() => { /* marca fica de pé: o cron replaneja */ }),
   )
-  return c.json({ ok: true, replan: 'coalescido' })
+  return c.json({ ok: true, replan: 'coalescido', desde })
 })
 
 // Gera o comercial de horário (bloco_horario, genérico) que anuncia este slot.

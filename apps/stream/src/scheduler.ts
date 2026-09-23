@@ -130,6 +130,14 @@ export async function scheduleChannel(
   canal: string,
   hours = 48,
   rebuild = false,
+  /**
+   * REBUILD PARCIAL: descarta o futuro só a partir deste instante, em vez de
+   * tudo depois do bloco no ar. Serve pra mudança que só vale mais tarde — mexer
+   * na faixa das 21:30 não tem por que reescrever a madrugada e a manhã inteiras.
+   * Economiza escrita e, o que importa mais, PARA DE EMBARALHAR a grade que o
+   * app já mostrou no guia. Sem ele (ou com 0) o rebuild é total, como antes.
+   */
+  desde?: number,
 ): Promise<ScheduleReport> {
   const chan = await env.DB.prepare('SELECT * FROM channels WHERE id = ?1')
     .bind(canal).first<{ break_target_seg: number; comerciais_fieis: number | null; episodios_por_bloco: number | null }>()
@@ -315,7 +323,9 @@ export async function scheduleChannel(
   // canal ficava com o bloco no ar e mais nada: grade vazia, 404 no /live. Foi
   // o que quase tirou o Disney do ar quando 352 âncoras entraram de uma vez.
   // Agora, se a gravação falha por qualquer motivo, a grade velha fica de pé.
-  const cut = rebuild ? (onAir?.e ?? nowSlot) : SEM_CORTE
+  // nunca antes do fim do bloco no ar (o que está passando é intocável), nunca
+  // depois do que o chamador pediu preservar
+  const cut = rebuild ? Math.max(onAir?.e ?? nowSlot, desde ?? 0) : SEM_CORTE
 
   const cov = await env.DB.prepare(
     `SELECT MAX(end_time_virtual) m FROM epg_virtual
@@ -956,6 +966,24 @@ export async function scheduleChannel(
   }
 }
 
+/**
+ * Próxima ocorrência de uma âncora (dias da semana + hora local), a partir de
+ * agora. É o `desde` do rebuild parcial: mexer numa faixa das 21:30 só precisa
+ * reescrever a grade de 21:30 em diante.
+ *
+ * Varre no máximo 8 dias — com `dias` não vazio, uma âncora sempre casa dentro
+ * de uma semana. Devolve 0 ("desde já") quando nada casa, que é o lado seguro:
+ * pior caso o rebuild é total, como era antes.
+ */
+export function proximaOcorrencia(dias: number[], hora: string, apartirDe = Math.floor(Date.now() / 1000)): number {
+  for (let d = apartirDe - DAY; d <= apartirDe + 8 * DAY; d += DAY) {
+    const A = spHoraToEpoch(spDateStr(d), hora)
+    if (A == null || A < apartirDe) continue
+    if (dias.includes(spWeekdayIso(A))) return A
+  }
+  return 0
+}
+
 /** Janela do debounce de replan. Escolhida pela cadência medida em 23/09/2026:
  *  um script criando âncoras pelo endpoint singular manda ~6 por segundo, então
  *  4s cobrem a rajada inteira com folga sem deixar o ajuste manual parecendo
@@ -965,6 +993,8 @@ const DEBOUNCE_REPLAN_MS = 4000
 
 /** Prefixo da marca de "este canal precisa de replan" na tabela `config`. */
 const CHAVE_REPLAN = 'replan_pedido:'
+/** Prefixo do "a partir de quando" acumulado da rajada — ver `pedeReplan`. */
+const CHAVE_DESDE = 'replan_desde:'
 
 /**
  * Pede um replanejamento do canal — COALESCIDO.
@@ -989,19 +1019,37 @@ export async function pedeReplan(
   env: Env,
   canal: string,
   depois?: () => Promise<unknown>,
+  /** a partir de quando a mudança vale (ver `proximaOcorrencia`); 0 = já */
+  desde = 0,
 ): Promise<'replanejou' | 'cedeu'> {
   const k = CHAVE_REPLAN + canal
+  const kd = CHAVE_DESDE + canal
   const marca = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  await env.DB.prepare('INSERT OR REPLACE INTO config (k, v) VALUES (?1, ?2)').bind(k, marca).run()
+  // O `desde` da rajada é o MENOR de todos: se uma chamada mexeu nas 07:00 e
+  // outra nas 21:30, replanejar só das 21:30 deixaria a das 07:00 valendo no
+  // papel e não na grade. O `min` acontece DENTRO do UPSERT porque as chamadas
+  // são concorrentes — ler-decidir-escrever aqui perderia corrida, e o preço de
+  // perder é âncora que não entra no ar.
+  await env.DB.batch([
+    env.DB.prepare('INSERT OR REPLACE INTO config (k, v) VALUES (?1, ?2)').bind(k, marca),
+    env.DB.prepare(
+      `INSERT INTO config (k, v) VALUES (?1, ?2)
+       ON CONFLICT(k) DO UPDATE SET v = CAST(min(CAST(v AS INTEGER), CAST(?2 AS INTEGER)) AS TEXT)`,
+    ).bind(kd, String(Math.max(0, Math.floor(desde)))),
+  ])
 
   await new Promise((r) => setTimeout(r, DEBOUNCE_REPLAN_MS))
 
   const atual = await env.DB.prepare('SELECT v FROM config WHERE k = ?1').bind(k).first<{ v: string }>()
   if (atual?.v !== marca) return 'cedeu' // chegou pedido mais novo: ele que pague
 
-  await scheduleChannel(env, canal, 48, true)
+  const acum = await env.DB.prepare('SELECT v FROM config WHERE k = ?1').bind(kd).first<{ v: string }>()
+  await scheduleChannel(env, canal, 48, true, Number(acum?.v ?? 0) || 0)
   // só agora o pedido some — se o replan explodir, a marca fica e o cron cobre
-  await env.DB.prepare('DELETE FROM config WHERE k = ?1 AND v = ?2').bind(k, marca).run()
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM config WHERE k = ?1 AND v = ?2').bind(k, marca),
+    env.DB.prepare('DELETE FROM config WHERE k = ?1').bind(kd),
+  ])
   if (depois) await depois().catch(() => { /* best-effort: o cron refaz */ })
   return 'replanejou'
 }
@@ -1022,11 +1070,15 @@ export async function runScheduler(
   // o canal é replanejado de verdade, uma vez, em vez de a âncora nova ficar
   // valendo só no papel. Best-effort: sem a leitura, o cron segue normal.
   const pendentes = new Map<string, string>()
+  const desdeDe = new Map<string, number>()
   try {
     const { results } = await env.DB.prepare(
-      "SELECT k, v FROM config WHERE k LIKE 'replan_pedido:%'",
+      "SELECT k, v FROM config WHERE k LIKE 'replan_pedido:%' OR k LIKE 'replan_desde:%'",
     ).all<{ k: string; v: string }>()
-    for (const r of results) pendentes.set(r.k.slice(CHAVE_REPLAN.length), r.v)
+    for (const r of results) {
+      if (r.k.startsWith(CHAVE_REPLAN)) pendentes.set(r.k.slice(CHAVE_REPLAN.length), r.v)
+      else desdeDe.set(r.k.slice(CHAVE_DESDE.length), Number(r.v) || 0)
+    }
   } catch { /* segue sem a varredura */ }
 
   const reports: ScheduleReport[] = []
@@ -1036,10 +1088,15 @@ export async function runScheduler(
     // orçamento do cron estourava no meio e a grade deles zerava).
     try {
       const pendente = pendentes.get(c.id)
-      reports.push(await scheduleChannel(env, c.id, opts.hours ?? 48, opts.rebuild || pendente != null))
+      // `desde` só vale junto com a marca: rebuild pedido pelo chamador do cron
+      // (`opts.rebuild`) é total de propósito.
+      const desde = pendente != null && !opts.rebuild ? (desdeDe.get(c.id) ?? 0) : 0
+      reports.push(await scheduleChannel(env, c.id, opts.hours ?? 48, opts.rebuild || pendente != null, desde))
       if (pendente != null) {
-        await env.DB.prepare('DELETE FROM config WHERE k = ?1 AND v = ?2')
-          .bind(CHAVE_REPLAN + c.id, pendente).run()
+        await env.DB.batch([
+          env.DB.prepare('DELETE FROM config WHERE k = ?1 AND v = ?2').bind(CHAVE_REPLAN + c.id, pendente),
+          env.DB.prepare('DELETE FROM config WHERE k = ?1').bind(CHAVE_DESDE + c.id),
+        ])
       }
     } catch (e) {
       reports.push({ canal: c.id, added: 0, skipped: String(e) })
