@@ -452,6 +452,27 @@ o job não resolve** (é determinístico pro arquivo) — precisa investigar o
 arquivo-fonte especificamente (normalizar frame rate antes, por exemplo).
 Deixa o job em `error` na fila; visível no admin.
 
+**A 29,97fps NÃO existe 10,000s exato — aparar mirando o múltiplo cai no quadro
+de CIMA.** Achado em 23/09/2026 ao aparar peças curtas pra caberem no bloco de
+10s:
+
+```
+299 quadros a 29,97fps =  9,977s   ← abaixo do múltiplo, é o que se quer
+300 quadros a 29,97fps = 10,010s   ← ACIMA: o pipeline completa pra 20s
+```
+
+Quem pede "10.0" ao ffmpeg ganha o quadro de cima e a peça **continua passando
+do múltiplo** — e o efeito é caro: o pipeline arredonda pra cima, e uma peça de
+10,010s vira bloco de 20s com ~10 segundos de preto. Foi assim que 17 peças
+ficaram com metade do bloco vazia sem ninguém notar.
+
+**Regra: mire um quadro ABAIXO do múltiplo**, não o múltiplo. E confira o
+resultado com `ffprobe` antes de subir — na primeira passada desta correção,
+quatro peças saíram em 10,010s justamente por mirar o valor redondo.
+
+📌 É da família documentada no topo deste arquivo: a peça sai, o job fica
+`done`, e só a grade percebe depois. Nada reclama.
+
 ## Playlist / ingestão de "episódios em partes"
 
 **Acervo dublado em PT numera `T02E01` — com T de Temporada, não S de Season.**
