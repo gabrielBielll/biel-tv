@@ -299,13 +299,13 @@ export async function montarLineup3Janelas({
   const filtrosSaida = encerramento ? [
     `[layout]trim=duration=${corpoDur},setpts=PTS-STARTPTS[corpo]`,
     `color=c=${encerramento.fundo ?? '#0b477f'}:s=1280x720:d=${fimDur}:r=30[fim_base]`,
-    `[7:v]trim=start=${Number(encerramento.inicio_seg)}:end=${Number(encerramento.inicio_seg) + fimDur},setpts=PTS-STARTPTS,${encerramento.video_filter ?? 'scale=1280:850,crop=1280:720:0:40,setsar=1'},fps=30,format=rgba,chromakey=${encerramento.chromakey ?? '0x00ff00:0.12:0.01'},despill=type=green:mix=${Number(encerramento.despill_mix ?? 0.7)}[fim_fg]`,
+    `[7:v]trim=duration=${fimDur},setpts=PTS-STARTPTS,${encerramento.video_filter ?? 'scale=1280:850,crop=1280:720:0:40,setsar=1'},fps=30,format=rgba,chromakey=${encerramento.chromakey ?? '0x00ff00:0.12:0.01'},despill=type=green:mix=${Number(encerramento.despill_mix ?? 0.7)}[fim_fg]`,
     `[fim_base][fim_fg]overlay=0:0,fade=t=out:st=${Math.max(0, fimDur - 0.25)}:d=0.25[fim]`,
     `[corpo][fim]concat=n=2:v=1:a=0[vout]`,
     `[5:a]adelay=${delayMs}|${delayMs},volume=${volVoz},apad=whole_dur=${corpoDur},atrim=duration=${corpoDur}[a_voice]`,
     `[6:a]atrim=0:${corpoDur},apad=whole_dur=${corpoDur},atrim=duration=${corpoDur},volume=${volTrilha},afade=t=out:st=${corpoDur - audioCrossfade}:d=${audioCrossfade}[a_bg]`,
     `[a_bg][a_voice]amix=inputs=2:duration=first:dropout_transition=0[a_corpo]`,
-    `[7:a]atrim=start=${Number(encerramento.inicio_seg) - audioCrossfade}:end=${Number(encerramento.inicio_seg) + fimDur},asetpts=PTS-STARTPTS,afade=t=in:st=0:d=${audioCrossfade},adelay=${Math.round((corpoDur - audioCrossfade) * 1000)}|${Math.round((corpoDur - audioCrossfade) * 1000)}[a_fim]`,
+    `[8:a]asetpts=PTS-STARTPTS,afade=t=in:st=0:d=${audioCrossfade},adelay=${Math.round((corpoDur - audioCrossfade) * 1000)}|${Math.round((corpoDur - audioCrossfade) * 1000)}[a_fim]`,
     `[a_corpo][a_fim]amix=inputs=2:duration=longest:normalize=0:dropout_transition=0,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[aout]`,
   ] : [
     `[layout]fade=t=out:st=${dur - 0.5}:d=0.5[vout]`,
@@ -316,16 +316,37 @@ export async function montarLineup3Janelas({
 
   const filterComplex = [...filtrosBase, ...filtrosSaida].join(';\n')
 
+  // TRAVAMENTO na virada pro fechamento (ffmpeg 8.1.3 no Termux, 23/09/2026):
+  // o render parava no quadro ~540, exatamente quando o concat troca o corpo
+  // pelo fechamento. O processo não morria nem dava erro, ficava parado até
+  // levar SIGTERM, e aí saía um MP4 SEM o fechamento. Precisou de dois ajustes,
+  // e nenhum dos dois resolve sozinho:
+  //  1. o fechamento entra como DUAS entradas do mesmo arquivo, já recortadas
+  //     na leitura (a 7 só dá o vídeo, a 8 só dá o áudio), em vez de uma
+  //     entrada servindo as duas coisas;
+  //  2. as três janelas terminam na leitura junto com o corpo (`tJanelas`) em
+  //     vez de rodar os 20 s inteiros para o trim jogar fora o final.
+  // Renders do Jetix medidos: 2 travados em 6 no original, 4 em 20 só com o
+  // ajuste 1, 14 em 20 só com o 2, e 0 em 20 com os dois. O vídeo sai idêntico
+  // ao do motor antigo quando o antigo termina (SSIM 1,000; PSNR inf).
+  const tJanelas = encerramento ? corpoDur : dur
+  const encInicio = encerramento ? Number(encerramento.inicio_seg) : 0
+  const encAudioInicio = Math.max(0, encInicio - audioCrossfade)
+  const entradasEncerramento = encerramento ? [
+    '-ss', String(encInicio), '-t', String(fimDur), '-i', encerramentoVideo,
+    '-ss', String(encAudioInicio), '-t', String(encInicio + fimDur - encAudioInicio), '-i', encerramentoVideo,
+  ] : []
+
   const ffmpegArgs = [
     '-y',
-    '-stream_loop', '-1', '-ss', '3', '-t', String(dur), '-i', v0,
-    '-stream_loop', '-1', '-ss', '3', '-t', String(dur), '-i', v1,
-    '-stream_loop', '-1', '-ss', '5', '-t', String(dur), '-i', v2,
+    '-stream_loop', '-1', '-ss', '3', '-t', String(tJanelas), '-i', v0,
+    '-stream_loop', '-1', '-ss', '3', '-t', String(tJanelas), '-i', v1,
+    '-stream_loop', '-1', '-ss', '5', '-t', String(tJanelas), '-i', v2,
     '-i', molde,
     '-i', overlayTipografia,
     '-i', voz,
     ...(encerramento ? ['-i', trilha] : ['-stream_loop', '-1', '-i', trilha]),
-    ...(encerramento ? ['-i', encerramentoVideo] : []),
+    ...entradasEncerramento,
     '-filter_complex', filterComplex,
     '-map', '[vout]',
     '-map', '[aout]',

@@ -142,6 +142,14 @@ Precisa de duas coisas que o Ubuntu do GitHub Actions já traz:
    - `Ubuntu-B.ttf`: `28c4c189a44803b1986fd16074187034dc6d94ad35f5e87de13dd0e786b70b73`
    - `LiberationSans-Bold.ttf`: `3973aa5054fb467dd5627245d3dc82e37bf16fe075756156a570455871351582`
 
+3. **Travamento na virada pro fechamento (corrigido em 23/09):** com o ffmpeg
+   8.1.3, cerca de 1 em cada 3 renders do Jetix parava no quadro ~540, sem
+   erro nenhum. Ao levar SIGTERM, saía um MP4 **sem o fechamento**. A causa e a
+   medição estão no comentário do `ffmpegArgs` em `construtor-lineup.mjs`. Se
+   voltar a acontecer, o sintoma é render que não termina, e **não** erro.
+   Por isso quem roda em lote usa `timeout` e **descarta** a saída de render
+   morto por tempo, em vez de aproveitá-la.
+
 As amostras baixadas do R2 ficam em cache em `~/.cache/bieltv-lineup/amostras/<series_id>.mp4`.
 
 ```bash
