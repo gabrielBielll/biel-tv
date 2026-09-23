@@ -84,6 +84,63 @@ $$\text{[Gancho]} \rightarrow \text{[Você tá assistindo \{série\_1\}]} \right
    - Os nomes de todas as séries do catálogo já estão sintetizados com os narradores oficiais e salvos permanentemente no Cloudflare R2 (`fabrica/tts/<voz_id>/<hash>.mp3`) e indexados no D1 (`voice_clips`).
    - Os conectivos e ganchos modulares permitem variações dinâmicas sem repetição monótona no ar.
 
+### 4.1 Onde o lineup entra na grade (implementado em 2026-09-23, DESLIGADO)
+
+O código está em `apps/stream/src/lineup-grade.ts` e é chamado pelo `scheduler.ts`.
+A regra foi combinada no card do Trello `d5HGORZp`:
+
+- **O que identifica a peça é a sequência de séries X→Y→Z**, não um horário.
+  A condição `lineup_grade` é lida pela série (`current`/`next[]` do
+  `/lineup-jobs`, ou `seq: [X, Y, Z]`). Os `media_id` e `window_start` da
+  condição ficam só como rastro. A mesma peça volta em qualquer dia em que a
+  sequência se repetir.
+- **Quem decide se ela entra é a própria grade planejada**, na hora de montar:
+  a peça só entra num intervalo **dentro** do bloco de X, e só quando os dois
+  blocos seguintes são exatamente Y e Z.
+- **Nenhum horário se move.** A peça ocupa o lugar de anúncios do rodízio cego
+  cuja duração soma exatamente a dela (20 s). Ela entra depois do último desses
+  anúncios, então a vinheta "estamos de volta com X" continua fechando o
+  intervalo. Se nenhuma combinação dá 20 s, o bloco fica sem lineup.
+- **A grade é estendida em pedaços curtos**, então o encaixe olha também as
+  últimas 6 h já gravadas. Um intervalo gravado que recebe a peça é reescrito na
+  mesma faixa de tempo (DELETE+INSERT no mesmo batch do resto).
+- **Rebuild parcial:** quando um lineup gravado antes do corte promete Y ou Z
+  que vêm depois dele, o corte recua até antes do bloco de X, e a promessa é
+  refeita junto (`recuaCorte`).
+- **Lineup nunca cai no rodízio cego**, nem no modo livre (comerciais fiéis
+  desligado), nem sem promessa. Toda mídia `com_lineup_*` fica fora do rodízio,
+  porque o runner registra a peça antes de o `/done` gravar a condição.
+
+**Liga por canal** no `config` do D1, com a posição (ainda decisão do Gabriel):
+
+```sql
+INSERT INTO config (k, v) VALUES ('lineup_grade:cartoon_network', 'ultimo')   -- ou 'meio'
+```
+
+Sem a chave, nada é encaixado.
+
+**Testes:** `pnpm verify:lineup` (42 checagens: funções puras + `scheduleChannel`
+real com D1 falso).
+
+**Dry-run com os dados de produção** (só SELECT, não grava nada):
+
+```bash
+node --import ./scripts/_ts-registra.mjs scripts/lineup-dryrun.mjs --posicao ultimo
+```
+
+Ele planeja 48 h de cada canal duas vezes, sem lineup e com uma peça falsa para
+cada sequência que aparece, e confere três coisas: os programas ficam nos mesmos
+horários, a EPG continua contígua e nenhuma promessa é falsa.
+
+Resultado em 2026-09-23 (48 h, posição `ultimo`): as três conferências passaram
+nos três canais. Entraram 44 de 83 sequências no Jetix, 52 de 136 no Cartoon e
+47 de 97 no Disney. **Quase tudo que ficou de fora é bloco sem intervalo
+dentro dele** (36, 79 e 47 blocos). São episódios sem cue point e blocos de um
+episódio só: o único intervalo deles é o que vem **depois** de X, quando X já
+acabou. Ali "você está assistindo X" deixaria de ser verdade, então a regra atual
+não usa esse intervalo. Só 3 a 5 blocos por canal ficaram de fora por falta de
+anúncios que somassem 20 s.
+
 ---
 
 ## 5. Como Sincronizar e Executar em Outro Computador

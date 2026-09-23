@@ -2,6 +2,10 @@
 // Roda no cron diário e sob demanda (admin/fábrica). Sempre append-only:
 // nunca toca no bloco que está no ar.
 import { SEGMENT_DURATION } from '@bieltv/db'
+import {
+  PREFIXO_LINEUP, encaixaLineups, posicaoDoConfig, recuaCorte, sequenciaDaCondicao,
+  type InfoMidia, type LinhaGrade, type PecaLineup, type Sequencia,
+} from './lineup-grade'
 
 type Env = { DB: D1Database; MEDIA: R2Bucket }
 
@@ -24,6 +28,8 @@ export interface ScheduleReport {
   // segundos que viraram INTERVALO pra fechar o vão até a âncora (antes disso
   // era programa cortado no meio) — no report pra ninguém descobrir de surpresa
   enchimentoSeg?: number
+  // lineups de três janelas encaixados nesta run (lineup-grade.ts)
+  lineups?: number
 }
 
 const DAY = 86400
@@ -210,17 +216,35 @@ export async function scheduleChannel(
   // de promessas é ignorado por inteiro NESTE canal — rodízio cego, como
   // antes da fase 12 (época de acervo cru). O padrão é fiel (1).
   const modoFiel = (chan.comerciais_fieis ?? 1) !== 0
-  const { results: promRows } = modoFiel
-    ? await env.DB.prepare(
-      `SELECT media_id, status, proposta, condicao FROM media_promises`,
-    ).all<{ media_id: string; status: string; proposta: string | null; condicao: string | null }>()
-    : { results: [] as Array<{ media_id: string; status: string; proposta: string | null; condicao: string | null }> }
+  // Lido também no modo LIVRE, mas lá só serve pra uma coisa: achar os
+  // lineups. Lineup anuncia "depois Y, mais tarde Z" e NUNCA pode cair no
+  // rodízio cego, em modo nenhum; o resto das promessas continua ignorado no
+  // livre, como sempre foi.
+  const { results: promRows } = await env.DB.prepare(
+    `SELECT media_id, status, proposta, condicao FROM media_promises`,
+  ).all<{ media_id: string; status: string; proposta: string | null; condicao: string | null }>()
   const foraDoRodizio = new Set<string>()
+  // lineup de três janelas: peça → sequência de séries que ela promete
+  const lineupSeq = new Map<string, Sequencia>()
+  // Rede de segurança: peça com o prefixo do /lineup-jobs sai do rodízio
+  // mesmo SEM promessa. O runner registra a mídia antes do /done gravar a
+  // condição, e um replan nesse meio-tempo a sortearia como anúncio comum.
+  for (const m of mediaTodas) if (m.id.startsWith(PREFIXO_LINEUP)) foraDoRodizio.add(m.id)
+  for (const p of promRows) {
+    if (p.status !== 'confirmada' || !p.condicao || !p.condicao.includes('lineup_grade')) continue
+    try {
+      const cond = JSON.parse(p.condicao) as Record<string, unknown>
+      if (cond.tipo !== 'lineup_grade') continue
+      foraDoRodizio.add(p.media_id)
+      const seq = sequenciaDaCondicao(cond)
+      if (seq && (!cond.canal || cond.canal === canal)) lineupSeq.set(p.media_id, seq)
+    } catch { /* condição corrompida: fica fora do rodízio pelo prefixo ou por nada */ }
+  }
   const aSeguirDe = new Map<string, string[]>() // series_id alvo → promo ids
   const duranteDe = new Map<string, string[]>() // bumper que ABRE o intervalo ("voltamos já com X") — só no universo de X
   const voltaDe = new Map<string, string[]>() // bumper que FECHA o intervalo ("estamos de volta com X"), colado no retorno
   const promosEvento: Array<{ id: string; ate: number }> = [] // janela: agora → start do evento
-  for (const p of promRows) {
+  for (const p of modoFiel ? promRows : []) {
     try {
       if (p.status === 'ignorar') { foraDoRodizio.add(p.media_id); continue }
       if (p.status === 'pendente') {
@@ -293,6 +317,33 @@ export async function scheduleChannel(
   const porId = new Map(mediaTodas.map((m) => [m.id, m]))
   if (contents.length === 0) return { canal, added: 0, skipped: 'sem conteúdo' }
 
+  // Lineups deste canal que podem entrar na grade. Liga por canal no config
+  // `lineup_grade:<canal>` (posição 'ultimo' ou 'meio'). Sem a chave, nenhum
+  // lineup é encaixado, mas eles continuam fora do rodízio cego. O config só
+  // é lido quando existe peça: canal sem lineup não paga a leitura.
+  const pecasLineup: PecaLineup[] = media
+    .filter((m) => m.duracao_seg > 0 && lineupSeq.has(m.id))
+    .map((m) => ({ id: m.id, duracao_seg: m.duracao_seg, seq: lineupSeq.get(m.id)! }))
+  const posicaoLineup = pecasLineup.length === 0 ? null : posicaoDoConfig(
+    (await env.DB.prepare('SELECT v FROM config WHERE k = ?1').bind(`lineup_grade:${canal}`)
+      .first<{ v: string }>().catch(() => null))?.v,
+  )
+  const lineupAtivo = posicaoLineup != null
+  // Linhas GRAVADAS em volta de um instante, com tipo e série. O LEFT JOIN
+  // mantém a linha de mídia que sumiu do catálogo, e ela vira barreira.
+  const linhasGravadas = async (de: number, ate: number) => (await env.DB.prepare(
+    `SELECT e.media_id, e.start_time_virtual s, e.end_time_virtual f, e.segment_index_start g,
+            m.tipo, json_extract(m.metadata, '$.series_id') sid
+     FROM epg_virtual e LEFT JOIN media_items m ON m.id = e.media_id
+     WHERE e.canal = ?1 AND e.start_time_virtual >= ?2 AND e.start_time_virtual < ?3
+     ORDER BY e.start_time_virtual`,
+  ).bind(canal, de, ate).all<{ media_id: string; s: number; f: number; g: number; tipo: string | null; sid: string | null }>()).results
+  // Quanto da grade gravada o lineup enxerga pra trás. Cobre bloco de X +
+  // bloco de Y + início de Z nas grades de hoje (blocos de 30–60 min).
+  const LINEUP_OLHA_ATRAS = 6 * 3600
+  // Intervalo que começa em menos que isso pode já estar no buffer do player.
+  const LINEUP_MARGEM = 300
+
   const { results: cueRows } = await env.DB.prepare(
     `SELECT media_id, time_seg FROM media_cue_points
      WHERE media_id IN (SELECT media_id FROM media_channels WHERE channel_id = ?1)
@@ -325,7 +376,18 @@ export async function scheduleChannel(
   // Agora, se a gravação falha por qualquer motivo, a grade velha fica de pé.
   // nunca antes do fim do bloco no ar (o que está passando é intocável), nunca
   // depois do que o chamador pediu preservar
-  const cut = rebuild ? Math.max(onAir?.e ?? nowSlot, desde ?? 0) : SEM_CORTE
+  let cut = rebuild ? Math.max(onAir?.e ?? nowSlot, desde ?? 0) : SEM_CORTE
+  // Lineup gravado ANTES do corte prometendo Y/Z que vêm DEPOIS dele: o corte
+  // recua até antes do bloco de X, pra promessa ser refeita junto com o que
+  // ela promete (ver recuaCorte). Só olha quando há lineup neste canal.
+  if (rebuild && pecasLineup.length > 0 && cut > (onAir?.e ?? nowSlot)) {
+    const antes = await linhasGravadas(cut - LINEUP_OLHA_ATRAS, cut)
+    const info = new Map<string, InfoMidia>(antes.map((r) => [r.media_id, { tipo: r.tipo, series_id: r.sid }]))
+    cut = recuaCorte(
+      antes.map((r): LinhaGrade => [canal, r.media_id, r.s, r.f, r.g]), info,
+      (id) => lineupSeq.has(id) || id.startsWith(PREFIXO_LINEUP), cut, onAir?.e ?? nowSlot,
+    )
+  }
 
   const cov = await env.DB.prepare(
     `SELECT MAX(end_time_virtual) m FROM epg_virtual
@@ -940,6 +1002,34 @@ export async function scheduleChannel(
     ultimaSerie = prox.series_id
   }
 
+  // LINEUP: com a grade planejada em mãos, encaixa as peças onde a sequência
+  // X→Y→Z é verdade. Olha também as últimas horas JÁ gravadas: a extensão
+  // diária da grade é um pedaço curto, e sozinho ele quase nunca traz Y e Z
+  // inteiros. Intervalo gravado que recebe a peça é reescrito na mesma faixa
+  // de tempo (DELETE+INSERT no batch), sem mexer em nenhum outro horário.
+  let lineups = 0
+  const podsGravados: Array<{ inicio: number; fim: number; linhas: LinhaGrade[] }> = []
+  if (lineupAtivo && rows.length > 0) {
+    const inicioLote = rows[0][2]
+    const gravadas = await linhasGravadas(inicioLote - LINEUP_OLHA_ATRAS, inicioLote)
+    const info = new Map<string, InfoMidia>()
+    for (const r of gravadas) info.set(r.media_id, { tipo: r.tipo, series_id: r.sid })
+    for (const m of mediaTodas) info.set(m.id, { tipo: m.tipo, series_id: m.series_id })
+    const res = encaixaLineups([
+      ...gravadas.map((r) => ({ linha: [canal, r.media_id, r.s, r.f, r.g] as LinhaGrade, preservada: true })),
+      ...rows.map((linha) => ({ linha, preservada: false })),
+    ], {
+      pecas: pecasLineup,
+      info,
+      removivel: new Set([...ads, ...vins].map((m) => m.id)),
+      posicao: posicaoLineup!,
+      editavelDesde: now + LINEUP_MARGEM,
+    })
+    rows.splice(0, rows.length, ...res.linhas.filter((x) => !x.preservada).map((x) => x.linha))
+    podsGravados.push(...res.pods.filter((p) => p.preservado))
+    lineups = res.encaixes.length
+  }
+
   // REBUILD que não produziu nada NÃO apaga. Grade velha, mesmo desatualizada,
   // é infinitamente melhor que canal fora do ar — e "zero linhas" aqui quase
   // sempre é sintoma (nenhuma mídia `ready`, pool todo excluído por diretriz),
@@ -961,6 +1051,16 @@ export async function scheduleChannel(
         .bind(canal, cut),
     )
   }
+  for (const pod of podsGravados) {
+    escritas.push(
+      env.DB.prepare('DELETE FROM epg_virtual WHERE canal = ?1 AND start_time_virtual >= ?2 AND start_time_virtual < ?3')
+        .bind(canal, pod.inicio, pod.fim),
+      env.DB.prepare(
+        `INSERT INTO epg_virtual (canal, media_id, start_time_virtual, end_time_virtual, segment_index_start) VALUES ${
+          pod.linhas.map((r) => `('${r[0]}','${r[1]}',${r[2]},${r[3]},${r[4]})`).join(',')}`,
+      ),
+    )
+  }
   for (let i = 0; i < rows.length; i += 80) {
     const values = rows
       .slice(i, i + 80)
@@ -979,6 +1079,7 @@ export async function scheduleChannel(
     until: t,
     ...(ancorasPerdidas > 0 ? { ancorasPerdidas } : {}),
     ...(enchimentoSeg > 0 ? { enchimentoSeg } : {}),
+    ...(lineups > 0 ? { lineups } : {}),
   }
 }
 

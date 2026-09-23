@@ -23,8 +23,8 @@
     "monitora:fila": "bash scripts/monitora-fila.sh",
     "verify:admin": "node scripts/verify-admin.mjs",
     "verify:canais": "node scripts/verify-canais.mjs",
-    "verify:blocos": "node scripts/verify-blocos.mjs",
-    "verify:ancoras": "node scripts/verify-ancoras.mjs",
+    "verify:blocos": "node --import ./scripts/_ts-registra.mjs scripts/verify-blocos.mjs",
+    "verify:ancoras": "node --import ./scripts/_ts-registra.mjs scripts/verify-ancoras.mjs",
     "verify:variacoes": "node --import ./scripts/_ts-registra.mjs scripts/verify-fabrica-variacoes.mjs",
     "verify:guia": "node scripts/verify-guia.mjs",
     "verify:diretor": "node scripts/verify-diretor.mjs",
@@ -42,7 +42,8 @@
     "verify:playlist": "node scripts/verify-playlist.mjs",
     "verify:playlist:modo": "node --import ./scripts/_ts-registra.mjs scripts/verify-playlist-modo.mjs",
     "verify:playback": "node scripts/verify-playback.mjs",
-    "verify:replan": "node scripts/verify-replan-atomico.mjs"
+    "verify:replan": "node --import ./scripts/_ts-registra.mjs scripts/verify-replan-atomico.mjs",
+    "verify:lineup": "node --import ./scripts/_ts-registra.mjs scripts/verify-lineup-grade.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"
