@@ -17,6 +17,9 @@ O **Construtor Modular de Lineup** é o motor responsável por gerar vinhetas e 
 - **Duração máxima de 20,0 segundos**. O Disney Channel mira 19,0 s por
   segurança, impedindo que o segmentador acrescente outro bloco de 10 s.
 - **Três Janelas / Telas Simultâneas**: exibem o programa atual e os dois seguintes (*"Você está assistindo {Série 1}, a seguir {Série 2}, e depois {Série 3}"*).
+- **Cenas aceleradas em 1,5x** nas três janelas, como nas chamadas da época
+  (decisão do Gabriel em 2026-09-23, depois de ver os exemplos). O valor fica
+  em `visual.velocidade_janelas` no config de cada canal; sem o campo, 1x.
 - **Trilha Sonora Oficial da Emissora**: iniciada no segundo 10 e atenuada sob a locução com mixagem sidechain balanceada.
 - **Narradores Oficiais por Canal**: timbres selecionados com dicção jovem, alta empolgação e sotaque neutro/paulistano da capital.
 

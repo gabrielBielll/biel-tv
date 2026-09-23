@@ -100,6 +100,7 @@
   },
   "visual": {
     "duracao_seg": 20.0,
+    "velocidade_janelas": 1.5,
     "molde_path": "assets/comerciais/jetix/moldes/image-comercial-jtx-2.png",
     "colorkey": "0x000000:0.05:0.02",
     "encerramento": {

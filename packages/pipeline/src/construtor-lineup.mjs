@@ -282,12 +282,21 @@ export async function montarLineup3Janelas({
     throw new Error(`Fade de áudio inválido: início ${config.audio.fade_out_st}, duração ${config.audio.fade_out_d}`)
   }
 
+  // Cenas das janelas aceleradas, como nas chamadas da época. Pedido do
+  // Gabriel em 23/09/2026, depois de ver os exemplos: 1,5x. Fica no config
+  // de cada canal. Sem o campo, as cenas rodam em 1x, como era antes.
+  const velJanelas = Number(config.visual.velocidade_janelas ?? 1)
+  if (!Number.isFinite(velJanelas) || velJanelas < 0.5 || velJanelas > 4) {
+    throw new Error(`velocidade_janelas fora do intervalo 0,5–4: ${config.visual.velocidade_janelas}`)
+  }
+  const acelera = velJanelas === 1 ? '' : `setpts=PTS/${velJanelas},`
+
   // 3. Monta o filtro complexo do FFmpeg
   const filtrosBase = [
     `color=c=black:s=1280x720:d=${dur}:r=30[base]`,
-    `[0:v]fps=30,scale=${j0.scale}:flags=lanczos,crop=${j0.crop}[v0]`,
-    `[1:v]fps=30,scale=${j1.scale}:flags=lanczos,crop=${j1.crop}[v1]`,
-    `[2:v]fps=30,scale=${j2.scale}:flags=lanczos,crop=${j2.crop}[v2]`,
+    `[0:v]${acelera}fps=30,scale=${j0.scale}:flags=lanczos,crop=${j0.crop}[v0]`,
+    `[1:v]${acelera}fps=30,scale=${j1.scale}:flags=lanczos,crop=${j1.crop}[v1]`,
+    `[2:v]${acelera}fps=30,scale=${j2.scale}:flags=lanczos,crop=${j2.crop}[v2]`,
     `[3:v]scale=1280:720:flags=lanczos,format=rgba,colorkey=${config.visual.colorkey}[tmpl]`,
     `[base][v0]overlay=${j0.overlay}[b1]`,
     `[b1][v1]overlay=${j1.overlay}[b2]`,
@@ -329,7 +338,8 @@ export async function montarLineup3Janelas({
   // Renders do Jetix medidos: 2 travados em 6 no original, 4 em 20 só com o
   // ajuste 1, 14 em 20 só com o 2, e 0 em 20 com os dois. O vídeo sai idêntico
   // ao do motor antigo quando o antigo termina (SSIM 1,000; PSNR inf).
-  const tJanelas = encerramento ? corpoDur : dur
+  // em tempo de ENTRADA: acelerada, a janela consome velJanelas × mais fonte
+  const tJanelas = (encerramento ? corpoDur : dur) * velJanelas
   const encInicio = encerramento ? Number(encerramento.inicio_seg) : 0
   const encAudioInicio = Math.max(0, encInicio - audioCrossfade)
   const entradasEncerramento = encerramento ? [

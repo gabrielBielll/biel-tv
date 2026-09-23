@@ -89,6 +89,7 @@
   },
   "visual": {
     "duracao_seg": 19.0,
+    "velocidade_janelas": 1.5,
     "duration_policy": "hard_max_20s_target_19s",
     "molde_path": "assets/comerciais/disney_channel/moldes/image-comercial-disney-3janelas.png",
     "colorkey": "0x000000:0.16:0.14",
