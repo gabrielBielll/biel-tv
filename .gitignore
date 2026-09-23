@@ -1,6 +1,11 @@
 # my-tv = versão anterior (Python/Render), tem repo git próprio — mantida só como referência
 my-tv/
 
+# Sem barra também: `node_modules/` casa DIRETÓRIO, não casa SYMLINK chamado
+# node_modules — e foi assim que três links absolutos do Termux entraram no
+# commit 9c14900 em 23/09/2026 e foram parar na main (quebram clone e o
+# `pnpm install` da fábrica, que roda da main).
+node_modules
 node_modules/
 dist/
 .env
