@@ -28,7 +28,7 @@ export const NOMES = {
   cory_na_casa_branca: 'Cory na Casa Branca', danny_phantom: 'Danny Phantom', familia_dinossauros: 'Família Dinossauros',
   jacke_long_o_dragao_ocidental: 'Jake Long, o Dragão Ocidental', os_feiticeiros_de_waverly_place: 'Os Feiticeiros de Waverly Place',
   padrinhos_magicos: 'Os Padrinhos Mágicos', phineas_e_ferb: 'Phineas e Ferb', timao_e_pumba: 'Timão e Pumba',
-  yin_yang_yo: 'Yin Yang Yo',
+  yin_yang_yo: 'Yin Yang Yo', o_maravilhoso_mundo_de_disney: 'O Maravilhoso Mundo de Disney',
   kid_vs_kat: 'Kid versus Kat', power_rangers_forca_animal: 'Power Rangers Força Animal', power_rangers_rpm: 'Power Rangers RPM',
   power_rangers_furia_da_selva: 'Power Rangers Fúria da Selva', power_rangers_spd: 'Power Rangers S.P.D.',
   power_rangers_ultravelocidade: 'Power Rangers Operação Ultravelocidade', pucca: 'Pucca',
@@ -62,6 +62,7 @@ export const COMENTARIOS = {
   jacke_long_o_dragao_ocidental: 'Um dragão protegendo a cidade',
   phineas_e_ferb: 'Cada dia de férias, uma nova invenção',
   timao_e_pumba: 'Hakuna Matata e muita aventura',
+  o_maravilhoso_mundo_de_disney: 'O filme de domingo',
 }
 
 export const nomeFalado = (s) => NOMES[s] ?? s.replaceAll('_', ' ')

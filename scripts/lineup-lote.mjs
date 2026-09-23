@@ -75,7 +75,7 @@ async function garanteAmostra(serie) {
   if (existsSync(dest)) return dest
   const [ps] = await d1("SELECT video_key FROM program_samples WHERE series_id = ? AND COALESCE(video_key,'') <> '' LIMIT 1", [serie])
   if (ps) { await baixaR2(ps.video_key, dest); log(`  amostra ${serie}: program_samples`); return dest }
-  const [ep] = await d1("SELECT MIN(id) id FROM media_items WHERE tipo='episodio' AND status='ready' AND json_extract(metadata,'$.series_id') = ?", [serie])
+  const [ep] = await d1("SELECT MIN(id) id FROM media_items WHERE tipo IN ('episodio','filme') AND status='ready' AND json_extract(metadata,'$.series_id') = ?", [serie])
   if (!ep?.id) throw new Error(`série ${serie} sem amostra nem episódio pronto`)
   const lista = join(CACHE, 'segs', `${serie}.txt`)
   const linhas = []

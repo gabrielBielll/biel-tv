@@ -476,7 +476,7 @@ async function resolveLineupSequenciaPayload(env: Bindings, job: BuildJobRow) {
     }
     const ep = await env.DB.prepare(
       `SELECT MIN(id) id FROM media_items
-       WHERE tipo = 'episodio' AND status = 'ready' AND json_extract(metadata, '$.series_id') = ?1`,
+       WHERE tipo IN ('episodio', 'filme') AND status = 'ready' AND json_extract(metadata, '$.series_id') = ?1`,
     ).bind(series_id).first<{ id: string | null }>()
     if (!ep?.id) throw new Error(`série ${series_id} sem amostra nem episódio pronto`)
     amostras.push({ series_id, episodio: ep.id })
