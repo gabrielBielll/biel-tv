@@ -27,6 +27,9 @@ export interface ScheduleReport {
 }
 
 const DAY = 86400
+/** Sentinela do `cut`: fora do rebuild nada é descartado, então o filtro
+ *  `start_time_virtual < SEM_CORTE` é sempre verdadeiro e some do raciocínio. */
+const SEM_CORTE = Number.MAX_SAFE_INTEGER
 // Quanto da grade PASSADA guardar (catch-up/playback). O /vod toca por media_id
 // independente disto; este teto é a profundidade do HISTÓRICO no guia do /epg.
 const EPG_RETENTION = 7 * DAY
@@ -302,19 +305,28 @@ export async function scheduleChannel(
      ORDER BY start_time_virtual DESC LIMIT 1`,
   ).bind(canal, now).first<{ e: number }>()
 
-  if (rebuild) {
-    // replaneja o futuro preservando o bloco no ar
-    const cut = onAir?.e ?? nowSlot
-    await env.DB.prepare('DELETE FROM epg_virtual WHERE canal = ?1 AND start_time_virtual >= ?2')
-      .bind(canal, cut).run()
-  }
+  // REBUILD replaneja o futuro preservando o bloco no ar. O DELETE que faz isso
+  // NÃO sai daqui: ele viaja junto da gravação, num batch atômico (ver o fim da
+  // função). Até lá o planejamento precisa enxergar o banco COMO SE o futuro já
+  // tivesse sido apagado — é esse o papel do `cut` nas leituras abaixo.
+  //
+  // Por que mudou (23/09/2026): o DELETE ia sozinho, aqui em cima. Quando a cota
+  // diária de escrita do D1 estourava NO MEIO — entre apagar e reescrever — o
+  // canal ficava com o bloco no ar e mais nada: grade vazia, 404 no /live. Foi
+  // o que quase tirou o Disney do ar quando 352 âncoras entraram de uma vez.
+  // Agora, se a gravação falha por qualquer motivo, a grade velha fica de pé.
+  const cut = rebuild ? (onAir?.e ?? nowSlot) : SEM_CORTE
 
   const cov = await env.DB.prepare(
-    'SELECT MAX(end_time_virtual) m FROM epg_virtual WHERE canal = ?1 AND end_time_virtual > ?2',
-  ).bind(canal, now).first<{ m: number | null }>()
+    `SELECT MAX(end_time_virtual) m FROM epg_virtual
+     WHERE canal = ?1 AND end_time_virtual > ?2 AND start_time_virtual < ?3`,
+  ).bind(canal, now, cut).first<{ m: number | null }>()
 
   let t = cov?.m ?? onAir?.e ?? nowSlot - 600 // canal novo entra "no ar" há 10 min
   const target = now + hours * 3600
+  // Saída antecipada: a grade já cobre o horizonte. Antes isto era uma armadilha
+  // no rebuild — o DELETE já tinha rodado lá em cima e a função voltava
+  // `added: 0` com o canal zerado. Agora nada foi apagado ainda.
   if (t >= target) return { canal, added: 0, until: t }
 
   // Progressão persistente (pedido do Gabriel, ago/2026): o last_played_at só é
@@ -332,14 +344,15 @@ export async function scheduleChannel(
   // índice também, então o que importa é quantas ele PERCORRE, não se usa índice.
   // O try/catch cobre banco sem a migration 0028: cai na consulta sem dica.
   const sqlFuturo = `SELECT media_id id, MAX(start_time_virtual) t FROM epg_virtual
-     %IDX% WHERE start_time_virtual > ?1 GROUP BY media_id`
+     %IDX% WHERE start_time_virtual > ?1
+       AND NOT (canal = ?2 AND start_time_virtual >= ?3) GROUP BY media_id`
   let futRows: Array<{ id: string; t: number }>
   try {
     futRows = (await env.DB.prepare(sqlFuturo.replace('%IDX%', 'INDEXED BY idx_epg_start'))
-      .bind(now).all<{ id: string; t: number }>()).results
+      .bind(now, canal, cut).all<{ id: string; t: number }>()).results
   } catch {
     futRows = (await env.DB.prepare(sqlFuturo.replace('%IDX%', ''))
-      .bind(now).all<{ id: string; t: number }>()).results
+      .bind(now, canal, cut).all<{ id: string; t: number }>()).results
   }
   const futuroDe = new Map(futRows.map((r) => [r.id, r.t]))
   for (const m of contents) {
@@ -351,8 +364,8 @@ export async function scheduleChannel(
   // da última linha e agora, as ocorrências de âncora dentro do buraco avançam o
   // cursor da série — igual TV de verdade, que não pausa quando você perde o sinal.
   const ult = await env.DB.prepare(
-    'SELECT MAX(end_time_virtual) g FROM epg_virtual WHERE canal = ?1',
-  ).bind(canal).first<{ g: number | null }>()
+    'SELECT MAX(end_time_virtual) g FROM epg_virtual WHERE canal = ?1 AND start_time_virtual < ?2',
+  ).bind(canal, cut).first<{ g: number | null }>()
   const gapStart = ult?.g ?? t
   const perdidasNoGap = new Map<string, number>() // series_id → episódios "que passaram"
 
@@ -415,7 +428,7 @@ export async function scheduleChannel(
        WHERE e.canal = ?1 AND e.start_time_virtual > ?2 AND e.start_time_virtual < ?3
          AND m.tipo IN ('episodio','filme')
        ORDER BY e.start_time_virtual`,
-    ).bind(canal, t - 2 * DAY, target).all<{ id: string; t: number; sid: string | null }>()
+    ).bind(canal, t - 2 * DAY, Math.min(target, cut)).all<{ id: string; t: number; sid: string | null }>()
     for (const r of hoje) marcaExibido(r.sid, r.id, r.t)
   }
 
@@ -901,16 +914,37 @@ export async function scheduleChannel(
     ultimaSerie = prox.series_id
   }
 
-  // grava em lotes (ids são slugs internos validados — interpolação segura)
+  // REBUILD que não produziu nada NÃO apaga. Grade velha, mesmo desatualizada,
+  // é infinitamente melhor que canal fora do ar — e "zero linhas" aqui quase
+  // sempre é sintoma (nenhuma mídia `ready`, pool todo excluído por diretriz),
+  // não um pedido legítimo de esvaziar o canal.
+  if (rebuild && rows.length === 0) {
+    return { canal, added: 0, skipped: 'rebuild sem linhas: grade anterior mantida' }
+  }
+
+  // Grava em lotes (ids são slugs internos validados — interpolação segura).
+  // O DELETE do rebuild entra NESTE batch, na frente dos inserts: `batch()` do
+  // D1 roda tudo numa transação e desfaz o conjunto se qualquer statement
+  // falhar. Ou a grade nova entra inteira, ou a antiga continua no ar — nunca
+  // o estado do meio, que é o que esvaziava o canal quando a cota estourava
+  // entre o apagar e o reescrever.
+  const escritas: ReturnType<typeof env.DB.prepare>[] = []
+  if (rebuild) {
+    escritas.push(
+      env.DB.prepare('DELETE FROM epg_virtual WHERE canal = ?1 AND start_time_virtual >= ?2')
+        .bind(canal, cut),
+    )
+  }
   for (let i = 0; i < rows.length; i += 80) {
     const values = rows
       .slice(i, i + 80)
       .map((r) => `('${r[0]}','${r[1]}',${r[2]},${r[3]},${r[4]})`)
       .join(',')
-    await env.DB.prepare(
+    escritas.push(env.DB.prepare(
       `INSERT INTO epg_virtual (canal, media_id, start_time_virtual, end_time_virtual, segment_index_start) VALUES ${values}`,
-    ).run()
+    ))
   }
+  if (escritas.length > 0) await env.DB.batch(escritas)
   // (o carimbo de last_played_at saiu daqui de propósito: planejar ≠ exibir.
   //  Quem grava é o commitAired, quando o relógio de fato passa pela linha.)
   return {
@@ -920,6 +954,56 @@ export async function scheduleChannel(
     ...(ancorasPerdidas > 0 ? { ancorasPerdidas } : {}),
     ...(enchimentoSeg > 0 ? { enchimentoSeg } : {}),
   }
+}
+
+/** Janela do debounce de replan. Escolhida pela cadência medida em 23/09/2026:
+ *  um script criando âncoras pelo endpoint singular manda ~6 por segundo, então
+ *  4s cobrem a rajada inteira com folga sem deixar o ajuste manual parecendo
+ *  travado. Custo de errar pra mais: a âncora demora mais pra valer na grade.
+ *  Custo de errar pra menos: volta a ter replan no meio da rajada. */
+const DEBOUNCE_REPLAN_MS = 4000
+
+/** Prefixo da marca de "este canal precisa de replan" na tabela `config`. */
+const CHAVE_REPLAN = 'replan_pedido:'
+
+/**
+ * Pede um replanejamento do canal — COALESCIDO.
+ *
+ * O problema que isto resolve (medido em 23/09/2026): `POST /slots` replanejava
+ * o canal a cada âncora criada. Aplicar a grade-alvo são ~350 chamadas; a ~13
+ * mil linhas por replan, as 9 primeiras já comeram o teto diário de 100 mil do
+ * D1 e as outras ~340 falharam. Existe `/slots/lote`, que replaneja uma vez por
+ * canal, mas quem chama o endpoint singular — script, outra sessão, o próprio
+ * doc da memória — não tem como saber disso. Endpoint precisa ser seguro por
+ * construção, não por disciplina de quem chama.
+ *
+ * Como funciona: cada chamada carimba uma marca única em `config` e espera a
+ * janela. Quem ainda vê a PRÓPRIA marca é o último da rajada e replaneja; os
+ * outros cedem sem escrever nada. 350 chamadas → 1 replan por canal.
+ *
+ * A marca só é apagada depois do replan dar certo, então rajada interrompida
+ * (waitUntil morto, cota estourada, Worker reciclado) deixa o pedido de pé e o
+ * cron termina o serviço — ver a varredura em `runScheduler`.
+ */
+export async function pedeReplan(
+  env: Env,
+  canal: string,
+  depois?: () => Promise<unknown>,
+): Promise<'replanejou' | 'cedeu'> {
+  const k = CHAVE_REPLAN + canal
+  const marca = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  await env.DB.prepare('INSERT OR REPLACE INTO config (k, v) VALUES (?1, ?2)').bind(k, marca).run()
+
+  await new Promise((r) => setTimeout(r, DEBOUNCE_REPLAN_MS))
+
+  const atual = await env.DB.prepare('SELECT v FROM config WHERE k = ?1').bind(k).first<{ v: string }>()
+  if (atual?.v !== marca) return 'cedeu' // chegou pedido mais novo: ele que pague
+
+  await scheduleChannel(env, canal, 48, true)
+  // só agora o pedido some — se o replan explodir, a marca fica e o cron cobre
+  await env.DB.prepare('DELETE FROM config WHERE k = ?1 AND v = ?2').bind(k, marca).run()
+  if (depois) await depois().catch(() => { /* best-effort: o cron refaz */ })
+  return 'replanejou'
 }
 
 export async function runScheduler(
@@ -932,13 +1016,31 @@ export async function runScheduler(
   // exibição real primeiro: carimba o que o relógio já cobriu ANTES de planejar
   // (best-effort — manter a TV no ar vem antes do carimbo)
   try { await commitAired(env) } catch { /* próximo run recupera */ }
+
+  // Rede de segurança do debounce (`pedeReplan`): marca que sobrou é rajada que
+  // não chegou ao fim — waitUntil morto, cota estourada, Worker reciclado. Aqui
+  // o canal é replanejado de verdade, uma vez, em vez de a âncora nova ficar
+  // valendo só no papel. Best-effort: sem a leitura, o cron segue normal.
+  const pendentes = new Map<string, string>()
+  try {
+    const { results } = await env.DB.prepare(
+      "SELECT k, v FROM config WHERE k LIKE 'replan_pedido:%'",
+    ).all<{ k: string; v: string }>()
+    for (const r of results) pendentes.set(r.k.slice(CHAVE_REPLAN.length), r.v)
+  } catch { /* segue sem a varredura */ }
+
   const reports: ScheduleReport[] = []
   for (const c of canais) {
     // Isola cada canal: um lento/quebrado não pode abortar o loop e deixar os
     // seguintes sem extensão (era assim que jetix/disney passavam fome quando o
     // orçamento do cron estourava no meio e a grade deles zerava).
     try {
-      reports.push(await scheduleChannel(env, c.id, opts.hours ?? 48, opts.rebuild ?? false))
+      const pendente = pendentes.get(c.id)
+      reports.push(await scheduleChannel(env, c.id, opts.hours ?? 48, opts.rebuild || pendente != null))
+      if (pendente != null) {
+        await env.DB.prepare('DELETE FROM config WHERE k = ?1 AND v = ?2')
+          .bind(CHAVE_REPLAN + c.id, pendente).run()
+      }
     } catch (e) {
       reports.push({ canal: c.id, added: 0, skipped: String(e) })
     }

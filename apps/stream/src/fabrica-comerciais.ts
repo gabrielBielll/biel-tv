@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { dispatchFabrica } from './fabrica'
-import { scheduleChannel } from './scheduler'
+import { pedeReplan, scheduleChannel } from './scheduler'
 import { sintetizaClip, sintetizaBytes, TtsIndisponivel, type VozConfig } from './tts'
 
 type Bindings = {
@@ -554,11 +554,18 @@ fabricaComerciais.post('/slots', async (c) => {
     `INSERT INTO channel_slots (id, canal, series_id, dias, hora, episodios, reprise, bloco)
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
   ).bind(id, v.canal, v.seriesId, JSON.stringify(v.dias), v.hora, v.episodios, v.reprise, v.bloco).run()
-  // replaneja a grade do canal pra âncora já valer (append-only, preserva o no ar)
-  await scheduleChannel(c.env, v.canal, 48, true)
-  // âncora nova pode merecer comercial (e aposentar um antigo) — em background
-  c.executionCtx.waitUntil(reconciliaComerciaisGrade(c.env).catch(() => { /* cron cobre */ }))
-  return c.json({ ok: true, id }, 201)
+  // Replan COALESCIDO (`pedeReplan`), não mais um por chamada. Aplicar a
+  // grade-alvo são ~350 chamadas aqui; a ~13 mil linhas por replan isso dava
+  // 4,5 MILHÕES de linhas e estourava o teto diário do D1 nas 9 primeiras —
+  // foi o que aconteceu em 23/09/2026. Agora a rajada inteira vira 1 replan por
+  // canal, ~4s depois da última âncora. O `/slots/lote` continua sendo o
+  // caminho certo (replan imediato, resposta já com a grade pronta); este aqui
+  // passou a ser só BARATO, em vez de proibido.
+  c.executionCtx.waitUntil(
+    pedeReplan(c.env, v.canal, () => reconciliaComerciaisGrade(c.env))
+      .catch(() => { /* marca fica de pé: o cron replaneja */ }),
+  )
+  return c.json({ ok: true, id, replan: 'coalescido' }, 201)
 })
 
 // LOTE de faixas: cria e apaga N âncoras replanejando cada canal UMA vez.
@@ -1065,10 +1072,12 @@ fabricaComerciais.delete('/slots/:id', async (c) => {
     .bind(c.req.param('id')).first<{ canal: string }>()
   if (!row) return c.json({ error: 'âncora não encontrada' }, 404)
   await c.env.DB.prepare('DELETE FROM channel_slots WHERE id = ?1').bind(c.req.param('id')).run()
-  await scheduleChannel(c.env, row.canal, 48, true) // remove o slot da grade
-  // o comercial que anunciava esta âncora virou mentira — recolher em background
-  c.executionCtx.waitUntil(reconciliaComerciaisGrade(c.env).catch(() => { /* cron cobre */ }))
-  return c.json({ ok: true })
+  // mesmo motivo do criar: apagar 20 âncoras em sequência custava 20 replans
+  c.executionCtx.waitUntil(
+    pedeReplan(c.env, row.canal, () => reconciliaComerciaisGrade(c.env))
+      .catch(() => { /* marca fica de pé: o cron replaneja */ }),
+  )
+  return c.json({ ok: true, replan: 'coalescido' })
 })
 
 // Gera o comercial de horário (bloco_horario, genérico) que anuncia este slot.

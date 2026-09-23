@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { runScheduler, scheduleChannel, reconcileAndRepair } from './scheduler'
+import { pedeReplan, runScheduler, scheduleChannel, reconcileAndRepair } from './scheduler'
 import { chatDiretor, estadoDiretor, type ChatMsg } from './diretor'
 import { uploads } from './uploads'
 import { dispatchFabrica } from './fabrica'
@@ -816,8 +816,14 @@ admin.post('/media/:id/tipo', async (c) => {
   const { results: chs } = await c.env.DB.prepare(
     'SELECT DISTINCT channel_id ch FROM media_channels WHERE media_id = ?1',
   ).bind(id).all<{ ch: string }>()
-  for (const r2 of chs) await scheduleChannel(c.env, r2.ch, 48, true)
-  return c.json({ ok: true, canais_replanejados: chs.map((x) => x.ch) })
+  // replan COALESCIDO (ver `pedeReplan`): reclassificar uma leva de peças uma a
+  // uma custava um replan por peça — o padrão que estourou a cota em 21, 22 e
+  // 23/09/2026. As linhas do EPG dessa mídia já saíram acima, então ela não
+  // entra no ar nem durante a janela do debounce.
+  for (const r2 of chs) {
+    c.executionCtx.waitUntil(pedeReplan(c.env, r2.ch).catch(() => { /* cron cobre */ }))
+  }
+  return c.json({ ok: true, canais_replanejados: chs.map((x) => x.ch), replan: 'coalescido' })
 })
 
 // Muda o status de N mídias e replaneja cada canal afetado UMA vez — mesmo
@@ -971,10 +977,13 @@ admin.delete('/media/:id', async (c) => {
     c.env.DB.prepare('DELETE FROM media_items WHERE id = ?1').bind(id),
   ])
 
-  // o pool desses canais mudou — replaneja (append-only, bloco no ar intacto)
-  for (const r of canais) await scheduleChannel(c.env, r.ch, 48, true)
+  // o pool desses canais mudou — replan COALESCIDO (ver `pedeReplan`), porque
+  // apagar uma leva de mídias uma a uma custava um replan por mídia
+  for (const r of canais) {
+    c.executionCtx.waitUntil(pedeReplan(c.env, r.ch).catch(() => { /* cron cobre */ }))
+  }
 
-  return c.json({ ok: true, segmentos_apagados: segmentosApagados, canais_replanejados: canais.map((r) => r.ch) })
+  return c.json({ ok: true, segmentos_apagados: segmentosApagados, canais_replanejados: canais.map((r) => r.ch), replan: 'coalescido' })
 })
 
 // Troca os canais de UMA mídia — e conserta a grade na hora: canal REMOVIDO
@@ -1124,8 +1133,8 @@ admin.post('/diretor/diretriz/:id/cancelar', async (c) => {
   const d = await c.env.DB.prepare("UPDATE directives SET status='cancelada' WHERE id = ?1 AND status='ativa' RETURNING canal")
     .bind(id).first<{ canal: string }>()
   if (!d) return c.json({ error: 'diretriz não encontrada' }, 404)
-  await scheduleChannel(c.env, d.canal, 48, true)
-  return c.json({ ok: true })
+  c.executionCtx.waitUntil(pedeReplan(c.env, d.canal).catch(() => { /* cron cobre */ }))
+  return c.json({ ok: true, replan: 'coalescido' })
 })
 
 admin.post('/diretor/evento/:id/cancelar', async (c) => {
@@ -1133,8 +1142,8 @@ admin.post('/diretor/evento/:id/cancelar', async (c) => {
   const e = await c.env.DB.prepare("UPDATE channel_events SET status='cancelado' WHERE id = ?1 AND status='agendado' RETURNING canal")
     .bind(id).first<{ canal: string }>()
   if (!e) return c.json({ error: 'evento não encontrado' }, 404)
-  await scheduleChannel(c.env, e.canal, 48, true)
-  return c.json({ ok: true })
+  c.executionCtx.waitUntil(pedeReplan(c.env, e.canal).catch(() => { /* cron cobre */ }))
+  return c.json({ ok: true, replan: 'coalescido' })
 })
 
 // ── config (inclui a flag do Modo God) ─────────────────────────────────────
