@@ -26,6 +26,13 @@ export interface Proposta {
   // sem ninguém editar nada (auditoria de 21/09: `pnpm verify:comerciais-horario`).
   hora?: string | null // 'HH:MM'
   dias?: number[] | null // ISO 1=seg … 7=dom
+  // QUANDO a peça 'durante' toca no intervalo: 'saida' ABRE ("voltamos já com
+  // X"), 'volta' FECHA colado no retorno ("estamos de volta com X"), 'ambos'
+  // entra nos dois pools. O scheduler já separava os três (scheduler.ts, pools
+  // `duranteDe` e `voltaDe`), mas `/decidir` não persistia o campo — então TODA
+  // peça caía no default 'saida' e o "está de volta" abria o intervalo em vez de
+  // fechá-lo. Mesmo furo que hora/dias tinham.
+  momento?: 'saida' | 'volta' | 'ambos' | null
 }
 
 const SCHEMA_GEMINI = {

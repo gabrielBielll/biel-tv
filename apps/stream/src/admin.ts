@@ -510,33 +510,34 @@ admin.post('/promessas/:id/extrair', async (c) => {
   return c.json({ ok: true })
 })
 
-admin.post('/promessas/:id/decidir', async (c) => {
-  const b = await c.req.json<{ status?: string; condicao?: Proposta }>().catch(() => ({} as { status?: string; condicao?: Proposta }))
-  const id = c.req.param('id')
-  const status = String(b.status ?? '')
-  if (!['confirmada', 'generico', 'ignorar', 'pendente'].includes(status)) {
-    return c.json({ error: 'status inválido' }, 400)
-  }
-  let condicao: string | null = null
-  if (status === 'confirmada') {
-    const cd = b.condicao
-    if (!cd || !['a_seguir', 'durante', 'bloco_horario', 'evento'].includes(cd.tipo)) {
-      return c.json({ error: 'confirmar exige a condição (tipo da promessa)' }, 400)
+// Valida UMA decisão de promessa e devolve o `condicao` serializado (ou null,
+// quando o status não é 'confirmada'), ou a mensagem de erro.
+//
+// Extraída do handler singular pra que o LOTE valide TUDO antes de escrever
+// QUALQUER coisa: metade das promessas ligadas é pior que nenhuma, porque a
+// peça sem condição vira enchimento genérico e toca fora do contexto.
+async function validaDecisao(
+  db: D1Database, status: string, cd: Proposta | undefined,
+): Promise<{ erro: string } | { condicao: string | null }> {
+  if (!['confirmada', 'generico', 'ignorar', 'pendente'].includes(status)) return { erro: 'status inválido' }
+  if (status !== 'confirmada') return { condicao: null }
+  if (!cd || !['a_seguir', 'durante', 'bloco_horario', 'evento'].includes(cd.tipo)) {
+      return { erro: 'confirmar exige a condição (tipo da promessa)' }
     }
     if (cd.tipo === 'a_seguir' || cd.tipo === 'durante') {
       // sem série alvo não há como cumprir — melhor "ignorar" que prometer no escuro
       if (!cd.series_id || !SLUG.test(cd.series_id)) {
-        return c.json({ error: `promessa "${cd.tipo === 'durante' ? 'você está vendo' : 'a seguir'}" precisa de uma série alvo válida` }, 400)
+        return { erro: `promessa "${cd.tipo === 'durante' ? 'você está vendo' : 'a seguir'}" precisa de uma série alvo válida` }
       }
       // o alvo precisa ser série de CONTEÚDO — "a seguir" toca colado num
       // episódio/filme; série de comerciais nunca aparece como programa
-      const existe = await c.env.DB.prepare(
+      const existe = await db.prepare(
         `SELECT 1 FROM media_items
          WHERE json_extract(metadata,'$.series_id') = ?1 AND status = 'ready'
            AND tipo IN ('episodio','filme') LIMIT 1`,
       ).bind(cd.series_id).first()
       if (!existe) {
-        return c.json({ error: `"${cd.series_id}" não tem episódio/filme pronto — agrupe os episódios da série alvo no catálogo primeiro` }, 400)
+        return { erro: `"${cd.series_id}" não tem episódio/filme pronto — agrupe os episódios da série alvo no catálogo primeiro` }
       }
     }
     // hora/dias são o CORPO da promessa de horário — sem eles a condição vale
@@ -544,31 +545,95 @@ admin.post('/promessas/:id/decidir', async (c) => {
     let hora: string | null = null
     if (cd.hora != null && String(cd.hora).trim() !== '') {
       const h = String(cd.hora).trim()
-      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(h)) return c.json({ error: 'hora deve ser HH:MM' }, 400)
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(h)) return { erro: 'hora deve ser HH:MM' }
       hora = h
     }
     let dias: number[] | null = null
     if (cd.dias != null) {
       if (!Array.isArray(cd.dias) || !cd.dias.every((n) => Number.isInteger(n) && n >= 1 && n <= 7)) {
-        return c.json({ error: 'dias deve ser lista ISO 1..7 (1=seg, 7=dom)' }, 400)
+        return { erro: 'dias deve ser lista ISO 1..7 (1=seg, 7=dom)' }
       }
       dias = [...new Set(cd.dias as number[])].sort()
     }
-    condicao = JSON.stringify({
-      tipo: cd.tipo, series_id: cd.series_id ?? null, descricao: cd.descricao ?? '', hora, dias,
-    })
+    // `momento` só faz sentido em 'durante'; nos outros tipos fica null pra não
+    // sugerir comportamento que o scheduler não lê.
+    let momento: 'saida' | 'volta' | 'ambos' | null = null
+    if (cd.tipo === 'durante' && cd.momento != null) {
+      if (!['saida', 'volta', 'ambos'].includes(String(cd.momento))) {
+        return { erro: "momento deve ser 'saida', 'volta' ou 'ambos'" }
+      }
+      momento = cd.momento as 'saida' | 'volta' | 'ambos'
+    }
+  return {
+    condicao: JSON.stringify({
+      tipo: cd.tipo, series_id: cd.series_id ?? null, descricao: cd.descricao ?? '', hora, dias, momento,
+    }),
   }
-  const r = await c.env.DB.prepare(
-    `UPDATE media_promises SET status = ?2, condicao = ?3, updated_at = unixepoch() WHERE media_id = ?1`,
-  ).bind(id, status, condicao).run()
-  if ((r.meta.changes ?? 0) === 0) return c.json({ error: 'promessa não encontrada' }, 404)
+}
 
-  // o pool de comerciais mudou — replaneja os canais da mídia
-  const { results: chs } = await c.env.DB.prepare(
-    'SELECT DISTINCT channel_id ch FROM media_channels WHERE media_id = ?1',
-  ).bind(id).all<{ ch: string }>()
-  for (const r2 of chs) await scheduleChannel(c.env, r2.ch, 48, true)
-  return c.json({ ok: true, canais_replanejados: chs.map((x) => x.ch) })
+// Grava N decisões já validadas e replaneja cada canal afetado UMA vez.
+//
+// UPSERT, não UPDATE: a linha de `media_promises` nasce com a TRANSCRIÇÃO, e peça
+// que nunca foi transcrita não tem linha nenhuma. Decidir a condição é editorial
+// — "esta vinheta é o 'volta já' do Feiticeiros" — e não depende de ter áudio.
+// Antes disto, ligar as condições das 100 vinhetas de contexto devolvia 404 em
+// TODAS (23/09/2026): o UPDATE não casava linha e o endpoint chamava isso de
+// "promessa não encontrada", quando o certo era criá-la.
+async function gravaDecisoes(
+  env: { DB: D1Database; MEDIA: R2Bucket },
+  itens: Array<{ id: string; status: string; condicao: string | null }>,
+): Promise<string[]> {
+  const afetados = new Set<string>()
+  for (const it of itens) {
+    await env.DB.prepare(
+      `INSERT INTO media_promises (media_id, status, condicao)
+       VALUES (?1, ?2, ?3)
+       ON CONFLICT(media_id) DO UPDATE SET status = ?2, condicao = ?3, updated_at = unixepoch()`,
+    ).bind(it.id, it.status, it.condicao).run()
+    const { results } = await env.DB.prepare(
+      'SELECT DISTINCT channel_id ch FROM media_channels WHERE media_id = ?1',
+    ).bind(it.id).all<{ ch: string }>()
+    for (const r of results) afetados.add(r.ch)
+  }
+  // ⚠️ AQUI mora a economia. O handler singular replanejava dentro do laço, e o
+  // replan custa ~13 mil linhas (epg_virtual tem 5 índices). Ligar as 100
+  // vinhetas de contexto uma a uma sairia por ~1,3 MILHÃO — 13 dias do teto
+  // diário do D1 free tier. Em lote: um replan por canal.
+  for (const ch of afetados) await scheduleChannel(env, ch, 48, true)
+  return [...afetados]
+}
+
+admin.post('/promessas/:id/decidir', async (c) => {
+  const b = await c.req.json<{ status?: string; condicao?: Proposta }>().catch(() => ({} as { status?: string; condicao?: Proposta }))
+  const status = String(b.status ?? '')
+  const v = await validaDecisao(c.env.DB, status, b.condicao)
+  if ('erro' in v) return c.json({ error: v.erro }, 400)
+  const canais = await gravaDecisoes(c.env, [{ id: c.req.param('id'), status, condicao: v.condicao }])
+  return c.json({ ok: true, canais_replanejados: canais })
+})
+
+// LOTE de decisões: liga a condição de N peças com UM replan por canal.
+// Valida tudo antes de gravar qualquer coisa — meia leva ligada é pior que
+// nenhuma, porque peça sem condição vira enchimento genérico e toca fora do
+// contexto (foi o sintoma que o Gabriel viu no ar: "Feiticeiros foi pro
+// comercial e não apareceu vinheta nenhuma de saída").
+admin.post('/promessas/lote', async (c) => {
+  type Item = { media_id?: string; status?: string; condicao?: Proposta }
+  const b = await c.req.json<{ decisoes?: Item[] }>().catch(() => ({} as { decisoes?: Item[] }))
+  const decisoes = Array.isArray(b.decisoes) ? b.decisoes : []
+  if (decisoes.length === 0) return c.json({ error: 'informe "decisoes"' }, 400)
+  if (decisoes.length > 300) return c.json({ error: 'no máximo 300 por chamada' }, 400)
+  const prontas: Array<{ id: string; status: string; condicao: string | null }> = []
+  for (const [i, it] of decisoes.entries()) {
+    const id = String(it?.media_id ?? '')
+    if (!id) return c.json({ error: `decisoes[${i}]: falta media_id` }, 400)
+    const status = String(it?.status ?? '')
+    const v = await validaDecisao(c.env.DB, status, it?.condicao)
+    if ('erro' in v) return c.json({ error: `decisoes[${i}] (${id}): ${v.erro}` }, 400)
+    prontas.push({ id, status, condicao: v.condicao })
+  }
+  const canais = await gravaDecisoes(c.env, prontas)
+  return c.json({ ok: true, decididas: prontas.length, canais_replanejados: canais })
 })
 
 // ── catálogo ───────────────────────────────────────────────────────────────
