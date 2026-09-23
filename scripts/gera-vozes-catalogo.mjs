@@ -72,7 +72,8 @@ async function sintetizaEleven(apiKey, vozId, texto, config) {
       voice_settings: {
         stability: config.stability ?? 0.25,
         similarity_boost: config.similarity_boost ?? 0.85,
-        style: config.style ?? 0.65,
+        ...(config.style != null ? { style: config.style } : {}),
+        ...(config.speed != null ? { speed: config.speed } : {}),
         use_speaker_boost: config.use_speaker_boost ?? true,
       },
     }),
@@ -89,12 +90,12 @@ async function sintetizaEleven(apiKey, vozId, texto, config) {
 const CANAIS_VOZES = {
   jetix: {
     nome: 'Jetix',
-    voz_id: 'NNbmtunmMPGBeyrKu6KD', // Will (Paulistano, jovem, vibrante)
+    voz_id: 'TX3LPaxmHKxFdv7VOQHJ', // Liam provisório aprovado em 2026-09-22
     config: {
-      model_id: 'eleven_multilingual_v2',
-      stability: 0.25,
-      similarity_boost: 0.85,
-      style: 0.70,
+      model_id: 'eleven_v3',
+      stability: 0.0,
+      similarity_boost: 0.75,
+      speed: 1.15,
       use_speaker_boost: true,
     },
     itens: [
@@ -112,9 +113,9 @@ const CANAIS_VOZES = {
       { categoria: 'nome', series_id: 'megas_xlr', rotulo: 'Megas XLR', tts: 'Megas XLR!' },
       { categoria: 'nome', series_id: 'witch', rotulo: 'W.I.T.C.H.', tts: 'W.I.T.C.H.!' },
       { categoria: 'conector', chave: 'encerramento', rotulo: 'só na Jetix!', tts: 'só na Jetix!' },
-      { categoria: 'conector', chave: 'a_seguir', rotulo: 'a seguir', tts: 'a seguir...' },
-      { categoria: 'conector', chave: 'depois', rotulo: 'e depois', tts: 'e depois...' },
-      { categoria: 'conector', chave: 'mais_tarde', rotulo: 'mais tarde', tts: 'mais tarde...' },
+      { categoria: 'conector', chave: 'a_seguir', rotulo: 'a seguir', tts: 'A seguir!' },
+      { categoria: 'conector', chave: 'depois', rotulo: 'e depois', tts: 'E depois!' },
+      { categoria: 'conector', chave: 'mais_tarde', rotulo: 'mais tarde', tts: 'Mais tarde!' },
     ],
   },
   disney_channel: {

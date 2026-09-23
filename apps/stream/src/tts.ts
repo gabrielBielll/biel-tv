@@ -25,6 +25,7 @@ export type VozConfig = {
   stability?: number
   similarity_boost?: number
   style?: number
+  speed?: number
   use_speaker_boost?: boolean
 }
 
@@ -61,6 +62,7 @@ async function chamaEleven(env: Env, vozId: string, texto: string, cfg: VozConfi
     similarity_boost: c.similarity_boost ?? 0.75,
   }
   if (c.style != null) voice_settings.style = c.style
+  if (c.speed != null) voice_settings.speed = c.speed
   if (c.use_speaker_boost != null) voice_settings.use_speaker_boost = c.use_speaker_boost
 
   let res: Response

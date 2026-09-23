@@ -1,47 +1,134 @@
 {
   "canal": "jetix",
   "nome": "Jetix",
+  "automation": {
+    "enabled": false,
+    "status": "blocked_waiting_schedule_confirmation",
+    "blocked_at": "2026-09-22",
+    "unlock_requires": "Confirmacao explicita de Gabriel de que a nova grade Jetix esta finalizada, seguida de dry-run aprovado"
+  },
   "narrador": {
-    "nome": "Will (Locutor Jovem SP)",
-    "voz_id": "NNbmtunmMPGBeyrKu6KD",
-    "model_id": "eleven_multilingual_v2",
+    "nome": "Liam - Energetic, Social Media Creator",
+    "voz_id": "TX3LPaxmHKxFdv7VOQHJ",
+    "model_id": "eleven_v3",
+    "voice_profile": "liam-natural-mais-vivo-v1",
+    "reference_audio_path": "assets/comerciais/jetix/falas/lineup-pucca-padrinhos-power-rangers-liam-v3-natural-mais-viva.wav",
+    "approval_status": "approved_2026-09-22",
+    "role": "provisional_until_original_voice_subscription_returns",
+    "remote_policy": {
+      "cache_first": true,
+      "cache": "r2_voice_clips",
+      "allow_tts_on_cache_miss": true,
+      "on_tts_unavailable": "waiting_voice",
+      "never_substitute_unreviewed_voice": true
+    },
     "settings": {
-      "stability": 0.25,
-      "similarity_boost": 0.85,
-      "style": 0.70,
+      "stability": 0.0,
+      "similarity_boost": 0.75,
+      "speed": 1.15,
       "use_speaker_boost": true
-    }
+    },
+    "direcao_v3": [
+      "2000s TV promo",
+      "heroic",
+      "high energy",
+      "confident announcer",
+      "bright",
+      "dynamic",
+      "fast pace",
+      "quick delivery",
+      "punchy",
+      "excited",
+      "smiling",
+      "short clipped phrases"
+    ]
   },
   "audio": {
-    "trilha_path": "assets/comerciais/jetix/moldes/trilha_jetix_lineup_3janelas.m4a",
+    "trilha_path": "assets/comerciais/jetix/moldes/trilha_jetix_lineup_chroma_18s_mix.m4a",
     "volume_voz": 1.8,
-    "volume_trilha": 0.30,
-    "delay_voz_ms": 1000,
+    "volume_trilha": 1.0,
+    "delay_voz_ms": 1600,
     "fade_out_st": 19.0,
-    "fade_out_d": 1.0
+    "fade_out_d": 1.0,
+    "variantes": {
+      "a_seguir_curto": {
+        "template_video_path": "assets/comerciais/jetix/moldes/jetix-next-template-chroma-wI1S3DKojRw.mp4",
+        "template_inicio_seg": 0.0,
+        "template_fim_seg": 10.48,
+        "duracao_saida_seg": 10.0,
+        "delay_voz_ms": 400,
+        "locucao_termina_ate_seg": 6.5,
+        "assinatura_embutida": "Jetix",
+        "audio_source": "template_video",
+        "rotulo": "A SEGUIR"
+      },
+      "voce_esta_assistindo": {
+        "template_video_path": "assets/comerciais/jetix/moldes/jetix-next-template-chroma-wI1S3DKojRw.mp4",
+        "template_inicio_seg": 0.0,
+        "template_fim_seg": 10.48,
+        "duracao_saida_seg": 10.0,
+        "delay_voz_ms": 300,
+        "locucao_termina_ate_seg": 6.5,
+        "assinatura_embutida": "Jetix",
+        "audio_source": "template_video",
+        "rotulo": "VOCÊ ESTÁ ASSISTINDO",
+        "voice_id": "TX3LPaxmHKxFdv7VOQHJ",
+        "voice_name": "Liam - Energetic, Social Media Creator",
+        "voice_review_status": "aprovada_em_2026-09-22",
+        "tts_model_id": "eleven_v3",
+        "tts_stability": 0.0,
+        "output_gain_db": 1.4
+      },
+      "estamos_de_volta": {
+        "template_video_path": "assets/comerciais/jetix/moldes/jetix-next-template-chroma-wI1S3DKojRw.mp4",
+        "template_inicio_seg": 10.48,
+        "template_fim_seg": 20.358,
+        "duracao_saida_seg": 10.0,
+        "delay_voz_ms": 300,
+        "locucao_termina_ate_seg": 6.5,
+        "assinatura_embutida": "Jetix",
+        "audio_source": "template_video",
+        "rotulo": "ESTAMOS DE VOLTA",
+        "voice_id": "TX3LPaxmHKxFdv7VOQHJ",
+        "voice_name": "Liam - Energetic, Social Media Creator",
+        "voice_review_status": "aprovada_em_2026-09-22",
+        "tts_model_id": "eleven_v3",
+        "tts_stability": 0.0,
+        "output_gain_db": 2.7
+      }
+    }
   },
   "visual": {
     "duracao_seg": 20.0,
     "molde_path": "assets/comerciais/jetix/moldes/image-comercial-jtx-2.png",
     "colorkey": "0x000000:0.05:0.02",
+    "encerramento": {
+      "video_path": "assets/comerciais/jetix/moldes/jetix-next-template-chroma-wI1S3DKojRw.mp4",
+      "inicio_seg": 8.0,
+      "duracao_seg": 2.0,
+      "audio_crossfade_seg": 0.2,
+      "fundo": "#0b477f",
+      "chromakey": "0x00ff00:0.12:0.01",
+      "despill_mix": 0.7
+    },
     "janelas": [
       {
         "slot": 1,
-        "rotulo_padrao": "A SEGUIR",
+        "rotulo_padrao": "AGORA",
         "scale": "580:326",
         "crop": "580:266:0:30",
         "overlay": "705:0"
       },
       {
         "slot": 2,
-        "rotulo_padrao": "DEPOIS",
+        "rotulo_padrao": "A SEGUIR",
         "scale": "614:345",
         "crop": "614:205:0:70",
         "overlay": "666:259"
       },
       {
         "slot": 3,
-        "rotulo_padrao": "MAIS TARDE",
+        "rotulo_padrao": "DEPOIS",
         "scale": "660:371",
         "crop": "660:245:0:60",
         "overlay": "625:475"
@@ -49,17 +136,18 @@
     ],
     "tipografia": {
       "tipo": "white_thick_text",
-      "font_path": "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
-      "pointsize": 32,
+      "font_path": "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+      "align": "left",
+      "pointsize": 48,
       "fill": "#FFFFFF",
       "stroke": "white",
-      "stroke_width": 2.8,
-      "shadow_stroke_width": 7.0,
-      "shadow_color": "rgba(0, 5, 20, 0.95)",
+      "stroke_width": 0,
+      "shadow_stroke_width": 1.0,
+      "shadow_color": "rgba(0, 5, 20, 0.55)",
       "posicoes": [
-        { "slot": 1, "x": 435, "y": 158, "texto": "A SEGUIR" },
-        { "slot": 2, "x": 450, "y": 360, "texto": "DEPOIS" },
-        { "slot": 3, "x": 390, "y": 575, "texto": "MAIS TARDE" }
+        { "slot": 1, "x": 132, "y": 315, "texto": "AGORA" },
+        { "slot": 2, "x": 132, "y": 440, "texto": "A SEGUIR" },
+        { "slot": 3, "x": 132, "y": 565, "texto": "DEPOIS" }
       ]
     }
   }

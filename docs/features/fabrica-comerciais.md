@@ -10,6 +10,9 @@
 > pipeline normal e o construtor modular de 3 janelas para vinhetas "a seguir"
 > (Jetix, Disney Channel e Cartoon Network) documentado em
 > [construtor-lineup-3janelas.md](construtor-lineup-3janelas.md).
+> O perfil Jetix aprovado e o bloqueio temporário de geração pela grade estão
+> em [modulo-comerciais-jetix.md](modulo-comerciais-jetix.md). A existência do
+> renderizador local não significa que a automação Jetix já esteja publicada.
 >
 > **Uma frase:** o Diretor escolhe *programa + horário*, a fábrica **concatena a
 > locução** ("...frase... Power Rangers Força Animal, de segunda a sexta, às
@@ -62,6 +65,22 @@ uma fala Disney nunca entra em uma vinheta Jetix, por exemplo.
 ```
 → *"...uma equipe destemida... **Power Rangers Força Animal**, **de segunda a
 sexta**, **às quatro da tarde**, **na Jetix**!"*
+
+### Voz provisória e assinatura pausada
+
+A fábrica remota não depende de uma assinatura contínua da ElevenLabs. Cada
+áudio gerado é endereçado por hash e preservado no R2; o D1 aponta para esse
+objeto em `voice_clips`. O cache sempre vem antes da API. Portanto, vozes
+provisórias como o Liam da Jetix continuam montando comerciais depois que a
+assinatura da voz original for pausada.
+
+Em uma falta real de cache, a API só é chamada se houver chave e cota. Sem
+elas, o job deve permanecer `aguardando_voz`, nunca publicar uma peça muda nem
+substituir o narrador automaticamente. Antes de ativar uma grade nova, assar os
+nomes e conectores finitos daquela grade reduz o uso de créditos a zero durante
+as renderizações normais. Clipes provisórios já produzidos podem ser enviados
+pelo painel com síntese desativada e passam a integrar o mesmo cache no R2, sem
+chamar a ElevenLabs.
 
 ### 2. O "slot" estruturado manda em tudo (o pulo do gato)
 
@@ -302,6 +321,8 @@ sendo a etapa que envia esses materiais ao R2 e registra suas categorias.
 
 ## Relacionado
 
+- [modulo-comerciais-jetix.md](modulo-comerciais-jetix.md) — contrato fechado
+  da identidade Jetix, formatos aprovados e plano de automação pela grade.
 - [construtor-comerciais.md](construtor-comerciais.md) — a origem desta ideia
   (molde + locução única). Esta spec é a versão "banco concatenável".
 - [comerciais-condicionais.md](comerciais-condicionais.md) — fase 12: a vinheta

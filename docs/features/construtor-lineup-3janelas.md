@@ -1,6 +1,10 @@
 # Feature: Construtor Modular de Lineup em 3 Janelas (20s)
 
-> **Status:** ✅ Implementado e em Produção (2026-09-19)  
+> **Status:** ✅ renderização local implementada e aprovada; integração automática
+> com a grade e publicação em produção ainda bloqueadas (2026-09-22). Ver
+> [módulo de comerciais Jetix](modulo-comerciais-jetix.md).
+> O protótipo em avaliação do Cartoon Network está registrado em
+> [modulo-comerciais-cartoon-network.md](modulo-comerciais-cartoon-network.md).
 > **Arquitetura:** Multi-Canal (Jetix, Disney Channel, Cartoon Network), Modular, Dinâmico com a Grade de Programação (EPG/Diretor), 100% Determinístico em FFmpeg e Serverless (R2 + D1).
 
 ---
@@ -9,7 +13,7 @@
 
 O **Construtor Modular de Lineup** é o motor responsável por gerar vinhetas e chamadas dinâmicas de programação no formato clássico de TV a cabo dos anos 2000:
 - **Duração Estrita de 20.0 segundos** (dois blocos de 10s padrão Biel TV, sem preenchimento de tela preta ao final).
-- **Três Janelas / Telas Simultâneas**: exibem trechos das próximas atrações da emissora em movimento (*"Você está assistindo {Série 1}, a seguir {Série 2}, e mais tarde {Série 3}"*).
+- **Três Janelas / Telas Simultâneas**: exibem o programa atual e os dois seguintes (*"Você está assistindo {Série 1}, a seguir {Série 2}, e depois {Série 3}"*).
 - **Trilha Sonora Oficial da Emissora**: iniciada no segundo 10 e atenuada sob a locução com mixagem sidechain balanceada.
 - **Narradores Oficiais por Canal**: timbres selecionados com dicção jovem, alta empolgação e sotaque neutro/paulistano da capital.
 
@@ -23,7 +27,7 @@ Cada canal possui sua configuração declarativa e identidade visual/sonora isol
 assets/comerciais/
 ├── templates-lineup.json                # Banco de variações de frases por canal e tipo de bloco
 ├── jetix/
-│   ├── lineup.config.json               # Configuração gráfica, fonte branca grossa, voz Will e trilha
+│   ├── lineup.config.json               # Configuração gráfica, fonte branca grossa, voz Liam e trilha
 │   └── moldes/
 │       ├── image-comercial-jtx-2.png    # Molde 3 janelas com ângulo 3D
 │       └── trilha_jetix_lineup_3janelas.m4a
@@ -51,7 +55,7 @@ scripts/
 
 | Canal | Narrador | Voice ID (ElevenLabs) | Hiperparâmetros | Estilo Visual dos Rótulos |
 |---|---|---|---|---|
-| **Jetix** | Will | `NNbmtunmMPGBeyrKu6KD` | Multilingual v2 · stab 0.25 · style 0.70 | **Texto branco puro, extra grosso** (`Ubuntu-B` reforçado) com contorno e sombra nítida, sem caixa/badge, alinhado às facetas 3D. |
+| **Jetix** | Liam (provisória aprovada) | `TX3LPaxmHKxFdv7VOQHJ` | Eleven v3 · Creative (`0.0`) | **Texto branco puro, extra grosso** (`Ubuntu-B` reforçado) com contorno e sombra nítida, sem caixa/badge, alinhado às facetas 3D. |
 | **Disney Channel** | Camilla | `YklVF5l1Q8os8glyd5SM` | Multilingual v2 · stab 0.25 · style 0.65 | **Badges luminosos em neon azul/ciano** com cantos arredondados (`roundrectangle`). |
 | **Cartoon Network** | Larissa B. | `YfD2qVn2wwK9QFehYxSa` | Multilingual v2 · stab 0.26 · style 0.65 | **Badges horizontais compactos** sobre o topo de cada quadro. |
 
@@ -61,7 +65,7 @@ scripts/
 
 Em produção, o comercial de lineup **não é gravado com nomes fixos manuais**. Ele é alimentado diretamente pelos dados do agendador:
 
-$$\text{[Gancho]} \rightarrow \text{[Você tá assistindo \{série\_1\}]} \rightarrow \text{[A seguir \{série\_2\}]} \rightarrow \text{[Mais tarde \{série\_3\}]} \rightarrow \text{[Assinatura]}$$
+$$\text{[Gancho]} \rightarrow \text{[Você tá assistindo \{série\_1\}]} \rightarrow \text{[A seguir \{série\_2\}]} \rightarrow \text{[Depois \{série\_3\}]} \rightarrow \text{[Assinatura]}$$
 
 1. **Amostras de Vídeo**: Puxadas das séries correspondentes cadastradas no catálogo (`comerciais_16x9/` ou amostras de episódios).
 2. **Áudios de Voz**:
@@ -100,6 +104,163 @@ node scripts/monta-lineup-cli.mjs --canal disney_channel --out scratch/teste-dis
 # Cartoon Network
 node scripts/monta-lineup-cli.mjs --canal cartoon_network --out scratch/teste-cartoon.mp4
 ```
+
+### Fechamento animado do lineup Jetix
+
+O lineup Jetix usa o molde de três janelas por 18 segundos, com os rótulos
+**AGORA**, **A SEGUIR** e **DEPOIS**. Nos 2 segundos finais, o motor recorta o
+trecho 8–10 s de
+`assets/comerciais/jetix/moldes/jetix-next-template-chroma-wI1S3DKojRw.mp4`,
+remove o verde, aplica o reenquadramento 16:9 aprovado e preserva o áudio do
+trecho, inclusive a assinatura falada **"Jetix"**. Por isso a locução do lineup
+não deve repetir o nome do canal.
+
+Os três rótulos usam o formato visual da referência
+`Promo%20de%20canal%20Jetix%20moderno.png`: letras grandes em Liberation Sans
+Bold (`48 pt`), brancas, com sombra discreta e alinhadas à esquerda em uma única coluna.
+Os textos continuam sendo **AGORA**, **A SEGUIR** e **DEPOIS**, em vez dos nomes
+dos programas exibidos na imagem de referência.
+
+A locução de lineup do Liam usa entrega rápida (`speed: 1.15`), frases curtas e
+pontuação direta. Não usar reticências nem conectivos arrastados, para evitar o
+prolongamento artificial das palavras no `eleven_v3`.
+Cada programa pode receber um comentário breve; a locução completa deve ocupar
+a maior parte dos 18 segundos de lineup, encerrando antes da assinatura final.
+No exemplo aprovado tecnicamente, a voz começa em 1,6 s e dura 14,4 s.
+As direções de animação são aplicadas globalmente e reforçadas entre os blocos:
+`[2000s TV promo] [heroic] [high energy] [confident announcer] [bright]
+[dynamic] [fast pace] [quick delivery] [punchy] [excited] [smiling]
+[short clipped phrases]`. O reforço por trecho evita que o v3 comece animado e
+perca energia nos nomes seguintes.
+
+A tentativa de gerar cada frase isoladamente com energia máxima foi reprovada:
+o Liam adquiriu um sotaque interiorano perceptível e uma interpretação
+artificialmente forçada. Não usar a versão `super-animada` como referência. O
+ponto de partida continua sendo a locução-base contínua; ajustes adicionais
+devem ser discretos e feitos por ritmo, presença e compressão, sem nova
+caricatura de interpretação.
+
+Como resultado aprovado, foi criada a variante
+`lineup-pucca-padrinhos-power-rangers-liam-v3-natural-mais-viva.wav` a partir
+da locução-base, sem nova chamada à ElevenLabs. Ela usa apenas 2,5% de
+aceleração, leve presença em 2,8 kHz e compressão 2:1. O render correspondente
+é `videos_prontos/lineup_jetix/versoes/lineup-jetix-liam-natural-mais-vivo.mp4`;
+esta é a referência auditiva oficial da Jetix desde 2026-09-22.
+
+A cama dos primeiros 18 segundos vem do próprio áudio do template chroma usado
+nas vinhetas curtas. O trecho musical 0–6,2 s é repetido com crossfades curtos,
+sem trazer a assinatura antes da hora. A fala **"Jetix"** continua aparecendo
+uma única vez, no recorte final de 8–10 s.
+Na emenda final, o motor antecipa 0,2 s do áudio do encerramento e faz um
+crossfade direto com a cama. Não deve haver fade para silêncio
+antes da assinatura.
+A cama `trilha_jetix_lineup_chroma_18s_mix.m4a` já traz o volume atenuado sob a
+locução e uma subida musical entre 17,2 e 17,8 s até o mesmo nível do sting. Só então
+ocorre o crossfade de 0,2 s com a assinatura, evitando a queda de volume.
+
+O arquivo enviado como `Design%20gr%C3%A1fico%20moderno%20com%20logo%20Jetix.png`
+foi conferido e é byte a byte idêntico ao molde já preservado em
+`assets/comerciais/jetix/moldes/image-comercial-jtx-2.png`.
+
+### Testar a variante curta "a seguir" da Jetix (10 s)
+
+Em 2026-09-22 foi localizada a chamada
+[Zatch Bell no Jetix](https://www.youtube.com/watch?v=N5Bd3i7DIrQ), publicada
+como `Chamada de Zatch Bell no Jetix` (`N5Bd3i7DIrQ`). O áudio é um achado útil:
+tem uma cama musical limpa durante toda a peça e já termina com a assinatura
+falada **"Jetix"**, sem locução sobre o programa.
+
+A trilha de referência foi preservada em
+`assets/comerciais/jetix/moldes/trilha_jetix_a_seguir_com_assinatura.m4a`, e a
+fonte original permanece separada em
+`comerciais_16x9/_fontes_jetix/fonte-zatch-bell-a-seguir-jetix-N5Bd3i7DIrQ.mp4`;
+ela não deve ser ingerida como comercial.
+
+O render final não usa o PNG estático. Ele usa o **template animado com chroma
+verde e áudio próprio** encontrado em
+`assets/comerciais/jetix/moldes/jetix-next-template-chroma-wI1S3DKojRw.mp4`.
+O primeiro trecho desse arquivo (0–10,48 s) é o formato de uma janela usado na
+chamada. O verde é substituído pelas cenas do programa; a animação, efeitos,
+trilha e encerramento do template são preservados.
+
+Regras desta variante:
+
+- saída estrita de **10,0 s**; os 10,48 s do template são comprimidos em 4,8%,
+  sem cortar os quadros ou o áudio finais;
+- a locução começa em 0,4 s e precisa terminar até 6,5 s, deixando a assinatura
+  original respirar no fechamento;
+- o narrador fala somente **"a seguir" + nome do programa + comentário curto**;
+  não deve falar "na Jetix" nem "Jetix", pois a assinatura já está na trilha;
+- o áudio da abertura do programa é descartado: a cama vem do próprio template
+  chroma e a locução nova entra por cima;
+- este template é exclusivo da chamada curta de um programa. Não deve substituir
+  o lineup de 20 s em três janelas.
+
+Render reproduzível do teste aprovado tecnicamente:
+
+```bash
+node scripts/monta-a-seguir-jetix.mjs \
+  --video 'assets/comerciais/jetix/amostras/POWER RANGERS FORÇA ANIMAL ABERTURA (Traduzida) [41t36-S98aY] - 16x9 com audio.mp4' \
+  --voz scratch/locucao-a-seguir-power-rangers-forca-animal.mp3 \
+  --titulo 'Power Rangers Força Animal' \
+  --inicio 9 \
+  --out scratch/teste-jetix-a-seguir-power-rangers-trilha-zatch.mp4
+```
+
+Locução usada no teste: *"A seguir: Power Rangers Força Animal! Heróis
+selvagens, prontos para entrar em ação!"* O texto na tela reproduz o essencial
+da locução: nome do programa + **A SEGUIR**.
+
+O mesmo montador aceita `--tipo voce_esta_assistindo` e
+`--tipo estamos_de_volta`. A segunda variante usa a outra animação do arquivo
+chroma (10,48–20,358 s); ambas preservam o áudio sincronizado do template e
+produzem MP4 de 10 s.
+
+### Direção de voz do narrador Jetix
+
+O `eleven_multilingual_v2` continua adequado para falas modulares estáveis, mas
+as chamadas curtas que precisam de energia usam `eleven_v3`. Segundo a
+[documentação de prompting do Eleven v3](https://elevenlabs.io/docs/best-practices/prompting),
+o modelo aceita tags de interpretação; pontuação e maiúsculas também alteram
+ênfase e ritmo. A
+[documentação de configurações](https://elevenlabs.io/docs/eleven-creative/playground/text-to-speech)
+explica que estabilidade alta tende à monotonia e que valores baixos ampliam a
+variação emocional.
+
+O preset Jetix recuperado dos testes de 17–19/07/2026 é:
+
+```text
+[2000s TV promo] [heroic] [high energy] [confident announcer]
+[bright] [dynamic] [fast pace] [quick delivery] [punchy]
+[excited] [smiling]
+```
+
+As frases devem ser contínuas, sem reticências ou pausas excessivas. Palavras
+principais usam maiúsculas e exclamações. A voz **Talis - Jetix Bumper** foi
+testada inicialmente, mas reprovada na audição por soar pouco profissional no
+`eleven_v3`. A explicação é compatível com a
+[orientação oficial do v3](https://elevenlabs.io/docs/overview/capabilities/text-to-speech/best-practices):
+Professional Voice Clones ainda não estão plenamente otimizados para esse
+modelo; para expressividade, a ElevenLabs recomenda priorizar IVC ou voz
+projetada.
+
+Em 2026-09-22 foram geradas audições com três vozes premade conhecidas:
+
+- **Adam** (`pNInz6obpgDQGcFmaJgB`): firme, dominante e com ataque forte;
+- **Liam** (`TX3LPaxmHKxFdv7VOQHJ`): jovem, quente e energético;
+- **Brian** (`nPczCjzI2devNBz1zQrb`): grave, ressonante e adequado a anúncios.
+
+Os áudios ficam em `assets/comerciais/jetix/falas/audicoes-v3/` e as seis
+montagens de comparação em `videos_prontos/audicoes_voz_jetix/`.
+
+Após a comparação auditiva, **Liam** foi aprovado em 2026-09-22 como a voz
+provisória das variantes `voce_esta_assistindo` e `estamos_de_volta`, enquanto
+a assinatura da voz original permanece pausada. Adam e Brian permanecem somente
+como alternativas de referência; Talis está reprovada para essas chamadas.
+
+O v3 usa estabilidade Creative (`0.0`) e uma semente registrada por geração.
+Como o modelo é não determinístico e a resposta às tags depende do alcance da
+voz, cada nova frase ainda precisa de revisão auditiva antes da publicação.
 
 ### Passo 4: Cadastrar ou Gerar Vozes para Novas Séries
 Quando uma nova série entrar no catálogo da emissora:

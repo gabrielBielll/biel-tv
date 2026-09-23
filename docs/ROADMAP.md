@@ -107,6 +107,12 @@ promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o 
 
 ## 📦 Backlog (sem fase definida)
 
+- **Automatizar a família de comerciais Jetix a partir da grade** — identidade,
+  quatro formatos e renders de referência aprovados em 2026-09-22. A execução
+  está deliberadamente bloqueada até Gabriel confirmar que a nova grade foi
+  finalizada; não gerar a partir da grade antiga. Contrato e checklist em
+  [features/modulo-comerciais-jetix.md](features/modulo-comerciais-jetix.md).
+
 - **Diretor encomenda comerciais + vinhetas "a seguir" GERADAS por IA** —
   pedido do Gabriel (2026-07-13). A inversão genial do problema da fase 12:
   em vez de caçar promo de acervo que combine com a grade, GERAR a promo que

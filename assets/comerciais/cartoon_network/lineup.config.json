@@ -1,10 +1,16 @@
 {
   "canal": "cartoon_network",
   "nome": "Cartoon Network",
+  "automation": {
+    "enabled": false,
+    "status": "local_prototype_pending_approval"
+  },
   "narrador": {
     "nome": "Larissa B. (Locutora Jovem e Animada)",
     "voz_id": "YfD2qVn2wwK9QFehYxSa",
     "model_id": "eleven_multilingual_v2",
+    "role": "provisional",
+    "reference_audio_path": "assets/comerciais/cartoon_network/falas/lineup-billy-dexter-meninas-larissa-provisoria.mp3",
     "settings": {
       "stability": 0.26,
       "similarity_boost": 0.85,
@@ -14,9 +20,19 @@
   },
   "audio": {
     "trilha_path": "assets/comerciais/cartoon_network/moldes/trilha_cartoon_lineup_3janelas.m4a",
+    "trilha_status": "prototype_from_reference_pending_approval",
+    "referencias": [
+      {
+        "path": "assets/comerciais/cartoon_network/referencias/fonte-cartoon-summer-video-Zx7ogrmxk5w.m4a",
+        "source_url": "https://www.youtube.com/watch?v=Zx7ogrmxk5w",
+        "title": "The Cartoon Network Summer Video",
+        "channel": "Cartoon Network Asia",
+        "status": "reference_only_pending_edit_and_approval"
+      }
+    ],
     "volume_voz": 1.75,
     "volume_trilha": 0.30,
-    "delay_voz_ms": 1000,
+    "delay_voz_ms": 1200,
     "fade_out_st": 19.0,
     "fade_out_d": 1.0
   },
@@ -24,10 +40,20 @@
     "duracao_seg": 20.0,
     "molde_path": "assets/comerciais/cartoon_network/moldes/image-comercial-cartoon-3telas.png",
     "colorkey": "0x000000:0.05:0.02",
+    "encerramento": {
+      "video_path": "assets/comerciais/cartoon_network/moldes/final_cartoon_network_0s93.mp4",
+      "inicio_seg": 0.0,
+      "duracao_seg": 0.933333,
+      "audio_crossfade_seg": 0.2,
+      "fundo": "#e6007e",
+      "video_filter": "scale=1280:720,setsar=1",
+      "chromakey": "0x00ff00:0.01:0.0",
+      "despill_mix": 0.0
+    },
     "janelas": [
       {
         "slot": 1,
-        "rotulo_padrao": "A SEGUIR",
+        "rotulo_padrao": "VOCÊ ESTÁ ASSISTINDO",
         "scale": "295:148",
         "crop": "295:148",
         "overlay": "136:311"
@@ -50,11 +76,18 @@
     "tipografia": {
       "tipo": "horizontal_badges",
       "font_path": "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
-      "pointsize": 18,
+      "pointsize": 21,
+      "long_pointsize": 15,
+      "fill": "#FFFFFF",
+      "badge_bg": "#050505",
+      "badge_border": "#FFFFFF",
+      "badge_border_width": 2,
+      "badge_h": 38,
+      "accent_colors": ["#12BCE8", "#FFD900", "#12BCE8"],
       "posicoes": [
-        { "slot": 1, "x": 170, "y": 335, "texto": "A SEGUIR" },
-        { "slot": 2, "x": 545, "y": 335, "texto": "DEPOIS" },
-        { "slot": 3, "x": 920, "y": 335, "texto": "MAIS TARDE" }
+        { "slot": 1, "x": 136, "y": 466, "width": 295, "texto": "VOCÊ ESTÁ ASSISTINDO" },
+        { "slot": 2, "x": 488, "y": 466, "width": 303, "texto": "DEPOIS" },
+        { "slot": 3, "x": 849, "y": 466, "width": 294, "texto": "MAIS TARDE" }
       ]
     }
   }

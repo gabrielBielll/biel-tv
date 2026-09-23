@@ -57,8 +57,7 @@ async function main() {
     }
   }
 
-  const voz = params.voz || (
-    canal === 'jetix' ? 'scratch/jetix_hyped_will.mp3' :
+  const voz = params.voz || cfg.narrador.reference_audio_path || (
     canal === 'disney_channel' ? 'scratch/disney_hyped_camilla.mp3' :
     'scratch/cartoon_hyped_larissa.mp3'
   )
