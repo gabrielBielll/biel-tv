@@ -197,9 +197,57 @@ export async function montaGrupos(
     porEp.get(it.episodio)!.push(it)
   }
 
+  // Uma playlist é de um de DOIS tipos, e confundi-los é o erro nº 1 daqui:
+  //  - FRAGMENTOS: o episódio foi partido em pedaços de ~4min (o caso do Jake
+  //    Long). "(Parte 2)" é o 2º PEDAÇO e faltar a parte 1 é buraco de verdade.
+  //  - INTEIROS: 1 vídeo = 1 episódio (o caso do Power Rangers SPD, 22min por
+  //    vídeo). Aí "(Parte 2)" é o nome da HISTÓRIA em duas partes, que na série
+  //    são dois episódios NUMERADOS — "EP01 - O Começo (parte 1)" e "EP02 - O
+  //    Começo (parte 2)" são episódios diferentes, não pedaços de um só.
+  // Cobrar 1..N no segundo caso reprovava 30 dos 38 episódios do SPD: os com
+  // "(parte 2)" viravam "parte 1 faltando" e os sem "parte" no título viravam
+  // "nenhuma parte numerada".
+  //
+  // O sinal que separa os dois sem depender da redação do título: num acervo de
+  // fragmentos, a MAIORIA dos vídeos divide o nº do episódio com outro. Se cada
+  // episódio tem um vídeo só, não há o que juntar — o "parte" do título é nome.
+  // (É por maioria, e não "algum grupo com 2", porque um único título errado do
+  // acervo — SPD tem "EP07 - Sam (parte 1)" e "EP08 - Sam (parte 1)" — não pode
+  // virar a playlist inteira do avesso.)
+  const emGrupoMultiplo = [...porEp.values()]
+    .filter((l) => l.length > 1)
+    .reduce((n, l) => n + l.length, 0)
+  const fragmentada = emGrupoMultiplo * 2 > itens.length
+
   const episodios: Episodio[] = [...porEp.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([episodio, lista]) => {
+      const mediaId = seriesSlug ? mediaIdDe(seriesSlug, temporada, episodio) : ''
+
+      if (!fragmentada) {
+        // Modo INTEIRO: o vídeo É o episódio. Nada de validar 1..N — mas dois
+        // vídeos no mesmo número continua sendo ambiguidade que o operador
+        // precisa resolver (nunca escolher um em silêncio).
+        const partesInteiras: Parte[] = lista.map((x) => ({
+          parte: null, video_id: x.video_id, url: x.url, title: x.title,
+        }))
+        const base = lista[0].titulo_limpo || lista[0].title
+        // o nº de parte vira NOME aqui: sem isso as duas metades de uma história
+        // ficam com o mesmo título no guia ("O Começo" duas vezes seguidas).
+        const p = lista[0].parte
+        const titulo = p && !/parte/i.test(base) ? `${base} (Parte ${p})` : base
+        return {
+          episodio,
+          media_id: mediaId,
+          titulo,
+          partes: partesInteiras,
+          ok: lista.length === 1,
+          aviso: lista.length === 1
+            ? null
+            : `${lista.length} vídeos com o mesmo nº de episódio — só um pode virar o ep ${episodio}`,
+        }
+      }
+
       const comParte = lista.filter((x) => x.parte != null).sort((a, b) => (a.parte ?? 0) - (b.parte ?? 0))
       const semParte = lista.filter((x) => x.parte == null)
       const partes: Parte[] = [...comParte, ...semParte].map((x) => ({
@@ -223,7 +271,7 @@ export async function montaGrupos(
         `Ep ${String(episodio).padStart(2, '0')}`
       return {
         episodio,
-        media_id: seriesSlug ? mediaIdDe(seriesSlug, temporada, episodio) : '',
+        media_id: mediaId,
         titulo,
         partes,
         ok: avisos.length === 0,

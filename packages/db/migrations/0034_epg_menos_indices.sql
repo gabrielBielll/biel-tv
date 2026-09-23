@@ -1,0 +1,37 @@
+-- Menos indice na epg_virtual = menos ESCRITA por linha da grade.
+--
+-- O problema: `epg_virtual` tinha 5 indices, entao cada linha custava 6
+-- escritas (a tabela + uma entrada por indice). Um replan de 48h reescreve
+-- ~1.200 linhas por canal (delete + insert), o que dava ~43 mil linhas pros
+-- tres canais — 43% do teto diario de 100 mil do D1 free. Em 21, 22 e 23/09
+-- de 2026 a cota estourou tres dias seguidos e a fabrica morreu junto.
+--
+-- Escrita e o recurso escasso aqui; leitura sobra. Entao os dois indices que
+-- existiam SO pra consultas globais (sem `canal` no filtro) foram trocados por
+-- consultas fatiadas por canal, que os compostos ja cobrem:
+--
+--   idx_epg_start (start_time_virtual)  ← futuroDe e commitAired
+--        agora: uma fatia por canal pelo idx_epg_lookup (canal, start, end)
+--   idx_epg_fim   (end_time_virtual)    ← limpeza da retencao
+--        agora: um DELETE por canal pelo idx_epg_canal_fim (canal, end)
+--
+-- MEDIDO EM PRODUCAO (23/09/2026, epg_virtual com 14.603 linhas), rows_read
+-- da forma global contra a soma das tres fatias:
+--
+--   futuroDe      7.102 → 7.104   (+2)
+--   commitAired  13.579 → 13.581  (+2)
+--   retencao          1 → 3       (+2)
+--
+-- Custo total: 6 linhas lidas a mais por run do agendador.
+-- Ganho: cada linha da grade passa de 6 para 4 escritas — um replan dos tres
+-- canais cai de ~43 mil para ~29 mil linhas.
+--
+-- ⚠️ ORDEM: o Worker novo tem de estar NO AR antes desta migration. O codigo
+-- antigo usa `INDEXED BY idx_epg_start`, que vira erro de SQL assim que o
+-- indice some. O codigo novo funciona com ou sem os indices (so fica mais
+-- lento antes de solta-los), entao deploy primeiro, migration depois.
+--
+-- Isto NAO desfaz a 0028: o idx_epg_canal_fim (canal, end) que ela criou
+-- continua, e passou a ser o unico caminho da retencao.
+DROP INDEX IF EXISTS idx_epg_start;
+DROP INDEX IF EXISTS idx_epg_fim;

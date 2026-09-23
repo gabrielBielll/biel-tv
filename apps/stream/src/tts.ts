@@ -82,6 +82,19 @@ async function chamaEleven(env: Env, vozId: string, texto: string, cfg: VozConfi
   }
   if (!res.ok) {
     const detalhe = (await res.text().catch(() => '')).slice(0, 300)
+    // Caso específico e recorrente (15/09/2026): a assinatura do ElevenLabs
+    // caiu e o plano atual não deixa mais USAR voz clonada (IVC) pela API — as
+    // vozes dos três canais são clonadas. A chave continua válida e com
+    // crédito; voz do catálogo público funciona normalmente. A saída enquanto
+    // não houver assinatura é passar `voz_id` de uma voz pública na criação do
+    // clipe (ver docs/features/fabrica-comerciais.md → "Voz provisória").
+    if (res.status === 401 && detalhe.includes('ivc_not_permitted')) {
+      throw new TtsIndisponivel(
+        `ElevenLabs: o plano atual não permite usar voz CLONADA (${vozId}). ` +
+        'A chave está válida — gere com uma voz do catálogo público passando ' +
+        '`voz_id` (docs/features/fabrica-comerciais.md → "Voz provisória").',
+      )
+    }
     // 401 (chave escopada/expirada), 429 (cota) e 5xx são "indisponível": o job
     // ESPERA a assinatura voltar. 400/422 são erro de conteúdo — falha de verdade.
     if (res.status === 401 || res.status === 429 || res.status >= 500) {

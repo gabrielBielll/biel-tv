@@ -1,8 +1,15 @@
 <script setup lang="ts">
 import Hls from 'hls.js'
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-const props = defineProps<{ src: string }>()
+const props = withDefaults(defineProps<{ src: string; mode?: 'live' | 'vod' }>(), {
+  mode: 'live',
+})
+const emit = defineEmits<{ (e: 'back-to-live'): void }>()
+
+// VOD (reprise): playlist finito → mostra controles nativos (barra/seek) e não
+// força a "cauda ao vivo" do hls.js. O App re-monta o player ao trocar de modo.
+const isVod = computed(() => props.mode === 'vod')
 
 const video = ref<HTMLVideoElement>()
 const muted = ref(true)
@@ -14,7 +21,7 @@ onMounted(() => {
   el.addEventListener('playing', () => (playing.value = true))
 
   if (Hls.isSupported()) {
-    hls = new Hls({ liveDurationInfinity: true })
+    hls = new Hls(isVod.value ? {} : { liveDurationInfinity: true })
     hls.loadSource(props.src)
     hls.attachMedia(el)
     hls.on(Hls.Events.MANIFEST_PARSED, () => el.play().catch(() => {}))
@@ -44,8 +51,9 @@ function unmute() {
 
 <template>
   <div class="player">
-    <video ref="video" autoplay muted playsinline></video>
-    <div class="live-badge"><span class="dot" /> AO VIVO</div>
+    <video ref="video" autoplay muted playsinline :controls="isVod"></video>
+    <div v-if="!isVod" class="live-badge"><span class="dot" /> AO VIVO</div>
+    <button v-if="isVod" class="back-live" @click="emit('back-to-live')">◀ ao vivo</button>
     <button v-if="muted && playing" class="unmute" @click="unmute">🔇 clique para ativar o som</button>
   </div>
 </template>
@@ -89,6 +97,30 @@ video {
   border-radius: 50%;
   background: var(--accent);
   animation: pulse 1.6s ease-in-out infinite;
+}
+
+.back-live {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid var(--line);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 6px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.back-live:hover {
+  background: var(--accent);
+  border-color: transparent;
 }
 
 @keyframes pulse {

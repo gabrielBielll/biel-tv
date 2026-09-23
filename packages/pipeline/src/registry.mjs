@@ -1,6 +1,7 @@
 // Registro da mídia no D1 (local ou remoto) via wrangler.
-import { writeFileSync, mkdirSync } from 'node:fs'
+import { writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { runWrangler, wranglerDetalhe } from './wrangler.mjs'
 
 const esc = (s) => String(s).replaceAll("'", "''")
@@ -57,9 +58,41 @@ export function runD1(rootDir, sql, { local = true, label = 'registro' } = {}) {
   mkdirSync(dir, { recursive: true })
   const sqlPath = join(dir, `_${label}.sql`)
   writeFileSync(sqlPath, sql)
+  // D1_HTTP=1: registra pela API HTTP do D1 em vez do wrangler — pra fábrica
+  // no Termux/Android, onde o wrangler morre calado (workerd não tem build
+  // bionic). Só vale pro remoto: o simulado local não tem endpoint HTTP.
+  if (!local && process.env.D1_HTTP === '1') return runD1Http(rootDir, sql, label)
   const r = runWrangler(rootDir, ['d1', 'execute', 'biel-tv-db', local ? '--local' : '--remote', '--file', sqlPath])
   if (r.status !== 0) {
     const detalhe = wranglerDetalhe(r)
     throw new Error(`wrangler d1 execute falhou (${label})${detalhe ? `: ${detalhe}` : ''}`)
+  }
+}
+
+/** O mesmo registro, via POST /d1/database/:id/query (aceita múltiplos statements). */
+function runD1Http(rootDir, sql, label) {
+  const { CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN } = process.env
+  if (!CLOUDFLARE_ACCOUNT_ID || !CLOUDFLARE_API_TOKEN) {
+    throw new Error('D1_HTTP=1 exige CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_API_TOKEN no ambiente')
+  }
+  const dbId = process.env.D1_DATABASE_ID
+    ?? readFileSync(join(rootDir, 'apps', 'stream', 'wrangler.toml'), 'utf8').match(/database_id\s*=\s*"([^"]+)"/)?.[1]
+  if (!dbId) throw new Error('database_id não encontrado no wrangler.toml (ou defina D1_DATABASE_ID)')
+  // corpo via arquivo: SQL de registro carrega metadata/transcript — longe do
+  // limite de argv e sem escaping de shell
+  const bodyPath = join(rootDir, '.ingest-work', `_${label}.json`)
+  writeFileSync(bodyPath, JSON.stringify({ sql }))
+  const r = spawnSync('curl', ['-s', '-m', '90',
+    `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${dbId}/query`,
+    '-H', `Authorization: Bearer ${CLOUDFLARE_API_TOKEN}`,
+    '-H', 'content-type: application/json',
+    '--data', `@${bodyPath}`,
+  ], { encoding: 'utf8' })
+  let out = null
+  try { out = JSON.parse(r.stdout) } catch { /* resposta não-JSON cai no throw abaixo */ }
+  if (r.status !== 0 || !out?.success) {
+    const detalhe = out?.errors?.map((e) => e.message).join('; ')
+      || String(r.stderr || r.stdout || r.error?.message || '').trim().slice(0, 300)
+    throw new Error(`registro via API D1 falhou (${label})${detalhe ? `: ${detalhe}` : ''}`)
   }
 }

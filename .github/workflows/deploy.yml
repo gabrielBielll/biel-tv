@@ -1,0 +1,52 @@
+# Deploy do Worker de streaming (@bieltv/stream) — roda no GitHub Actions.
+#
+# Por que não no celular: o `wrangler` traz binários nativos (esbuild/workerd)
+# compilados pra glibc; o Termux (bionic) não os executa. O Actions roda em
+# ubuntu-latest, onde o `wrangler deploy` funciona sem atrito.
+#
+# Reusa o secret CLOUDFLARE_API_TOKEN que a fábrica já usa pro D1 (a fabrica.yml
+# passa o mesmo token). Ele precisa ter a permissão **Workers Scripts:Edit**
+# além do D1 — se der 403 no deploy, é só adicionar essa permissão ao token.
+#
+# Aciona na mão: aba Actions → "deploy" → Run workflow, ou `gh workflow run deploy.yml`.
+name: deploy
+
+on:
+  workflow_dispatch:
+  # A main é gerenciada de outra máquina (divergiu) e o workflow_dispatch exige
+  # o arquivo na branch default — então a feat/playback dispara o deploy no
+  # próprio push. Quando a feature entrar na main, o workflow_dispatch já vale.
+  push:
+    branches: [feat/playback]
+    paths:
+      - 'apps/stream/**'
+      - 'packages/db/**'
+      - '.github/workflows/deploy.yml'
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # install completo (não --prod): o wrangler é devDependency do @bieltv/stream
+      - name: dependências
+        run: pnpm install --frozen-lockfile
+
+      - name: wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: '97603ea0b9784ad4a9d3b80bd73f1ea4'
+        run: pnpm deploy

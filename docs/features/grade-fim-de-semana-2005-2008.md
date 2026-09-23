@@ -1,0 +1,109 @@
+# Grade de fim de semana — janela nostálgica 2005–2008
+
+> Decisão editorial do Gabriel em 21/09/2026. Este é o documento mestre para
+> sábado e domingo dos três canais. A proposta não tenta reproduzir um único dia
+> histórico: combina horários comprovados e a identidade brasileira dos canais
+> entre 2005 e 2008.
+>
+> A distribuição completa das 00h às 24h, incluindo dias úteis, está em
+> [grade-completa-2005-2008.md](grade-completa-2005-2008.md).
+
+## Decisões fixas
+
+- Cada canal tem três grades distintas: segunda–sexta, sábado e domingo.
+- Sábado e domingo não usam a grade diária com uma maratona aleatória por cima.
+- Os horários abaixo identificados como **FILME** continuam sendo de filme mesmo
+  enquanto o acervo ainda não estiver pronto.
+- Um especial de episódios pode ocupar temporariamente um slot de filme, mas não
+  muda sua finalidade e não pode ser anunciado como filme.
+- Promo que cita um filme ou programa ausente fica retida. Nesse período só pode
+  tocar uma chamada genérica verdadeira do bloco provisório.
+- Quando o filme chegar, ele substitui o especial sem mudar o horário da faixa.
+- A reprise de um filme repete o mesmo `media_id`, e não outro título da sessão.
+
+## Slots permanentes de filme
+
+| Canal | Dia | Horário | Slot permanente | Ocupação provisória |
+|---|---|---:|---|---|
+| Jetix | domingo | 15:00–17:00 | **Sessão Jetix — filmes** | maratona de aventura da própria Jetix |
+| Cartoon Network | domingo | 14:00–16:00 | **Teatro Cartoon — filme** | quatro episódios de Dexter |
+| Cartoon Network | domingo | 20:00–22:00 | **Teatro Cartoon — reprise** | reprise exata do especial das 14h |
+| Disney Channel | sábado | 20:00–22:00 | **Filme Disney de sábado** | especial de quatro episódios |
+| Disney Channel | domingo | 20:00–22:00 | **O Maravilhoso Mundo de Disney** | especial familiar de quatro episódios |
+
+O Jetix mantém **Digimon desde o início** às 20h e **Pucca** às 22h no fim de
+semana; esses horários vieram de chamadas originais e não são slots de filme.
+
+## Base provisória com o acervo atual
+
+### Jetix
+
+**Sábado — ação:** manhã de comédia; substitutos de A.T.O.M. e Galactik
+Football; Maratona Power Rangers às 15h; faixa especial às 20h enquanto Digimon
+não chega; Pucca às 22h.
+
+**Domingo — aventura e cinema:** manhã leve; melhores da semana ao meio-dia;
+Sessão Jetix de filmes às 15h (maratona provisória); Power Rangers às 18h;
+substituto de Digimon às 20h; Pucca às 22h.
+
+### Cartoon Network
+
+**Sábado — participação:** clássicos pela manhã; ação no fim da manhã;
+Cartoon Cartoons ao meio-dia; Votatoon às 15h; vencedor no começo da noite;
+ação/anime à noite.
+
+**Domingo — cinema:** clássicos e Scooby pela manhã; Teatro Cartoon às 14h;
+comédias no fim da tarde; reprise exata do filme às 20h; ação à noite. Enquanto
+`A Viagem de Dexter` não chega, quatro episódios de Dexter ocupam as duas
+sessões sem usar a chamada que promete o filme.
+
+### Disney Channel
+
+**Sábado — maratona e filme:** animações pela manhã; sitcoms ao meio-dia;
+Maratona Disney às 15h; Filme Disney às 20h; reprises selecionadas depois.
+
+**Domingo — família:** Família Dinossauros e clássicos pela manhã; animações;
+melhores da semana à tarde; O Maravilhoso Mundo de Disney às 20h. Até os filmes
+chegarem, um especial familiar ocupa a faixa sem ser chamado de filme.
+
+## Curadoria: títulos emprestados permanecem
+
+Decisão do Gabriel: manter os programas atuais mesmo quando vieram de outro
+canal ou estão fora do recorte estrito. Eles fazem parte da curadoria da Biel TV
+e não são pendência de remoção:
+
+- **Disney:** Os Padrinhos Mágicos, Danny Phantom e Yin Yang Yo!.
+- **Cartoon:** Hey Arnold!, Martin Mystery, O Show dos Looney Tunes e Capitão
+  Lento. Se Capitão Lento for uma peça comercial, ele permanece ligado ao canal,
+  mas com o tipo correto (`comercial`), não como episódio.
+- **Jetix:** Kid vs Kat e Zatch Bell!.
+
+Essas exceções podem preencher os blocos provisórios e o rodízio, mas não
+substituem para sempre os títulos históricos que o Gabriel ainda vai adicionar.
+
+## Pedidos de comerciais
+
+Os pedidos desta grade vivem como cards persistentes na aba **Fábrica** do
+painel (`commercial_requests`, migration 0032). O card registra canal, dia,
+horário, texto sugerido e observações, e pode ser marcado como concluído.
+
+As chamadas originais que já estão em edição — Power Manhãs, A.T.O.M., Galactik
+Football, Digimon, Pucca, Votatoon, A Viagem de Dexter etc. — não são duplicadas
+nesses cards.
+
+Além das sete peças iniciais, a migration 0033 encomenda as chamadas de
+identidade que faltavam: fim de semana Jetix, Cartoon Cartoons, Toonami de
+sábado, fim de semana Cartoon Network, Playhouse Disney, Zapping Zone e fim de
+semana Disney Channel. Cada card traz texto sugerido, imagens/programas que
+podem aparecer e a condição para a peça poder ir ao ar.
+
+## Pedidos de programas e filmes
+
+A migration 0033 cria também `content_requests`. A aba **Fábrica** mostra um
+card para cada canal, dividido em **Programas** e **Filmes**. Cada título contém
+o horário/bloco de destino e pode ser marcado individualmente quando entrar no
+acervo. A borda amarela indica prioridade máxima — normalmente porque já existe
+uma chamada original ou um slot fixo esperando aquele conteúdo.
+
+O checklist é uma encomenda editorial, não uma restrição: os títulos que já
+estão nos canais continuam no ar enquanto o novo acervo é reunido.

@@ -40,8 +40,8 @@ Três cérebros, um contrato:
 
 | Peça | O quê | Onde |
 |---|---|---|
-| `apps/stream` | Worker Hono: `/live/:canal`, `/epg/:canal`, `/channels`, `/media/*`, `/votaton/*` (público), `/health`, `/admin/*` (API do painel + Diretor IA + cookies), cron diário (reconcilia + editorial + agenda + re-dispatch da fábrica) | Cloudflare Workers (produção) |
-| `apps/stream/src/scheduler.ts` | Diretor determinístico: grade 48h/canal, rotação `last_played_at`, pods de intervalo (respiro mín. + comercial que caiba), diretrizes/eventos, **promessas** (a_seguir/durante/evento) e modo fiel/livre por canal, maratona de série, reconciliação R2↔D1 | idem |
+| `apps/stream` | Worker Hono: `/live/:canal`, `/epg/:canal` (guia = PROGRAMA, não linha de grade — ver `guia.ts`), `/channels`, `/media/*`, `/votaton/*` (público), `/health`, `/admin/*` (API do painel + Diretor IA + cookies), cron diário (reconcilia + editorial + agenda + re-dispatch da fábrica) | Cloudflare Workers (produção) |
+| `apps/stream/src/scheduler.ts` | Diretor determinístico: grade 48h/canal, rotação `last_played_at`, pods de intervalo (respiro mín. + comercial que caiba), **nunca corta programa na âncora** (encaixe de curta + enchimento de comercial), diretrizes/eventos, **promessas** (a_seguir/durante/evento) e modo fiel/livre por canal, maratona de série, reconciliação R2↔D1 | idem |
 | `apps/stream/src/diretor.ts` | Chat do Modo God (Gemini→DeepSeek→fallback): `excluir_media`/`excluir_serie`/`maratona`/`cancelar_exclusao`/`replan`. Exporta os helpers de fuso `spToEpoch`/`epochToSp` | idem |
 | `apps/stream/src/editorial.ts` | Diretor editorial noturno (10a): decide maratonas via LLM com validação determinística → `channel_events` de série | idem |
 | `apps/stream/src/promessas.ts` | Extração da promessa do comercial (transcript → LLM → `media_promises`) | idem |
@@ -108,8 +108,12 @@ Três cérebros, um contrato:
    continua escalando sua mídia mesmo que ela esteja sob uma diretriz de
    exclusão ativa — uma ordem específica do chat pesa mais que uma exclusão
    genérica. Decisão de design, não bug (documentado em GOTCHAS.md).
-
-## Decisões tomadas (e porquês)
+8. **Programa nunca é cortado** (Gabriel, 2026-09-15: *"um episódio acaba
+   cortando outro, isso não é legal — o ideal é passar comerciais mesmo"*).
+   Antes da hora de uma âncora só entra o que cabe INTEIRO; o vão que sobra é
+   preenchido por um programa curto que caiba (encaixe) e, no que restar,
+   intervalo até a hora (enchimento). A grade fixa continua pontual e a EPG
+   continua sem buraco — o que cede é o comercial, nunca o desenho.
 
 | Decisão | Porquê |
 |---|---|

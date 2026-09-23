@@ -5,7 +5,11 @@ import Ajuda from './Ajuda.vue'
 const API = import.meta.env.VITE_API_BASE ?? ''
 const TOKEN_KEY = 'bieltv_admin_token'
 
-const token = ref(localStorage.getItem(TOKEN_KEY) ?? '')
+// Rodando local (vite dev), o token pode vir da env — colar 48 chars na
+// telinha do celular erra fácil, e um token velho no localStorage travava a
+// entrada. Em build de produção isto é sempre '' (DEV é false).
+const devToken = import.meta.env.DEV ? (import.meta.env.VITE_ADMIN_TOKEN ?? '') : ''
+const token = ref(devToken || localStorage.getItem(TOKEN_KEY) || '')
 const authed = ref(false)
 const authMsg = ref('')
 
@@ -140,8 +144,8 @@ const promPendentes = computed(() => promessas.value.filter((p) => p.status === 
 const promDecididas = computed(() => promessas.value.filter((p) => p.status === 'confirmada' || p.status === 'ignorar'))
 
 // ── fábrica de comerciais (fala + amostra + molde) ─────────────────────────
-const fabrica = ref<{ voice_clips: any[]; moldes: any[]; samples: any[]; jobs: any[]; series: any[]; canais: any[]; ancoras: any[]; tts_disponivel: boolean }>({
-  voice_clips: [], moldes: [], samples: [], jobs: [], series: [], canais: [], ancoras: [], tts_disponivel: false,
+const fabrica = ref<{ voice_clips: any[]; moldes: any[]; samples: any[]; jobs: any[]; series: any[]; canais: any[]; ancoras: any[]; pedidos: any[]; pedidos_acervo: any[]; tts_disponivel: boolean }>({
+  voice_clips: [], moldes: [], samples: [], jobs: [], series: [], canais: [], ancoras: [], pedidos: [], pedidos_acervo: [], tts_disponivel: false,
 })
 const fabBusy = ref(false)
 const clipFile = ref<File | null>(null)
@@ -212,6 +216,15 @@ function alternaFab(chave: string, aberto: boolean) {
   fabAbertos.value[chave] = aberto
   localStorage.setItem(FAB_ABERTOS_KEY, JSON.stringify(fabAbertos.value))
 }
+const pedidosComercialPendentes = computed(() => (fabrica.value.pedidos ?? []).filter((p) => p.status === 'pendente'))
+const pedidosComercialOrdenados = computed(() => [...(fabrica.value.pedidos ?? [])].sort((a, b) => {
+  if (a.status !== b.status) return a.status === 'pendente' ? -1 : 1
+  return Number(b.prioridade ?? 0) - Number(a.prioridade ?? 0)
+}))
+const pedidoDias = (p: any): string => diasFabLabel(ancoraDias(p))
+const pedidosAcervoPendentes = computed(() => (fabrica.value.pedidos_acervo ?? []).filter((p) => p.status === 'pendente'))
+const pedidosAcervoDe = (canal: string, tipo: 'programa' | 'filme'): any[] =>
+  (fabrica.value.pedidos_acervo ?? []).filter((p) => p.canal === canal && p.tipo === tipo)
 const canalDoMolde = computed(() =>
   fabrica.value.moldes.find((m) => m.id === buildForm.value.molde_id)?.canal ?? '',
 )
@@ -228,6 +241,8 @@ const slugFab = (s: string) =>
 async function carregaFabrica() {
   try {
     fabrica.value = await (await api('/fabrica-comerciais')).json()
+    fabrica.value.pedidos ??= []
+    fabrica.value.pedidos_acervo ??= []
     if (!buildForm.value.molde_id && fabrica.value.moldes[0]) buildForm.value.molde_id = fabrica.value.moldes[0].id
     if (!channels.value.some((c) => c.id === clipForm.value.canal)) clipForm.value.canal = channels.value[0]?.id ?? ''
     // sem chave do ElevenLabs, cai pro upload manual de áudio
@@ -241,6 +256,32 @@ async function carregaFabrica() {
       }
     }
   } catch { /* poll cobre */ }
+}
+
+async function mudarStatusPedidoComercial(p: any) {
+  const status = p.status === 'pendente' ? 'concluido' : 'pendente'
+  try {
+    const res = await postJson(`/fabrica-comerciais/pedidos/${p.id}/status`, { status })
+    const body = await res.json().catch(() => ({} as { error?: string }))
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    msg.value = status === 'concluido' ? '✔ pedido de comercial concluído' : '✔ pedido reaberto'
+    await carregaFabrica()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  }
+}
+
+async function mudarStatusPedidoAcervo(p: any) {
+  const status = p.status === 'pendente' ? 'concluido' : 'pendente'
+  try {
+    const res = await postJson(`/fabrica-comerciais/pedidos-acervo/${p.id}/status`, { status })
+    const body = await res.json().catch(() => ({} as { error?: string }))
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+    msg.value = status === 'concluido' ? '✔ item do acervo concluído' : '✔ item do acervo reaberto'
+    await carregaFabrica()
+  } catch (e) {
+    msg.value = `✖ ${(e as Error).message}`
+  }
 }
 
 async function uploadAsset(f: File): Promise<string> {
@@ -488,33 +529,70 @@ function toggleDiaAncora(n: number) {
   ancoraForm.value.dias = cur.includes(n) ? cur.filter((x) => x !== n) : [...cur, n].sort((a, b) => a - b)
 }
 
-async function salvarAncora() {
+// ── leva de mudanças da grade ───────────────────────────────────────────────
+// Mexer numa âncora replaneja o canal INTEIRO, e isso custa ~13 mil linhas no
+// D1 (epg_virtual tem 5 índices, então cada linha da grade custa 6 escritas).
+// O teto diário do plano gratuito é 100 mil.
+//
+// Antes, cada clique aqui era uma chamada — e uma sessão de ajuste de grade
+// virava uma sessão de estouro de cota. Medido em 21-22/09/2026: 11 mudanças
+// numa hora = 144 mil linhas; noutro dia, 397 mil. Nos dois a cota estourou e a
+// FÁBRICA morreu junto, deixando 33 episódios parados — porque sem cota o
+// `/admin/jobs/claim` também falha.
+//
+// Agora os cliques enchem uma leva e vão num POST só (`/slots/lote`), que
+// replaneja cada canal UMA vez. Onze mudanças passam de 143 mil linhas para 13
+// mil. O lote é atômico: se uma faixa estiver errada, NADA é aplicado.
+const levaGrade = ref<{ criar: any[]; apagar: { id: string; rotulo: string }[] }>({ criar: [], apagar: [] })
+const temPendentes = computed(() => levaGrade.value.criar.length + levaGrade.value.apagar.length)
+const apagandoIds = computed(() => new Set(levaGrade.value.apagar.map((x) => x.id)))
+
+function salvarAncora() {
   if (!ancoraForm.value.series_id || ancoraForm.value.dias.length === 0) {
     msg.value = '✖ escolha programa e dias'
     return
   }
+  levaGrade.value.criar.push({ ...ancoraForm.value, dias: [...ancoraForm.value.dias] })
+  msg.value = `✔ na leva — ${temPendentes.value} mudança(s) esperando "aplicar"`
+}
+
+function apagarAncora(a: any) {
+  const id = typeof a === 'string' ? a : a.id
+  if (apagandoIds.value.has(id)) { // clicou de novo no ✕: desfaz
+    levaGrade.value.apagar = levaGrade.value.apagar.filter((x) => x.id !== id)
+    return
+  }
+  const rotulo = typeof a === 'string' ? id : `${tituloSerieFab(a.series_id)} · ${a.hora}`
+  levaGrade.value.apagar.push({ id, rotulo })
+  msg.value = `✔ na leva — ${temPendentes.value} mudança(s) esperando "aplicar"`
+}
+
+function descartarPendentes() {
+  levaGrade.value = { criar: [], apagar: [] }
+  msg.value = 'leva descartada — nada foi alterado'
+}
+
+async function aplicarPendentes() {
+  if (!temPendentes.value) return
   fabBusy.value = true
   try {
-    const res = await postJson('/fabrica-comerciais/slots', { ...ancoraForm.value })
+    const res = await postJson('/fabrica-comerciais/slots/lote', {
+      criar: levaGrade.value.criar,
+      apagar: levaGrade.value.apagar.map((x) => x.id),
+    })
     const body = await res.json().catch(() => ({} as { error?: string }))
     if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
-    msg.value = '✔ âncora criada — grade replanejada'
+    msg.value = `✔ ${body.criados?.length ?? 0} criada(s), ${body.apagados ?? 0} removida(s) — ${(body.canais_replanejados ?? []).length} canal(is) replanejado(s) UMA vez`
+    levaGrade.value = { criar: [], apagar: [] }
     await carregaFabrica()
     refresh()
   } catch (e) {
-    msg.value = `✖ ${(e as Error).message}`
+    // o lote é atômico: erro aqui significa que NADA foi aplicado, e a leva
+    // continua intacta pra correção — por isso não limpo `levaGrade`.
+    msg.value = `✖ ${(e as Error).message} — nada foi aplicado, a leva continua aqui`
   } finally {
     fabBusy.value = false
   }
-}
-
-async function apagarAncora(a: any) {
-  if (!confirm(`Remover o horário fixo de "${tituloSerieFab(a.series_id)}" (${diasFabLabel(ancoraDias(a))} às ${a.hora})? Aquele horário volta a ser rodízio livre e a grade é replanejada na hora.\n\nAtenção: o comercial que anuncia esse horário NÃO é removido e continua no ar prometendo algo que não acontece mais — desative ele no Catálogo.`)) return
-  const res = await api(`/fabrica-comerciais/slots/${a.id}`, { method: 'DELETE' })
-  const body = await res.json().catch(() => ({} as { error?: string }))
-  msg.value = res.ok ? '✔ âncora removida — grade replanejada' : `✖ ${body.error ?? res.status}`
-  await carregaFabrica()
-  refresh()
 }
 
 async function gerarComercialAncora(a: any) {
@@ -1722,7 +1800,11 @@ onBeforeUnmount(() => clearInterval(poll))
       </button>
       <button class="nav-item" :class="{ on: aba === 'fabrica' }" :aria-current="aba === 'fabrica'" @click="aba = 'fabrica'">
         <span class="nav-ico" aria-hidden="true">🏭</span> Fábrica
-        <span v-if="fabJobsAtivos.length" class="nav-badge azul" title="comerciais em montagem">{{ fabJobsAtivos.length }}</span>
+        <span
+          v-if="fabJobsAtivos.length || pedidosComercialPendentes.length || pedidosAcervoPendentes.length"
+          class="nav-badge"
+          title="pedidos de acervo/comerciais + comerciais em montagem"
+        >{{ fabJobsAtivos.length + pedidosComercialPendentes.length + pedidosAcervoPendentes.length }}</span>
       </button>
       <button class="nav-item" :class="{ on: aba === 'fila' }" :aria-current="aba === 'fila'" @click="aba = 'fila'">
         <span class="nav-ico" aria-hidden="true">⚙️</span> Fila
@@ -2276,6 +2358,88 @@ onBeforeUnmount(() => clearInterval(poll))
           Monte o comercial no painel de cima; os cadastros de que ele depende (voz, falas,
           amostras, moldes e âncoras) ficam nos blocos abaixo — abra só o que precisar.
         </p>
+
+        <div class="pedidos-acervo">
+          <div class="pedidos-head">
+            <div>
+              <h3>O que baixar para a grade</h3>
+              <p class="dim small">Programas e filmes desejados, agrupados por canal. Marque cada item quando ele entrar no acervo.</p>
+            </div>
+            <span class="chip">{{ pedidosAcervoPendentes.length }} pendente(s)</span>
+          </div>
+          <p v-if="!(fabrica.pedidos_acervo ?? []).length" class="dim">
+            Nenhum card ainda — aplique a migration 0033 para carregar o checklist dos três canais.
+          </p>
+          <div v-else class="acervo-card-grid">
+            <article v-for="c in fabrica.canais" :key="c.id" class="acervo-card">
+              <h4>{{ c.nome }}</h4>
+              <div class="acervo-colunas">
+                <div>
+                  <h5>Programas</h5>
+                  <button
+                    v-for="p in pedidosAcervoDe(c.id, 'programa')"
+                    :key="p.id"
+                    class="acervo-pedido"
+                    :class="{ feito: p.status === 'concluido', urgente: p.prioridade >= 95 }"
+                    :title="p.observacao || ''"
+                    @click="mudarStatusPedidoAcervo(p)"
+                  >
+                    <span>{{ p.status === 'concluido' ? '✓' : '○' }}</span>
+                    <span class="grow-text"><b>{{ p.titulo }}</b><small>{{ p.destino }}</small></span>
+                  </button>
+                </div>
+                <div>
+                  <h5>Filmes</h5>
+                  <button
+                    v-for="p in pedidosAcervoDe(c.id, 'filme')"
+                    :key="p.id"
+                    class="acervo-pedido"
+                    :class="{ feito: p.status === 'concluido', urgente: p.prioridade >= 95 }"
+                    :title="p.observacao || ''"
+                    @click="mudarStatusPedidoAcervo(p)"
+                  >
+                    <span>{{ p.status === 'concluido' ? '✓' : '○' }}</span>
+                    <span class="grow-text"><b>{{ p.titulo }}</b><small>{{ p.destino }}</small></span>
+                  </button>
+                </div>
+              </div>
+            </article>
+          </div>
+        </div>
+
+        <div class="pedidos-comerciais">
+          <div class="pedidos-head">
+            <div>
+              <h3>Pedidos de comerciais</h3>
+              <p class="dim small">Peças que a nova grade precisa. São encomendas editoriais: não entram na fila automaticamente.</p>
+            </div>
+            <span class="chip">{{ pedidosComercialPendentes.length }} pendente(s)</span>
+          </div>
+          <p v-if="pedidosComercialOrdenados.length === 0" class="dim">
+            Nenhum card ainda — aplique a migration 0032 para carregar os pedidos da grade de fim de semana.
+          </p>
+          <div v-else class="pedido-grid">
+            <article
+              v-for="p in pedidosComercialOrdenados"
+              :key="p.id"
+              class="pedido-card"
+              :class="{ feito: p.status === 'concluido' }"
+            >
+              <div class="pedido-top">
+                <span class="chip">{{ nomeCanal(p.canal) }}</span>
+                <span class="chip">{{ p.tipo }}</span>
+                <span class="mono">{{ pedidoDias(p) }} · {{ p.hora }}</span>
+              </div>
+              <h4>{{ p.titulo }}</h4>
+              <p class="pedido-texto">“{{ p.texto_sugerido }}”</p>
+              <p v-if="p.observacao" class="dim small">{{ p.observacao }}</p>
+              <button class="ghost" @click="mudarStatusPedidoComercial(p)">
+                {{ p.status === 'pendente' ? '✓ marcar concluído' : '↻ reabrir pedido' }}
+              </button>
+            </article>
+          </div>
+        </div>
+
         <div class="fab-grid">
           <div class="fab-panel fab-main">
             <h3>Montar comercial</h3>
@@ -2726,24 +2890,49 @@ onBeforeUnmount(() => clearInterval(poll))
                   @click="toggleDiaAncora(d.n)"
                 >{{ d.label }}</button>
               </div>
-              <div class="row">
-                <button class="ghost" :disabled="fabBusy" @click="salvarAncora">salvar âncora</button>
-                <Ajuda
-                  titulo="Cria e replaneja na hora"
-                  texto="Cria a âncora e já replaneja as próximas 48h desse canal (o bloco que está no ar é preservado)."
-                  atencao="Nada atravessa a âncora: um episódio que cruzaria o horário é CORTADO nele e os intervalos encurtam pra ela começar pontual. Maratona agendada tem prioridade e anula a âncora naquele período."
-                />
+              <button class="ghost" :disabled="fabBusy" @click="salvarAncora">+ adicionar à leva</button>
+
+              <!-- A leva existe porque mexer numa âncora replaneja o canal inteiro
+                   (~13 mil linhas no D1). Clique a clique, um dia de ajuste de grade
+                   estoura a cota diária e derruba a fábrica junto. Aqui as mudanças
+                   se acumulam e vão num POST só. -->
+              <div v-if="temPendentes" class="leva-box">
+                <div class="leva-head">
+                  <b>{{ temPendentes }} mudança(s) na leva</b>
+                  <span class="dim small">nada foi gravado ainda</span>
+                </div>
+                <div v-for="(c, i) in levaGrade.criar" :key="'c' + i" class="leva-item">
+                  <span class="leva-tag nova">＋</span>
+                  <span class="grow">{{ tituloSerieFab(c.series_id) }} · {{ c.canal }} · {{ diasFabLabel(c.dias) }} · {{ c.hora }}<span v-if="c.episodios > 1"> · {{ c.episodios }}ep</span></span>
+                  <button class="ghost" title="tirar da leva" @click="levaGrade.criar.splice(i, 1)">✕</button>
+                </div>
+                <div v-for="r in levaGrade.apagar" :key="r.id" class="leva-item">
+                  <span class="leva-tag remove">－</span>
+                  <span class="grow risca">{{ r.rotulo }}</span>
+                  <button class="ghost" title="tirar da leva" @click="apagarAncora(r.id)">✕</button>
+                </div>
+                <div class="row">
+                  <button class="primary" :disabled="fabBusy" @click="aplicarPendentes">
+                    {{ fabBusy ? 'aplicando…' : `aplicar ${temPendentes} mudança(s) — 1 replan por canal` }}
+                  </button>
+                  <button class="ghost" :disabled="fabBusy" @click="descartarPendentes">descartar</button>
+                </div>
               </div>
             </div>
             <p v-if="fabrica.ancoras.length === 0" class="dim small">
               nenhum horário fixo — hoje a grade é rodízio livre o dia todo.
             </p>
             <div class="fab-list">
-              <div v-for="a in fabrica.ancoras" :key="a.id" class="fab-mini">
+              <div v-for="a in fabrica.ancoras" :key="a.id" class="fab-mini" :class="{ 'a-sair': apagandoIds.has(a.id) }">
                 <span class="mono">{{ a.canal }}</span>
-                <span class="dim grow">{{ tituloSerieFab(a.series_id) }} · {{ diasFabLabel(ancoraDias(a)) }} · {{ a.hora }}<span v-if="a.episodios > 1"> · {{ a.episodios }}ep</span></span>
+                <span class="dim grow" :class="{ risca: apagandoIds.has(a.id) }">{{ tituloSerieFab(a.series_id) }} · {{ diasFabLabel(ancoraDias(a)) }} · {{ a.hora }}<span v-if="a.episodios > 1"> · {{ a.episodios }}ep</span></span>
                 <button class="ghost" title="gerar comercial deste horário" aria-label="gerar comercial deste horário" @click="gerarComercialAncora(a)">📢</button>
-                <button class="ghost perigo" title="remover âncora" aria-label="remover âncora" @click="apagarAncora(a)">✕</button>
+                <button
+                  class="ghost"
+                  :title="apagandoIds.has(a.id) ? 'está na leva pra sair — clique pra desfazer' : 'pôr na leva pra remover'"
+                  :aria-label="apagandoIds.has(a.id) ? 'tirar da leva de remoção' : 'pôr na leva pra remover'"
+                  @click="apagarAncora(a)"
+                >{{ apagandoIds.has(a.id) ? '↩' : '✕' }}</button>
               </div>
             </div>
           </details>
@@ -3535,6 +3724,47 @@ button.ghost.small { padding: 5px 10px; font-size: 12px; min-height: 0; }
 /* fábrica de comerciais: um painel principal na largura toda + cadastros
    recolhidos (antes eram 6 painéis num grid, com até 6 rolagens aninhadas) */
 .fab-grid { display: grid; grid-template-columns: 1fr; gap: 10px; align-items: start; min-width: 0; }
+/* leva de mudanças da grade (ver o comentário em `pendentes`) */
+.leva-box { margin-top: 10px; border: 1px solid var(--line); border-radius: 9px; padding: 10px; background: var(--panel-2); }
+.leva-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.leva-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; }
+.leva-tag { width: 18px; text-align: center; font-weight: 700; }
+.leva-tag.nova { color: #4ade80; }
+.leva-tag.remove { color: #ff6b6b; }
+.risca { text-decoration: line-through; opacity: 0.6; }
+.a-sair { opacity: 0.55; }
+
+/* fábrica de comerciais */
+.pedidos-acervo, .pedidos-comerciais { margin-bottom: 16px; border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px; background: var(--panel-2); }
+.pedidos-head { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.pedidos-head h3 { font-size: 13px; margin: 0; }
+.acervo-card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.acervo-card { min-width: 0; border: 1px solid var(--line); border-radius: 9px;
+  padding: 11px; background: var(--panel); }
+.acervo-card h4 { font-size: 15px; margin: 0 0 10px; }
+.acervo-card h5 { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-dim); margin: 10px 0 5px; }
+.acervo-colunas { max-height: 610px; overflow-y: auto; padding-right: 3px; }
+.acervo-pedido { width: 100%; display: flex; align-items: flex-start; gap: 7px; text-align: left;
+  border: 0; border-left: 2px solid transparent; background: transparent; color: var(--text);
+  padding: 6px; border-radius: 5px; cursor: pointer; }
+.acervo-pedido:hover { background: var(--panel-2); }
+.acervo-pedido.urgente { border-left-color: #ffb020; }
+.acervo-pedido.feito { opacity: 0.45; text-decoration: line-through; border-left-color: var(--ok); }
+.acervo-pedido .grow-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.acervo-pedido b { font-size: 12px; font-weight: 600; }
+.acervo-pedido small { color: var(--text-dim); font-size: 10px; line-height: 1.3; }
+.pedido-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.pedido-card { min-width: 0; border: 1px solid var(--line); border-left: 3px solid #ffb020;
+  border-radius: 9px; padding: 11px; background: var(--panel); }
+.pedido-card.feito { opacity: 0.58; border-left-color: var(--ok); }
+.pedido-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pedido-top .mono { margin-left: auto; }
+.pedido-card h4 { font-size: 14px; margin: 10px 0 6px; }
+.pedido-texto { font-size: 13px; line-height: 1.45; margin: 0 0 6px; }
+.pedido-card button { margin-top: 4px; }
+.fab-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; align-items: start; min-width: 0; }
 .fab-panel { min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--panel-2); }
 .fab-panel h3 { font-size: 12px; color: var(--text); margin-bottom: 8px; }
 .fab-panel > summary { font-size: 13px; font-weight: 600; color: var(--text);
@@ -3554,7 +3784,15 @@ button.ghost.small { padding: 5px 10px; font-size: 12px; min-height: 0; }
 .fab-check { flex-direction: row !important; align-items: center; gap: 8px; font-size: 13px; }
 .fab-check input { width: auto; flex: 0 0 auto; }
 .fab-mini select { width: auto; flex: 0 0 auto; }
+@media (max-width: 980px) {
+  .acervo-card-grid { grid-template-columns: 1fr; }
+  .acervo-colunas { max-height: none; }
+  .pedido-grid { grid-template-columns: 1fr; }
+  .fab-grid { grid-template-columns: 1fr; }
+  .fab-main { grid-row: auto; }
+}
 @media (max-width: 620px) {
+  .pedidos-head { align-items: stretch; flex-direction: column; }
   .fab-panel .row { flex-direction: column; align-items: stretch; }
   .fab-mini .grow { white-space: normal; }
 }

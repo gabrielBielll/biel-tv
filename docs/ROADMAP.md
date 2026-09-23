@@ -101,9 +101,17 @@ Entregue: whisper na fábrica, LLM propõe a promessa (casador determinístico d
 série), fila de revisão, agendador que cumpre. 4 tipos de promessa (`a_seguir`,
 `durante`, `bloco_horario`, `evento`) + modo fiel/livre por canal + reclassificar
 tipo. Ver tabela de fases concluídas.
+**✅ Entregue em 2026-08-08 — fábrica de grade automática + destrave por âncora:**
+`reconciliaComerciaisGrade()` (cron diário + criar/apagar âncora + POST
+`/admin/fabrica-comerciais/reconciliar-grade`) gera job de comercial pra toda
+âncora sem promo (quando o kit da série existe — clipes nome/frase, amostra,
+molde; lacunas em `config.reconcilia_comerciais`), recolhe promo cuja âncora
+sumiu (`ignorar` + marca `desatualizado`, reversível) e o comercial nasce
+`confirmada` com condicao `bloco_horario` — o scheduler destrava contra as
+`channel_slots` do canal (fiel por construção; era a metade "promos de horário
+fixo destravarem quando a grade garantir o bloco").
 **Falta (etapa 3, junto com a 10a):** programação GUIADA por promo — o Diretor
-montar blocos/sequências justamente porque tem a promo perfeita pra eles, e
-promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o bloco.
+montar blocos/sequências justamente porque tem a promo perfeita pra eles.
 
 ## 📦 Backlog (sem fase definida)
 
@@ -118,6 +126,13 @@ promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o 
   local está pronto; faltam snapshot versionado, geração condicionada e dry-run
   antes de habilitar publicação. Ver
   [features/modulo-comerciais-cartoon-network.md](features/modulo-comerciais-cartoon-network.md).
+- **Chegar na grade nostálgica 2005–2008** — escopo ampliado pelo Gabriel em
+  21/09/2026: reconstruir os três canais com base nas grades reais e chamadas
+  da época, sem exigir que tudo pertença ao mesmo dia de 2005. A base histórica
+  continua em [features/grade-alvo-2005.md](features/grade-alvo-2005.md); os
+  modelos distintos de sábado/domingo e os slots permanentes de filme estão em
+  [features/grade-fim-de-semana-2005-2008.md](features/grade-fim-de-semana-2005-2008.md).
+  Títulos emprestados atualmente nos canais permanecem por curadoria.
 
 - **Diretor encomenda comerciais + vinhetas "a seguir" GERADAS por IA** —
   pedido do Gabriel (2026-07-13). A inversão genial do problema da fase 12:

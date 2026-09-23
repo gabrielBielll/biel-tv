@@ -21,6 +21,14 @@ database_id = "c7790950-7ee9-4169-8d0c-40e7ce8672d9"
 binding = "MEDIA"
 bucket_name = "biel-tv-media"
 
+# Workers Logs LIGADO (2026-09-18): sem isto não existe log de requisição
+# guardado — o cron abaixo estoura `scriptThrewException` todo dia desde ≥12/09
+# e só dava pra ver o agregado (analytics GraphQL), sem stack trace. Cabe na
+# cota do Free; a retenção é curta, então o diagnóstico é do dia.
+[observability]
+enabled = true
+head_sampling_rate = 1
+
 [triggers]
 # Diretor de programação (fase 4): 06:00 UTC = 03:00 America/Sao_Paulo
 crons = ["0 6 * * *"]

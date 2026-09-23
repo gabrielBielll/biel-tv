@@ -196,6 +196,27 @@ const skewAr = Math.abs(sd('v') - sd('a'))
 check('concatParts: sample rate divergente cai pro filter SOZINHO e mantém A/V sincronizado',
   rAr.metodo === 'filter' && skewAr < 0.2, `metodo=${rAr.metodo} skew=${skewAr.toFixed(3)}s`)
 
+// codec de VÍDEO divergente (bug de 2026-07-23, ver GOTCHAS): o YouTube serve
+// av01 num vídeo e avc1 noutro da MESMA série, então as partes de um episódio
+// chegam com codecs diferentes. O `-c copy` empilha tudo numa trilha só, que
+// declara UM codec — os pacotes do outro NÃO decodificam e o episódio perde os
+// frames dessas partes. Duração total e skew A/V passam os dois (os timestamps
+// somam certo, só os frames somem), então só a checagem de codec pega isso.
+// Medido no bug real: 100 de 240 frames sobrevivendo à junção.
+const pVc = join(srcDir, 'pvcodec.mp4')
+execFileSync(ff, ['-y', '-hide_banner', '-loglevel', 'error',
+  '-f', 'lavfi', '-i', 'testsrc=size=640x360:rate=25', '-f', 'lavfi', '-i', 'sine=frequency=440',
+  '-t', '4', '-c:v', 'libx265', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', pVc])
+const outVc = join(srcDir, '_joined_vcodec.mp4')
+const rVc = await concatParts([p1, pVc], outVc) // SEM forcarFiltro — a detecção é o teste
+// o que importa não é o método por si: é o vídeo juntado DECODIFICAR inteiro
+// (2 partes de 4s a 30fps depois do filter = ~240 frames; no bug, ~100)
+const statsVc = spawnSync(ff, ['-hide_banner', '-loglevel', 'quiet', '-stats',
+  '-i', outVc, '-map', '0:v:0', '-f', 'null', '-'], { encoding: 'utf8' }).stderr ?? ''
+const framesVc = Number(statsVc.match(/frame=\s*(\d+)/g)?.at(-1)?.replace(/\D/g, '') ?? 0)
+check('concatParts: codec de vídeo divergente cai pro filter SOZINHO e o vídeo decodifica inteiro',
+  rVc.metodo === 'filter' && framesVc >= 190, `metodo=${rVc.metodo} frames=${framesVc}`)
+
 // ── limpeza ─────────────────────────────────────────────────────────────────
 await post(`/admin/media/ep_${SERIE}_e01/status`, { status: 'disabled' })
 cleanup()

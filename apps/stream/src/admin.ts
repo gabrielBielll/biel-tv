@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { runScheduler, scheduleChannel, reconcileAndRepair } from './scheduler'
+import { pedeReplan, runScheduler, scheduleChannel, reconcileAndRepair } from './scheduler'
 import { chatDiretor, estadoDiretor, type ChatMsg } from './diretor'
 import { uploads } from './uploads'
 import { dispatchFabrica } from './fabrica'
@@ -571,48 +571,130 @@ admin.post('/promessas/:id/extrair', async (c) => {
   return c.json({ ok: true })
 })
 
-admin.post('/promessas/:id/decidir', async (c) => {
-  const b = await c.req.json<{ status?: string; condicao?: Proposta }>().catch(() => ({} as { status?: string; condicao?: Proposta }))
-  const id = c.req.param('id')
-  const status = String(b.status ?? '')
-  if (!['confirmada', 'generico', 'ignorar', 'pendente'].includes(status)) {
-    return c.json({ error: 'status inválido' }, 400)
-  }
-  let condicao: string | null = null
-  if (status === 'confirmada') {
-    const cd = b.condicao
-    if (!cd || !['a_seguir', 'durante', 'bloco_horario', 'evento'].includes(cd.tipo)) {
-      return c.json({ error: 'confirmar exige a condição (tipo da promessa)' }, 400)
+// Valida UMA decisão de promessa e devolve o `condicao` serializado (ou null,
+// quando o status não é 'confirmada'), ou a mensagem de erro.
+//
+// Extraída do handler singular pra que o LOTE valide TUDO antes de escrever
+// QUALQUER coisa: metade das promessas ligadas é pior que nenhuma, porque a
+// peça sem condição vira enchimento genérico e toca fora do contexto.
+async function validaDecisao(
+  db: D1Database, status: string, cd: Proposta | undefined,
+): Promise<{ erro: string } | { condicao: string | null }> {
+  if (!['confirmada', 'generico', 'ignorar', 'pendente'].includes(status)) return { erro: 'status inválido' }
+  if (status !== 'confirmada') return { condicao: null }
+  if (!cd || !['a_seguir', 'durante', 'bloco_horario', 'evento'].includes(cd.tipo)) {
+      return { erro: 'confirmar exige a condição (tipo da promessa)' }
     }
     if (cd.tipo === 'a_seguir' || cd.tipo === 'durante') {
       // sem série alvo não há como cumprir — melhor "ignorar" que prometer no escuro
       if (!cd.series_id || !SLUG.test(cd.series_id)) {
-        return c.json({ error: `promessa "${cd.tipo === 'durante' ? 'você está vendo' : 'a seguir'}" precisa de uma série alvo válida` }, 400)
+        return { erro: `promessa "${cd.tipo === 'durante' ? 'você está vendo' : 'a seguir'}" precisa de uma série alvo válida` }
       }
       // o alvo precisa ser série de CONTEÚDO — "a seguir" toca colado num
       // episódio/filme; série de comerciais nunca aparece como programa
-      const existe = await c.env.DB.prepare(
+      const existe = await db.prepare(
         `SELECT 1 FROM media_items
          WHERE json_extract(metadata,'$.series_id') = ?1 AND status = 'ready'
            AND tipo IN ('episodio','filme') LIMIT 1`,
       ).bind(cd.series_id).first()
       if (!existe) {
-        return c.json({ error: `"${cd.series_id}" não tem episódio/filme pronto — agrupe os episódios da série alvo no catálogo primeiro` }, 400)
+        return { erro: `"${cd.series_id}" não tem episódio/filme pronto — agrupe os episódios da série alvo no catálogo primeiro` }
       }
     }
-    condicao = JSON.stringify({ tipo: cd.tipo, series_id: cd.series_id ?? null, descricao: cd.descricao ?? '' })
+    // hora/dias são o CORPO da promessa de horário — sem eles a condição vale
+    // pela série só, e a peça destrava numa faixa que não é a anunciada.
+    let hora: string | null = null
+    if (cd.hora != null && String(cd.hora).trim() !== '') {
+      const h = String(cd.hora).trim()
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(h)) return { erro: 'hora deve ser HH:MM' }
+      hora = h
+    }
+    let dias: number[] | null = null
+    if (cd.dias != null) {
+      if (!Array.isArray(cd.dias) || !cd.dias.every((n) => Number.isInteger(n) && n >= 1 && n <= 7)) {
+        return { erro: 'dias deve ser lista ISO 1..7 (1=seg, 7=dom)' }
+      }
+      dias = [...new Set(cd.dias as number[])].sort()
+    }
+    // `momento` só faz sentido em 'durante'; nos outros tipos fica null pra não
+    // sugerir comportamento que o scheduler não lê.
+    let momento: 'saida' | 'volta' | 'ambos' | null = null
+    if (cd.tipo === 'durante' && cd.momento != null) {
+      if (!['saida', 'volta', 'ambos'].includes(String(cd.momento))) {
+        return { erro: "momento deve ser 'saida', 'volta' ou 'ambos'" }
+      }
+      momento = cd.momento as 'saida' | 'volta' | 'ambos'
+    }
+  return {
+    condicao: JSON.stringify({
+      tipo: cd.tipo, series_id: cd.series_id ?? null, descricao: cd.descricao ?? '', hora, dias, momento,
+    }),
   }
-  const r = await c.env.DB.prepare(
-    `UPDATE media_promises SET status = ?2, condicao = ?3, updated_at = unixepoch() WHERE media_id = ?1`,
-  ).bind(id, status, condicao).run()
-  if ((r.meta.changes ?? 0) === 0) return c.json({ error: 'promessa não encontrada' }, 404)
+}
 
-  // o pool de comerciais mudou — replaneja os canais da mídia
-  const { results: chs } = await c.env.DB.prepare(
-    'SELECT DISTINCT channel_id ch FROM media_channels WHERE media_id = ?1',
-  ).bind(id).all<{ ch: string }>()
-  for (const r2 of chs) await scheduleChannel(c.env, r2.ch, 48, true)
-  return c.json({ ok: true, canais_replanejados: chs.map((x) => x.ch) })
+// Grava N decisões já validadas e replaneja cada canal afetado UMA vez.
+//
+// UPSERT, não UPDATE: a linha de `media_promises` nasce com a TRANSCRIÇÃO, e peça
+// que nunca foi transcrita não tem linha nenhuma. Decidir a condição é editorial
+// — "esta vinheta é o 'volta já' do Feiticeiros" — e não depende de ter áudio.
+// Antes disto, ligar as condições das 100 vinhetas de contexto devolvia 404 em
+// TODAS (23/09/2026): o UPDATE não casava linha e o endpoint chamava isso de
+// "promessa não encontrada", quando o certo era criá-la.
+async function gravaDecisoes(
+  env: { DB: D1Database; MEDIA: R2Bucket },
+  itens: Array<{ id: string; status: string; condicao: string | null }>,
+): Promise<string[]> {
+  const afetados = new Set<string>()
+  for (const it of itens) {
+    await env.DB.prepare(
+      `INSERT INTO media_promises (media_id, status, condicao)
+       VALUES (?1, ?2, ?3)
+       ON CONFLICT(media_id) DO UPDATE SET status = ?2, condicao = ?3, updated_at = unixepoch()`,
+    ).bind(it.id, it.status, it.condicao).run()
+    const { results } = await env.DB.prepare(
+      'SELECT DISTINCT channel_id ch FROM media_channels WHERE media_id = ?1',
+    ).bind(it.id).all<{ ch: string }>()
+    for (const r of results) afetados.add(r.ch)
+  }
+  // ⚠️ AQUI mora a economia. O handler singular replanejava dentro do laço, e o
+  // replan custa ~13 mil linhas (epg_virtual tem 5 índices). Ligar as 100
+  // vinhetas de contexto uma a uma sairia por ~1,3 MILHÃO — 13 dias do teto
+  // diário do D1 free tier. Em lote: um replan por canal.
+  for (const ch of afetados) await scheduleChannel(env, ch, 48, true)
+  return [...afetados]
+}
+
+admin.post('/promessas/:id/decidir', async (c) => {
+  const b = await c.req.json<{ status?: string; condicao?: Proposta }>().catch(() => ({} as { status?: string; condicao?: Proposta }))
+  const status = String(b.status ?? '')
+  const v = await validaDecisao(c.env.DB, status, b.condicao)
+  if ('erro' in v) return c.json({ error: v.erro }, 400)
+  const canais = await gravaDecisoes(c.env, [{ id: c.req.param('id'), status, condicao: v.condicao }])
+  return c.json({ ok: true, canais_replanejados: canais })
+})
+
+// LOTE de decisões: liga a condição de N peças com UM replan por canal.
+// Valida tudo antes de gravar qualquer coisa — meia leva ligada é pior que
+// nenhuma, porque peça sem condição vira enchimento genérico e toca fora do
+// contexto (foi o sintoma que o Gabriel viu no ar: "Feiticeiros foi pro
+// comercial e não apareceu vinheta nenhuma de saída").
+admin.post('/promessas/lote', async (c) => {
+  type Item = { media_id?: string; status?: string; condicao?: Proposta }
+  const b = await c.req.json<{ decisoes?: Item[] }>().catch(() => ({} as { decisoes?: Item[] }))
+  const decisoes = Array.isArray(b.decisoes) ? b.decisoes : []
+  if (decisoes.length === 0) return c.json({ error: 'informe "decisoes"' }, 400)
+  if (decisoes.length > 300) return c.json({ error: 'no máximo 300 por chamada' }, 400)
+  const prontas: Array<{ id: string; status: string; condicao: string | null }> = []
+  for (const [i, it] of decisoes.entries()) {
+    const id = String(it?.media_id ?? '')
+    if (!id) return c.json({ error: `decisoes[${i}]: falta media_id` }, 400)
+    const status = String(it?.status ?? '')
+    const v = await validaDecisao(c.env.DB, status, it?.condicao)
+    if ('erro' in v) return c.json({ error: `decisoes[${i}] (${id}): ${v.erro}` }, 400)
+    prontas.push({ id, status, condicao: v.condicao })
+  }
+  const canais = await gravaDecisoes(c.env, prontas)
+  return c.json({ ok: true, decididas: prontas.length, canais_replanejados: canais })
 })
 
 // ── catálogo ───────────────────────────────────────────────────────────────
@@ -795,27 +877,70 @@ admin.post('/media/:id/tipo', async (c) => {
   const { results: chs } = await c.env.DB.prepare(
     'SELECT DISTINCT channel_id ch FROM media_channels WHERE media_id = ?1',
   ).bind(id).all<{ ch: string }>()
-  for (const r2 of chs) await scheduleChannel(c.env, r2.ch, 48, true)
-  return c.json({ ok: true, canais_replanejados: chs.map((x) => x.ch) })
+  // replan COALESCIDO (ver `pedeReplan`): reclassificar uma leva de peças uma a
+  // uma custava um replan por peça — o padrão que estourou a cota em 21, 22 e
+  // 23/09/2026. As linhas do EPG dessa mídia já saíram acima, então ela não
+  // entra no ar nem durante a janela do debounce.
+  for (const r2 of chs) {
+    c.executionCtx.waitUntil(pedeReplan(c.env, r2.ch).catch(() => { /* cron cobre */ }))
+  }
+  return c.json({ ok: true, canais_replanejados: chs.map((x) => x.ch), replan: 'coalescido' })
 })
+
+// Muda o status de N mídias e replaneja cada canal afetado UMA vez — mesmo
+// padrão do `aplicaCanais` logo acima, e pelo mesmo motivo.
+//
+// ⚠️ REPLAN É CARO. `epg_virtual` tem 5 índices, então cada linha custa 6
+// escritas (tabela + índices); com ~1.100 linhas futuras por canal, um replan
+// (delete + insert) sai por ~13 mil linhas. O teto diário do D1 free tier é
+// 100 mil.
+//
+// Medido em 22/09/2026: um laço de 19 peças do MESMO canal pelo endpoint
+// antigo (que replanejava por chamada) escreveu 397 mil linhas numa hora —
+// quatro dias de orçamento, pra fazer o que um replan faria. A fábrica ficou
+// parada o dia inteiro e 33 episódios não ingeriram. Daí o lote.
+async function aplicaStatus(
+  env: { DB: D1Database; MEDIA: R2Bucket },
+  mediaIds: string[],
+  status: 'ready' | 'disabled',
+): Promise<string[]> {
+  if (mediaIds.length === 0) return []
+  const afetados = new Set<string>()
+  const now = Math.floor(Date.now() / 1000)
+  for (const id of mediaIds) {
+    await env.DB.prepare('UPDATE media_items SET status = ?2 WHERE id = ?1').bind(id, status).run()
+    if (status !== 'disabled') continue
+    // sai da grade futura já agendada; o replan vem depois, uma vez por canal
+    await env.DB.prepare('DELETE FROM epg_virtual WHERE media_id = ?1 AND start_time_virtual > ?2')
+      .bind(id, now).run()
+    const { results } = await env.DB.prepare(
+      'SELECT DISTINCT channel_id ch FROM media_channels WHERE media_id = ?1',
+    ).bind(id).all<{ ch: string }>()
+    for (const r of results) afetados.add(r.ch)
+  }
+  for (const ch of afetados) await scheduleChannel(env, ch, 48, true)
+  return [...afetados]
+}
 
 admin.post('/media/:id/status', async (c) => {
   const { status } = await c.req.json<{ status: string }>().catch(() => ({ status: '' }))
   if (!['ready', 'disabled'].includes(status)) return c.json({ error: 'status inválido' }, 400)
-  const id = c.req.param('id')
-  await c.env.DB.prepare('UPDATE media_items SET status = ?2 WHERE id = ?1').bind(id, status).run()
+  const canais = await aplicaStatus(c.env, [c.req.param('id')], status as 'ready' | 'disabled')
+  return c.json({ ok: true, canais_replanejados: canais })
+})
 
-  // desativou → sai da grade futura e os canais dela são replanejados
-  if (status === 'disabled') {
-    const now = Math.floor(Date.now() / 1000)
-    await c.env.DB.prepare('DELETE FROM epg_virtual WHERE media_id = ?1 AND start_time_virtual > ?2')
-      .bind(id, now).run()
-    const { results } = await c.env.DB.prepare(
-      'SELECT DISTINCT channel_id ch FROM media_channels WHERE media_id = ?1',
-    ).bind(id).all<{ ch: string }>()
-    for (const r of results) await scheduleChannel(c.env, r.ch, 48, true)
-  }
-  return c.json({ ok: true })
+// Versão em LOTE: desativar N peças custa o mesmo replan que desativar uma.
+// Use esta em qualquer limpeza — ver o aviso de custo no `aplicaStatus`.
+admin.post('/media/status', async (c) => {
+  type Corpo = { ids?: string[]; status?: string }
+  const b = await c.req.json<Corpo>().catch(() => ({} as Corpo))
+  const status = String(b.status ?? '')
+  if (!['ready', 'disabled'].includes(status)) return c.json({ error: 'status inválido' }, 400)
+  const ids = Array.isArray(b.ids) ? b.ids.filter((x: unknown): x is string => typeof x === 'string' && !!x) : null
+  if (!ids || ids.length === 0) return c.json({ error: 'ids deve ser uma lista não vazia' }, 400)
+  if (ids.length > 200) return c.json({ error: 'no máximo 200 por chamada' }, 400)
+  const canais = await aplicaStatus(c.env, ids, status as 'ready' | 'disabled')
+  return c.json({ ok: true, mudados: ids.length, canais_replanejados: canais })
 })
 
 // Zona de perigo: deleção FÍSICA e irreversível de uma mídia (segmentos no
@@ -853,7 +978,12 @@ admin.delete('/media/:id', async (c) => {
 
   // trava de prefixo: só apagamos chaves media/<id>/... — nunca um prefixo
   // vazio/estranho, e a barra final garante que media/ep_x2 não cai junto.
-  if (!/^media\/[a-z0-9_]{3,40}$/.test(m.path_prefix)) {
+  // O teto é 120 porque id de peça recortada é descritivo e passa fácil de 40
+  // ("com_cn_invasao_referencia_cn_programacao_andy_esquilo_…" tem 83): com o
+  // limite antigo a exclusão morria com 500 em 115 mídias do acervo — bug
+  // encontrado em 16/09/2026 na limpeza dos rebaixados. O que a trava tem que
+  // barrar é prefixo VAZIO ou fora de `media/`, não id comprido.
+  if (!/^media\/[a-z0-9_]{3,120}$/.test(m.path_prefix)) {
     return c.json({ error: `path_prefix inesperado ("${m.path_prefix}") — deleção recusada por segurança` }, 500)
   }
   const prefixo = `${m.path_prefix}/`
@@ -895,7 +1025,12 @@ admin.delete('/media/:id', async (c) => {
     c.env.DB.prepare('DELETE FROM media_channels WHERE media_id = ?1').bind(id),
     c.env.DB.prepare('DELETE FROM epg_virtual WHERE media_id = ?1').bind(id),
     c.env.DB.prepare('DELETE FROM channel_events WHERE media_id = ?1').bind(id),
-    c.env.DB.prepare(`UPDATE directives SET status = 'cancelada' WHERE status = 'ativa' AND payload LIKE ?1`).bind(`%"${id}"%`),
+    // `instr` em vez de LIKE: o D1 recusa padrão LIKE com mais de 50 caracteres
+    // ("LIKE or GLOB pattern too complex"), e `%"<id>"%` passa disso com id de
+    // 47+ chars — que é o caso das peças recortadas (nome descritivo). Custou
+    // 500 silencioso na exclusão de 3 mídias em 16/09/2026; `instr` não tem
+    // limite de tamanho e faz a mesma busca literal.
+    c.env.DB.prepare("UPDATE directives SET status = 'cancelada' WHERE status = 'ativa' AND instr(payload, '\"' || ?1 || '\"') > 0").bind(id),
     c.env.DB.prepare('DELETE FROM ingest_jobs WHERE id = ?1').bind(id),
     c.env.DB.prepare('DELETE FROM upload_parts WHERE session_id IN (SELECT id FROM upload_sessions WHERE media_id = ?1)').bind(id),
     c.env.DB.prepare('DELETE FROM upload_sessions WHERE media_id = ?1').bind(id),
@@ -903,10 +1038,13 @@ admin.delete('/media/:id', async (c) => {
     c.env.DB.prepare('DELETE FROM media_items WHERE id = ?1').bind(id),
   ])
 
-  // o pool desses canais mudou — replaneja (append-only, bloco no ar intacto)
-  for (const r of canais) await scheduleChannel(c.env, r.ch, 48, true)
+  // o pool desses canais mudou — replan COALESCIDO (ver `pedeReplan`), porque
+  // apagar uma leva de mídias uma a uma custava um replan por mídia
+  for (const r of canais) {
+    c.executionCtx.waitUntil(pedeReplan(c.env, r.ch).catch(() => { /* cron cobre */ }))
+  }
 
-  return c.json({ ok: true, segmentos_apagados: segmentosApagados, canais_replanejados: canais.map((r) => r.ch) })
+  return c.json({ ok: true, segmentos_apagados: segmentosApagados, canais_replanejados: canais.map((r) => r.ch), replan: 'coalescido' })
 })
 
 // Troca os canais de UMA mídia — e conserta a grade na hora: canal REMOVIDO
@@ -1012,8 +1150,12 @@ admin.post('/schedule/run', async (c) => {
   return c.json(reports)
 })
 
+// `lote` = quantas mídias conferir nesta passada (default no scheduler);
+// `seco: true` = ensaio, diz o que cairia sem desabilitar nada.
 admin.post('/reconcile', async (c) => {
-  return c.json(await reconcileAndRepair(c.env))
+  const b = await c.req.json<{ lote?: number; seco?: boolean }>().catch(() => ({}))
+  const lote = Number.isFinite(Number(b?.lote)) ? Number(b?.lote) : undefined
+  return c.json(await reconcileAndRepair(c.env, { lote, seco: Boolean(b?.seco) }))
 })
 
 // ── Diretor IA (chat do Modo God) ──────────────────────────────────────────
@@ -1052,8 +1194,8 @@ admin.post('/diretor/diretriz/:id/cancelar', async (c) => {
   const d = await c.env.DB.prepare("UPDATE directives SET status='cancelada' WHERE id = ?1 AND status='ativa' RETURNING canal")
     .bind(id).first<{ canal: string }>()
   if (!d) return c.json({ error: 'diretriz não encontrada' }, 404)
-  await scheduleChannel(c.env, d.canal, 48, true)
-  return c.json({ ok: true })
+  c.executionCtx.waitUntil(pedeReplan(c.env, d.canal).catch(() => { /* cron cobre */ }))
+  return c.json({ ok: true, replan: 'coalescido' })
 })
 
 admin.post('/diretor/evento/:id/cancelar', async (c) => {
@@ -1061,8 +1203,8 @@ admin.post('/diretor/evento/:id/cancelar', async (c) => {
   const e = await c.env.DB.prepare("UPDATE channel_events SET status='cancelado' WHERE id = ?1 AND status='agendado' RETURNING canal")
     .bind(id).first<{ canal: string }>()
   if (!e) return c.json({ error: 'evento não encontrado' }, 404)
-  await scheduleChannel(c.env, e.canal, 48, true)
-  return c.json({ ok: true })
+  c.executionCtx.waitUntil(pedeReplan(c.env, e.canal).catch(() => { /* cron cobre */ }))
+  return c.json({ ok: true, replan: 'coalescido' })
 })
 
 // ── config (inclui a flag do Modo God) ─────────────────────────────────────

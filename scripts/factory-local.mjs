@@ -27,6 +27,12 @@ const DRAIN = process.env.FACTORY_DRAIN === '1'
 const POLL_MS = 5000
 const HDR = { authorization: `Bearer ${TOKEN}` }
 
+// Comando do yt-dlp. Actions/EC2: o binário 'yt-dlp' no PATH. Termux/Android:
+// o binário do pkg é velho e não resolve o "n challenge" atual — lá se aponta
+// YTDLP_CMD="python3 -m yt_dlp" (a build do pip com o plugin ejs). Split simples
+// no espaço basta pros dois casos ("yt-dlp" | "python3 -m yt_dlp").
+const YTDLP = (process.env.YTDLP_CMD || 'yt-dlp').trim().split(/\s+/)
+
 const log = (s) => console.log(`[fábrica ${new Date().toISOString().slice(11, 19)}] ${s}`)
 
 // O processamento bloqueia o event loop por dezenas de segundos (spawnSync),
@@ -102,7 +108,8 @@ async function cookieFile() {
 // resolve o "n challenge" atual do YouTube; cookies seguem como plano B.
 async function baixarUrl(url, dest, cookies) {
   const { spawnSync: run } = await import('node:child_process')
-  const r = run('yt-dlp', [
+  const r = run(YTDLP[0], [
+    ...YTDLP.slice(1),
     '--no-playlist', '--force-overwrites',
     '--js-runtimes', 'node',
     '-f', 'bv*[height<=720]+ba/b[height<=720]/b',
@@ -146,7 +153,8 @@ async function listaPlaylist(pl) {
   log(`listando playlist ${pl.id} (${String(pl.url).slice(0, 70)}…)`)
   const cookies = await cookieFile()
   const { spawnSync: run } = await import('node:child_process')
-  const r = run('yt-dlp', [
+  const r = run(YTDLP[0], [
+    ...YTDLP.slice(1),
     '--flat-playlist', '--dump-single-json', '--no-warnings',
     '--js-runtimes', 'node',
     ...(cookies ? ['--cookies', cookies] : []),
@@ -245,7 +253,10 @@ async function processJob(job) {
     ...(job.episode ? ['--episode', String(job.episode)] : []),
     ...(job.tags ? ['--tags', job.tags] : []),
     ...(job.canais ? ['--canais', job.canais] : []),
-    ...(job.video_fit ? ['--fit', job.video_fit] : []),
+    // fit explícito do job vence; sem escolha, 'auto' mede o aspecto e enche
+    // 4:3 com fill (fonte já-16:9 vira letterbox/no-op) — ninguém precisa
+    // decidir fill na mão por série.
+    '--fit', job.video_fit || 'auto',
     '--target', TARGET,
     // base_url '' = servido via rota /media/* do Worker (mesmo esquema do
     // resto do catálogo em produção — sem domínio público configurado ainda).

@@ -1,0 +1,17 @@
+-- Marca de VOZ PROVISÓRIA no clipe de fala.
+--
+-- Contexto (decisão do Gabriel, 18/09/2026): a assinatura do ElevenLabs foi
+-- pausada — estava sendo paga e quase não usada. O plano grátis continua
+-- deixando usar as vozes do CATÁLOGO PÚBLICO, só não as CLONADAS dos
+-- narradores. Então o trabalho não para: gera-se agora com voz de catálogo e,
+-- quando a assinatura voltar, regrava-se tudo com a voz clonada do canal.
+--
+-- "Isso tem que ser rastreável": sem uma marca explícita, daqui a dois meses
+-- ninguém sabe quais clipes são provisórios e quais são a voz certa. O
+-- `audio_key` carrega o id da voz no caminho (fabrica/tts/<voz>/<hash>.mp3),
+-- mas isso é convenção — dá pra quebrar e não aparece numa listagem.
+--
+-- 0 = voz definitiva do canal (o padrão, e o que todos os clipes existentes são:
+--     foram gravados quando a assinatura estava ativa).
+-- 1 = gerado com voz de catálogo, esperando regravação.
+ALTER TABLE voice_clips ADD COLUMN voz_provisoria INTEGER NOT NULL DEFAULT 0;

@@ -43,6 +43,13 @@ export async function probe(input) {
   const v = info.streams.find((s) => s.codec_type === 'video')
   const a = info.streams.find((s) => s.codec_type === 'audio')
   if (!v) throw new Error('arquivo sem stream de vídeo')
+  // Lista de faixas de áudio na ORDEM do arquivo, com o índice RELATIVO (o que o
+  // `-map 0:a:N` usa) e a tag de idioma. Serve pro cli escolher a faixa PT quando
+  // a fonte traz várias (e a ordem varia por acervo: no PPG o PT vem primeiro, no
+  // Looney Tunes o inglês vem primeiro e o PT é a 2ª — ver --audio-lang).
+  const audioStreams = info.streams
+    .filter((s) => s.codec_type === 'audio')
+    .map((s, i) => ({ rel: i, lang: s.tags?.language ?? null, channels: s.channels ?? null }))
   return {
     duration: Number(info.format.duration),
     width: v.width,
@@ -50,11 +57,45 @@ export async function probe(input) {
     vcodec: v.codec_name,
     acodec: a?.codec_name ?? null,
     hasAudio: Boolean(a),
+    audioStreams,
     // parâmetros de áudio: o concatParts usa pra decidir se o `-c copy` é
     // seguro (sample rate/canais divergentes → o demuxer escorrega o áudio).
     asampleRate: a?.sample_rate ? Number(a.sample_rate) : null,
     achannels: a?.channels ? Number(a.channels) : null,
   }
+}
+
+/**
+ * Detecta tarja preta EMBUTIDA (letterbox/pillarbox queimado na fonte) via
+ * cropdetect, e devolve o "W:H:X:Y" da imagem real — ou null se a fonte já
+ * enche o quadro. Usado pelo --fit fill/auto pra comer barras finas ANTES de
+ * esticar (senão o fill preserva a tarja da fonte — ex.: rips 352x264 com 2px
+ * de cada lado, que viram ~7px no 1280). Amostra a partir de `sampleStart`s
+ * (pula abertura/preto inicial) e pega o crop mais frequente. Valores forçados
+ * a par (yuv420p exige). Best-effort: qualquer erro devolve null (sem crop).
+ */
+export async function detectCrop(input, { sampleStart = 60, frames = 200 } = {}) {
+  let saida = ''
+  try {
+    const { stdout, stderr } = await execFileAsync(FFMPEG(), [
+      '-hide_banner', '-nostats', '-ss', String(sampleStart), '-i', input,
+      '-vf', 'cropdetect=24:2:0', '-frames:v', String(frames), '-f', 'null', '-',
+    ], BUF)
+    saida = `${stdout}${stderr}`
+  } catch (e) {
+    saida = `${e.stdout ?? ''}${e.stderr ?? ''}`   // ffmpeg às vezes sai !=0 e ainda logou o cropdetect
+  }
+  const contagem = new Map()
+  for (const m of saida.matchAll(/crop=(\d+):(\d+):(\d+):(\d+)/g)) {
+    const k = `${m[1]}:${m[2]}:${m[3]}:${m[4]}`
+    contagem.set(k, (contagem.get(k) ?? 0) + 1)
+  }
+  let melhor = null, maxN = 0
+  for (const [k, n] of contagem) if (n > maxN) { melhor = k; maxN = n }
+  if (!melhor) return null
+  const [w, h, x, y] = melhor.split(':').map(Number)
+  const par = (n) => n - (n % 2)   // yuv420p exige dimensões/offsets pares
+  return `${par(w)}:${par(h)}:${par(x)}:${par(y)}`
 }
 
 /**
@@ -78,20 +119,30 @@ async function streamDurations(file) {
  * Passo 1 — normaliza para o perfil único do canal:
  * 1280x720 letterbox, 30fps, H.264 high (CRF configurável, padrão 23 como no
  * my-tv), AAC 128k 48kHz stereo (silêncio injetado se a fonte não tem áudio),
- * keyframes forçados em t=0,10,20,... e final padded com preto/silêncio até
- * fechar múltiplo de 10s.
+ * IDR a cada 10s (keyint fixo por CONTAGEM DE FRAMES) e final padded com
+ * preto/silêncio até fechar múltiplo de 10s.
  */
-export async function normalize(input, outFile, { paddedDur, pad, hasAudio, crf = 23, fps = 30, fit = 'letterbox', onProgress }) {
+export async function normalize(input, outFile, { paddedDur, pad, hasAudio, crf = 23, fps = 30, fit = 'letterbox', crop = null, audioIndex = null, onProgress }) {
   // Enquadramento p/ 1280x720:
   //  - 'letterbox' (padrão): preserva o aspecto e completa com preto (fonte 4:3
   //    vira 16:9 com tarjas pretas laterais). Nada de esticar nem cortar.
-  //  - 'fill': enche o 16:9 pra fonte 4:3 — estica ~13% na largura (scale p/
-  //    1280x850) e dá zoom cortando p/ 720, com viés pro topo (corta 40px do topo
-  //    e 90px da base), pra não perder o topo da imagem e não distorcer demais.
+  //  - 'fill': enche o 16:9 pra fonte 4:3 combinando esticada lateral + zoom leve.
+  //    Estica ~20% na largura (scale p/ 1280x800) e dá zoom cortando só 80px p/ 720,
+  //    com viés pro topo (corta 24px do topo e 56px da base). O peso maior na
+  //    esticada (vs. um zoom forte) preserva mais da cena — pés, chão, cenário —
+  //    e ainda mantém as formas redondas sem distorcer demais. Ver as amostras
+  //    comparadas (estica x zoom) que calibraram esse 800/24 em 2026-07-29.
+  //
+  // `crop` (opcional, "W:H:X:Y"): recorta ANTES de tudo. Existe pros rips de
+  // desenho 4:3 que vêm num container 16:9 com a tarja preta JÁ QUEIMADA nas
+  // laterais (pillarbox embutido — ex.: Coragem "1080p"). Sem remover a tarja
+  // primeiro, o 'fill' esticaria o quadro-com-tarja e o 'letterbox' manteria as
+  // barras pretas; com o crop certo, o 'fill' enche a tela só com a imagem real.
   const enquadra = fit === 'fill'
-    ? ['scale=1280:850', 'crop=1280:720:0:40', 'setsar=1']
+    ? ['scale=1280:800', 'crop=1280:720:0:24', 'setsar=1']
     : ['scale=1280:720:force_original_aspect_ratio=decrease', 'pad=1280:720:(ow-iw)/2:(oh-ih)/2']
   const vf = [
+    ...(crop ? [`crop=${crop}`] : []),
     ...enquadra,
     `fps=${fps}`,
     'format=yuv420p',
@@ -101,14 +152,29 @@ export async function normalize(input, outFile, { paddedDur, pad, hasAudio, crf 
   const args = ['-y', '-hide_banner', '-loglevel', 'error', '-i', input]
   if (!hasAudio) args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000')
 
+  // Seleção de faixa: sem áudio → vídeo da fonte + silêncio sintético. Com
+  // `audioIndex` → mapeia explicitamente aquela faixa de áudio (ex.: a trilha PT
+  // que não é a 1ª). Sem `audioIndex` → deixa o ffmpeg escolher (faixa 1 / mais
+  // canais), que é o certo quando o PT já é a faixa default.
+  const mapArgs = !hasAudio
+    ? ['-map', '0:v:0', '-map', '1:a:0']
+    : (audioIndex != null ? ['-map', '0:v:0', '-map', `0:a:${audioIndex}`] : [])
   args.push(
-    ...(hasAudio ? [] : ['-map', '0:v:0', '-map', '1:a:0']),
+    ...mapArgs,
     '-t', paddedDur.toFixed(3),
     '-vf', vf,
     '-af', 'aresample=48000,apad',
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(crf),
-    '-profile:v', 'high', '-sc_threshold', '0',
-    '-force_key_frames', `expr:gte(t,n_forced*${SEG})`,
+    '-profile:v', 'high',
+    // IDR a cada SEG segundos travando o GOP por CONTAGEM DE FRAMES (keyint fixo
+    // = fps*SEG) sobre a saída CFR do filtro `fps`. Antes usávamos
+    // `-force_key_frames expr:gte(t,n_forced*SEG)`, que depende do PTS de saída:
+    // fontes com timestamp torto (WEBRip com jitter/descontinuidade de PTS) faziam
+    // a expressão PARAR de forçar keyframe no meio do arquivo → um segmento
+    // gigante no fim e a contagem quebrava (ex.: PPG S01E04 gerou 47 de 133).
+    // keyint por frame é imune a isso: 300 frames = 10s exatos, sempre.
+    // scenecut=0 impede o x264 de enfiar IDR extra no meio do GOP.
+    '-x264-params', `keyint=${fps * SEG}:min-keyint=${fps * SEG}:scenecut=0`,
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2',
     outFile,
   )
@@ -193,17 +259,28 @@ export async function concatParts(partFiles, outFile, { forcarFiltro = false } =
   // fazem o concat demuxer reinterpretar as amostras na timebase errada → o
   // áudio "escorrega" do vídeo, um desync que SOBREVIVE ao normalize. Quando
   // diverge, vamos direto pro filter (que reamostra tudo pra 48k antes de
-  // juntar). Resolução/SAR de vídeo diferentes NÃO são problema aqui: o
-  // normalize reescala e absorve — por isso só o áudio pesa nesta decisão.
+  // juntar).
   const audioUniforme = infos.every((i) =>
     i.acodec === infos[0].acodec &&
     i.asampleRate === infos[0].asampleRate &&
     i.achannels === infos[0].achannels)
 
+  // E o CODEC DE VÍDEO também tem que bater. O `-c copy` empilha os pacotes
+  // numa trilha só, e uma trilha MP4 declara UM codec: se as partes misturam
+  // av1 e h264 (o YouTube serve av01 num vídeo e avc1 noutro da MESMA série —
+  // acontece o tempo todo em episódio dividido em partes), o decoder do codec
+  // declarado recebe os pacotes do outro e não decodifica NADA deles
+  // ("Unknown OBU type" do libdav1d). A validação de duração e a de skew A/V
+  // passam as duas — os timestamps continuam somando certo, só os FRAMES é que
+  // somem — e o estrago só aparece lá na frente, como "segmentação gerou N,
+  // esperava M". Resolução/SAR diferentes seguem liberadas de propósito: aí o
+  // normalize reescala e absorve, sem re-encode à toa.
+  const videoUniforme = infos.every((i) => i.vcodec === infos[0].vcodec)
+
   // caminho feliz: junção CRUA sem re-encode (forcarFiltro pula direto pro
   // plano B — só usado nos testes, pra exercitar o re-encode sem depender de
   // um arquivo patológico que faça o -c copy divergir)
-  if (!forcarFiltro && audioUniforme) {
+  if (!forcarFiltro && audioUniforme && videoUniforme) {
     const listPath = `${outFile}.concat.txt`
     const listBody = partFiles.map((f) => `file '${resolve(f).replace(/'/g, "'\\''")}'`).join('\n') + '\n'
     writeFileSync(listPath, listBody)

@@ -40,6 +40,93 @@
 | **Gatilho** | **Diretor sob demanda**: escolhe programa + slot no painel e manda montar | Foi como ele descreveu. Gatilho automático (desenho novo → nasce sozinho, da spec construtor) fica pra depois. |
 | **Escopo v1** | **1 programa** (molde `image-comercial-jtx.png`, 1 janela preta) | A ideia exata dele. O molde de 3 janelas (`image-comercial-jtx-2.png` = vinheta "a seguir") é **fase 2, no MESMO motor** (ver abaixo). |
 
+## 🎙️ Voz provisória — o plano do ElevenLabs bloqueou as vozes clonadas
+
+**Estado desde 2026-09-15.** As vozes dos três canais (`channels.voz_id`) são
+**clonadas** (IVC), e a assinatura do ElevenLabs que permitia usá-las caiu. A API
+responde:
+
+```
+401 {"detail":{"status":"ivc_not_permitted",
+     "message":"Instantly cloned voices are not available on your current plan."}}
+```
+
+**Não é falta de crédito nem chave inválida** — verificado no mesmo dia: voz do
+catálogo público sintetizou normalmente com a mesma chave. É só o direito de
+*usar voz clonada* que some quando a assinatura cai.
+
+**Decisão do Gabriel (2026-09-15, detalhada em 18/09):** a assinatura foi
+**pausada de propósito** — estava sendo paga e quase não usada. A estratégia é
+**acumular trabalho de voz** e, quando tiver volume, assinar, gerar tudo de uma
+vez com as vozes clonadas dos narradores e cancelar de novo.
+
+Enquanto isso o trabalho **não para**: gera-se com voz do catálogo público (o
+plano grátis libera), e depois:
+
+> **gerar com voz genérica → refazer com a voz certa → apagar as genéricas**
+
+"Isso tem que ser rastreável" — por isso `voice_clips.voz_provisoria`
+(migration 0031) e a rota **`GET /admin/fabrica-comerciais/voz-provisoria`**,
+que devolve a lista de trabalho do refazer: os clipes marcados E os comerciais
+montados com algum deles (um comercial usa 5 clipes; basta um provisório pra
+peça inteira estar na voz errada). A rota traz junto o passo a passo do ciclo.
+
+O `audio_key` também carrega a voz no caminho (`fabrica/tts/<voz>/<hash>.mp3`),
+mas isso é convenção — a marca no banco é o que aparece numa listagem e não
+depende de ninguém lembrar do padrão.
+
+### Como gerar clipe agora (voz do catálogo)
+
+Toda rota que sintetiza aceita `voz_id`, que sobrepõe a voz do canal:
+
+```sh
+# 1) escute antes de escolher (não grava nada, devolve o mp3):
+curl -X POST "$BASE/admin/fabrica-comerciais/voz/preview" -H "authorization: Bearer $ADMIN_TOKEN" \
+  -H 'content-type: application/json' --output teste.mp3 \
+  -d '{"texto":"Power Rangers Força Animal, todos os dias, às quatro da tarde.","voz_id":"<VOZ>"}'
+
+# 2) clipe da série (nome / frase) com a voz escolhida:
+curl -X POST "$BASE/admin/fabrica-comerciais/voice-clips" -H "authorization: Bearer $ADMIN_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"canal":"jetix","categoria":"frase","series_id":"<serie>","rotulo":"<texto>","sintetizar":true,"voz_id":"<VOZ>"}'
+
+# 3) biblioteca base de um canal novo (horários/frequências/assinatura):
+curl -X POST "$BASE/admin/fabrica-comerciais/canais/<canal>/biblioteca-base" \
+  -H "authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' -d '{"voz_id":"<VOZ>"}'
+```
+
+`21m00Tcm4TlvDq8ikWAM` (Rachel) é a única confirmada funcionando com esta chave
+(testada em 15/09). É voz feminina em inglês — para locutor de TV brasileira,
+**escute outras no passo 1 antes de gravar em massa**; o modelo dos canais
+jetix/disney é `eleven_v3` e o do CN é `eleven_multilingual_v2`, que falam
+português com sotaque variável conforme a voz.
+
+### Como regerar com a voz clonada depois de assinar
+
+O `audio_key` guarda a voz usada no caminho (`fabrica/tts/<voz_id>/<hash>.mp3`),
+então dá pra achar tudo que nasceu com voz provisória:
+
+```sql
+-- 1) o que foi gerado com a voz provisória
+SELECT id, canal, categoria, series_id, chave, rotulo, audio_key
+FROM voice_clips WHERE audio_key LIKE 'fabrica/tts/<VOZ_PROVISORIA>/%';
+```
+
+Depois, para cada clipe: **apagar** (`DELETE /admin/fabrica-comerciais/voice-clips/:id`
+— ele remove o objeto do R2 se nenhum outro clipe usar a mesma chave) e
+**recriar** com o mesmo `canal`/`categoria`/`series_id`/`chave`/`rotulo`, agora
+**sem** `voz_id` (volta a usar a voz clonada do canal).
+
+Os comerciais **já montados** com o áudio antigo não se atualizam sozinhos: use
+`DELETE /admin/media/:id` nos `com_*` daquelas séries (desative antes: a rota só
+aceita `disabled`) e rode `POST /admin/fabrica-comerciais/reconciliar-grade` —
+o reconciliador vê o bloco descoberto e remonta com o áudio novo. A síntese é
+cacheada por hash no R2, então nada é re-sintetizado à toa.
+
+> ⚠️ Não troque `channels.voz_id` pela voz provisória. O id da voz clonada é o
+> registro de qual timbre pertence a cada canal — é ele que faz a regeração
+> funcionar sozinha depois. A voz provisória entra só por parâmetro.
+
 ## O mapa (4 gavetas)
 
 Uma vinheta = **ÁUDIO montado** + **VÍDEO montado**, casados, registrados **por canal**.
@@ -58,6 +145,20 @@ uma fala Disney nunca entra em uma vinheta Jetix, por exemplo.
 | **nome** | "Power Rangers Força Animal" | 1 por programa | por `canal` + `series_id` |
 | **frase** | "uma equipe destemida pronta pra enfrentar o mal…" (+ variações) | N por programa | por `canal` + `series_id` |
 | **conector** | "Na Jetix" | 1 por canal/assinatura | por canal (`chave=encerramento`) |
+
+**Variação por frase (2026-09-15).** O bloco de grade não recebe UM comercial:
+recebe **uma versão por frase gravada da série** (teto de 3), cada job nascendo
+com `frase_id` fixo. Antes o reconciliador criava um comercial por
+`canal|série|hora` e a frase era sorteada **uma vez**, na montagem — então aquele
+sorteio virava a locução daquele horário para sempre ("*só vejo 1 frase passando
+para cada comercial, quase dá pra decorar*"). Detalhes:
+
+- versão da **frota antiga** (job sem `frase_id`) é identificada pelo
+  `media_promises.transcript`, que começa pela frase — a frase dela não é refeita;
+- **teto de 15 versões novas por rodada** do reconciliador: o build roda no
+  Actions grátis e divide fila com a ingestão. O cron diário (e o botão do
+  painel) completam o resto nas rodadas seguintes;
+- coberto por `npm run verify:variacoes` (D1 mockado, sem servidor).
 
 **Ordem da locução** (fixa):
 ```

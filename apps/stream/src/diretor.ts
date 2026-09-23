@@ -377,9 +377,12 @@ async function executa(
       if (a.series_id) {
         // cancela a diretriz de série (se o LLM excluiu com excluir_serie)...
         const r1 = await env.DB.prepare(
+          // `instr` em vez de LIKE: padrão LIKE acima de 50 chars é recusado
+          // pelo D1 ("pattern too complex") — ver admin.ts
           `UPDATE directives SET status = 'cancelada'
-           WHERE canal = ?1 AND status = 'ativa' AND tipo = 'excluir_serie' AND payload LIKE ?2`,
-        ).bind(canal, `%"${a.series_id}"%`).run()
+           WHERE canal = ?1 AND status = 'ativa' AND tipo = 'excluir_serie'
+             AND instr(payload, '"' || ?2 || '"') > 0`,
+        ).bind(canal, a.series_id).run()
         changes += r1.meta.changes ?? 0
         // ...E qualquer exclusão individual dos episódios dessa série (caso o
         // LLM tenha excluído um por um em vez de usar excluir_serie — já
@@ -389,16 +392,18 @@ async function executa(
           for (const mid of info.ids) {
             const r2 = await env.DB.prepare(
               `UPDATE directives SET status = 'cancelada'
-               WHERE canal = ?1 AND status = 'ativa' AND tipo = 'excluir_media' AND payload LIKE ?2`,
-            ).bind(canal, `%"${mid}"%`).run()
+               WHERE canal = ?1 AND status = 'ativa' AND tipo = 'excluir_media'
+                 AND instr(payload, '"' || ?2 || '"') > 0`,
+            ).bind(canal, mid).run()
             changes += r2.meta.changes ?? 0
           }
         }
       } else {
         const r = await env.DB.prepare(
           `UPDATE directives SET status = 'cancelada'
-           WHERE canal = ?1 AND status = 'ativa' AND tipo = 'excluir_media' AND payload LIKE ?2`,
-        ).bind(canal, `%"${a.media_id}"%`).run()
+           WHERE canal = ?1 AND status = 'ativa' AND tipo = 'excluir_media'
+             AND instr(payload, '"' || ?2 || '"') > 0`,
+        ).bind(canal, a.media_id).run()
         changes += r.meta.changes ?? 0
       }
       const alvoId = a.series_id ?? a.media_id

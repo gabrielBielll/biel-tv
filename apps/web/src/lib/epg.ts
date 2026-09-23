@@ -23,11 +23,26 @@ export interface Program {
   end: number
 }
 
-export async function fetchEpg(api: string, canal: string): Promise<EpgResponse> {
-  const res = await fetch(`${api}/epg/${canal}`)
+export async function fetchEpg(
+  api: string,
+  canal: string,
+  opts: { past?: number; future?: number } = {},
+): Promise<EpgResponse> {
+  const qs = new URLSearchParams()
+  if (opts.past) qs.set('past', String(opts.past))
+  if (opts.future) qs.set('future', String(opts.future))
+  const suffix = qs.toString() ? `?${qs}` : ''
+  const res = await fetch(`${api}/epg/${canal}${suffix}`)
   if (!res.ok) throw new Error(`EPG HTTP ${res.status}`)
   return res.json()
 }
+
+/** URL do playlist VOD (catch-up) de uma mídia: finito, com barra de progresso. */
+export const vodUrl = (api: string, mediaId: string) =>
+  `${api}/vod/${encodeURIComponent(mediaId)}`
+
+/** Reprisável = já começou (no ar ou já exibido) → dá pra assistir do início. */
+export const isReplayable = (p: Program, now: number) => p.start <= now
 
 /**
  * Transforma as linhas cruas do EPG (que incluem comerciais e episódios

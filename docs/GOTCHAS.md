@@ -207,6 +207,47 @@ mente é o shell.
 
 ## Banco de dados (D1/SQLite)
 
+**🔴 O limite do D1 free é LINHAS LIDAS (5 mi/dia), não requisições — e query
+sem piso derruba a TV.** Em 2026-09-15 os três canais devolveram HTTP 500 no
+`/live` no meio do dia. Não foi audiência: o Worker recebeu **1.499 requisições
+em 14h**, todas entre 23h e 01h (um espectador só). O que estourou foi o
+**custo por requisição**: a `SQL_EPG_OVERLAP` só limitava o lado direito
+(`start < ?3`), então o índice `(canal, start_time_virtual)` varria TODO o
+passado do canal guardado na `epg_virtual` — **5.180 linhas por chamada**,
+1.113 chamadas = 5,7 milhões de linhas. Corrigido com um **piso** em
+`start_time_virtual` (`> ?2 - 6h`, folga sobre a linha mais longa possível):
+~200 linhas por chamada. **Antes de criar query nova sobre `epg_virtual`,
+`media_items` ou `media_cue_points`, pergunte quantas LINHAS ela varre por
+chamada** — e confira no GraphQL:
+`d1QueriesAdaptiveGroups(orderBy:[sum_rowsRead_DESC]){count sum{rowsRead} dimensions{query}}`.
+O limite zera à meia-noite UTC (21h de Brasília) e, enquanto está estourado,
+**qualquer** leitura falha — inclusive o painel e o `wrangler d1 execute`.
+
+**Com a cota de leitura estourada, o que ainda funciona.** O limite do D1 free
+bloqueia **leitura** — e a mensagem some até em consulta minúscula. Mas:
+
+| funciona | não funciona |
+|---|---|
+| R2 (subir/baixar segmento, `/media/*`) | `/live` e `/epg` (leem a grade) |
+| ffmpeg/pipeline: baixar, normalizar, segmentar, cue points | registrar mídia no D1 |
+| ElevenLabs, GitHub Actions | painel admin, fila da fábrica (claim lê o D1) |
+| escrita e DDL no D1 (`INSERT`, `DELETE`, `CREATE INDEX`) | qualquer `SELECT` |
+
+Ou seja: **dá pra processar a leva inteira e registrar depois**. É pra isso que
+existe `pnpm ingest ... --adiar-registro`, que sobe pro R2 e grava o SQL do
+registro em `.registros-pendentes/<id>.sql`; quando a cota virar (00:00 UTC =
+21h de Brasília), `pnpm registra:pendentes` aplica tudo de uma vez e move os
+arquivos pra `aplicados/`.
+
+**Apagar mídia em lote custa LEITURA, não escrita.** O `DELETE /admin/media/:id`
+pergunta se a mídia está na grade (`... FROM epg_virtual WHERE media_id = ?`) e
+depois apaga as linhas dela. Sem índice por `media_id`, cada exclusão varria a
+`epg_virtual` inteira duas vezes — 105 exclusões = ~4 milhões de linhas lidas, o
+que estourou o limite diário do D1 free e derrubou os canais em 15/09/2026
+(**duas vezes no mesmo dia**, a segunda por causa da limpeza). Corrigido pela
+migration `0026_epg_media_idx.sql`. Regra geral: antes de rodar QUALQUER laço
+que bate no Worker centenas de vezes, olhe quais linhas cada chamada varre.
+
 **SQLite não permite `ALTER` de `CHECK` constraint — reconstrua a tabela.**
 Pra adicionar um novo valor válido a uma coluna com `CHECK (col IN (...))`,
 o padrão é: criar tabela nova com o CHECK atualizado → `INSERT SELECT` os
@@ -527,6 +568,31 @@ torta). Resolução/SAR de vídeo diferentes continuam no `copy` de propósito: 
 que cair pro `filter` **sozinha** (sem `forcarFiltro`) e sair sincronizada — o
 buraco de cobertura que deixou o bug passar (o teste antigo só forçava o filter
 via `{ forcarFiltro: true }`, nunca exercitava a detecção automática).
+
+**Concat `-c copy` de partes com CODEC DE VÍDEO diferente = os frames de metade
+das partes não decodificam (e o erro só aparece na segmentação).** Descoberto em
+2026-07-23, reproduzido com a fonte real que quebrou (Feiticeiros S3E01
+"Francristina", 5 partes). O YouTube não serve o mesmo codec pra todo vídeo:
+baixando com `bv*+ba`, as partes do MESMO episódio vieram `av1, h264, av1, av1,
+h264`. O `concatParts()` decidia o `-c copy` olhando só os parâmetros de ÁUDIO —
+codec/resolução de vídeo eram liberados de propósito, com o argumento de que "o
+normalize reescala e absorve". Isso vale pra **resolução**, não pra **codec**:
+o `-c copy` empilha os pacotes numa trilha só, e uma trilha MP4 declara UM
+codec. O resultado é um arquivo que o ffprobe mostra saudável (`av1`, 1294.8s,
+31043 frames) mas cujo decoder cospe `Unknown OBU type` nas partes h264 —
+medido: **100 de 240 frames** sobrevivendo. As duas validações existentes passam
+limpas, porque as duas olham TEMPO: a duração total bate (os timestamps somam
+certo) e o skew A/V ficou em 0,067s. Os frames é que somem. O estrago só
+aparece lá no fim do pipeline, como `segmentação gerou 9, esperava 11` — e essa
+mensagem culpa "keyframes fora da grade", que é pista falsa: os keyframes estão
+na grade, o que falta é imagem. Foi o que travou 5 jobs de fonte multipartes.
+**Fix:** `concatParts()` agora também exige `videoUniforme` (mesmo
+`vcodec` em todas as partes) pro caminho `-c copy`; codec divergente vai direto
+pro concat filter, que re-encoda tudo pro perfil do canal. Resolução/SAR
+diferentes continuam no `copy` de propósito (aí o normalize absorve mesmo).
+`verify-playlist` ganhou o caso: parte com codec de vídeo diferente tem que cair
+pro `filter` sozinha **e o juntado tem que decodificar inteiro** — a asserção é
+em FRAMES DECODIFICADOS, não em duração, senão o teste não pegaria este bug.
 
 ## Telas com vídeo (`/r`, `/r/cortar`)
 
