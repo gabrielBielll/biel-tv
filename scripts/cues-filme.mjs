@@ -9,7 +9,8 @@
 //   4. grava o SQL dos cue points num arquivo (aplicar quando a cota do D1
 //      permitir). Não escreve no banco.
 //
-// uso: node scripts/cues-filme.mjs <media_id> [--intervalo 20] [--sql <arquivo>]
+// uso: node scripts/cues-filme.mjs <media_id> [--intervalo 20] [--janela 240] [--sql <arquivo>]
+// Serve também pra episódio: --intervalo 7.5 --janela 120 dá 2 cortes num episódio de 22 min.
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -26,7 +27,7 @@ const SEG = 10
 const id = process.argv[2]
 const arg = (k, d) => (process.argv.includes(`--${k}`) ? process.argv[process.argv.indexOf(`--${k}`) + 1] : d)
 const INTERVALO = Number(arg('intervalo', 20)) * 60
-const JANELA = 240 // procura o corte até 4 min antes/depois da divisa
+const JANELA = Number(arg('janela', 240)) // procura o corte até N s antes/depois da divisa (4 min)
 const BORDA = 300 // nada nos primeiros/últimos 5 min
 if (!/^[a-z0-9_]{3,60}$/.test(id ?? '')) { console.error('uso: cues-filme.mjs <media_id>'); process.exit(2) }
 const DIR = `${HOME}/.cache/bieltv-filmes/${id}`
