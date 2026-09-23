@@ -56,6 +56,41 @@ falha por falta de identidade, o lote de faixas que recusa aplicar meia grade e
 o `claim` que desiste depois de 5 erros seguidos são desenhos deliberados que
 trocam silêncio por barulho. Não os "conserte" pra ficarem quietos.
 
+### Mais sete, no mesmo 23/09
+
+| o que aconteceu | o que apareceu | como foi achado |
+|---|---|---|
+| 352 faixas aplicadas pelo endpoint singular, um replan por chamada: 9 replans comeram a cota e as outras 343 gravaram a faixa e morreram no replan | as 352 faixas estavam na tabela: "a grade entrou" | analytics hora a hora: 118.271 linhas em 13 minutos |
+| rebuild fazia `DELETE` do futuro antes do `INSERT`; a cota acabou no meio | Disney com só o bloco no ar, sem erro em lugar nenhum | quase saiu do ar; a leitura do `scheduler.ts:305` deu o mecanismo (a chamada exata não foi reconstruída) |
+| merge automático juntou **duas implementações** da mesma janela do `/epg` (`durationQuery` da main e `clampWindow` do branch), sem conflito | merge limpo, git satisfeito | `tsc` subiu de 5 para 9 erros (`Cannot redeclare 'past'`) |
+| `node_modules/` **com barra** não casa symlink; `git add -A` versionou 3 links absolutos; o fast-forward seguinte fez checkout deles **por cima** dos `node_modules` reais | links apontando para si mesmos, dependências apagadas | testes com `ERR_MODULE_NOT_FOUND`; o horário do reflog bateu com o dos links |
+| scratchpad da sessão apagado no reinício, com uma rotina agendada ainda viva | processo vivo, `pgrep` achava | `ls` dos arquivos dela: sumiram. Às 00:02 ela tiraria os índices e morreria antes das vinhetas |
+| migration de outra sessão nunca aplicada, e ainda com número repetido (`0026`) | deploy verde | rotas de lineup respondendo 500 ao sondar depois do deploy |
+| `pgrep -f nome` casa a **própria linha de comando** de quem pergunta | "processo ainda vivo" depois do `kill` | `kill -0 <pid>` disse que não estava |
+
+⚠️ **Correção de registro:** a mensagem do commit `818f6de` diz que os `ln -sfn`
+"rodaram no diretório do repo em vez do worktree". **Isso está errado.** Os links
+foram criados no worktree, como era pra ser. Quem os pôs no repo foi o
+fast-forward: `feat/playback@{07:58:14}` no reflog, o mesmo minuto dos links. O
+git trata arquivo **ignorado** como descartável no checkout e o sobrescreve sem
+avisar.
+
+**Regras que saíram destas:**
+
+- Depois de merge, **compare a contagem de erros do `tsc` com a de antes**.
+  Merge sem conflito ainda pode duplicar uma feature feita dos dois lados.
+- `.gitignore` com `node_modules` **sem barra** (casa diretório e symlink). E
+  nada de `git add -A` numa árvore onde você criou symlink de conveniência.
+- Rotina que roda por horas fica em `~/.cache/<projeto>/`, **nunca** no
+  scratchpad da sessão.
+- Aqui as migrations são aplicadas **à mão** e não há `d1_migrations` para
+  acusar pendência. Depois de publicar código que depende de coluna nova,
+  sonde uma rota que usa essa coluna. Antes de criar migration, confira número
+  repetido: `ls packages/db/migrations | cut -c1-4 | sort | uniq -d`.
+- Para saber se um processo está vivo, use `kill -0 <pid>`, não `pgrep -f`.
+- Resultado "todas as N gravadas" sem conferir o efeito colateral
+  (o replan) é o mesmo erro do "69 de 70": conte o efeito, não a chamada.
+
 ## Fábrica: GitHub Actions desde 2026-07-12 (a EC2 é só fallback)
 
 A transcodificação roda no workflow `fabrica` (`.github/workflows/fabrica.yml`),
@@ -260,35 +295,44 @@ alto (erro do d1()), mas ainda assim é um erro bobo de se cometer e perder
 tempo depurando. Confira a migration antes de escrever SQL ad-hoc contra
 essas tabelas.
 
-## Replanejar a grade custa ~13 mil linhas (e por que isso derruba tudo)
+## Replanejar a grade custa caro (e por que isso derruba tudo)
 
-`epg_virtual` tem **5 índices**, então cada linha da grade custa **6 escritas
-físicas** (tabela + índices). Com ~1.100 linhas futuras por canal, um replan
-(delete + insert) sai por **~13 mil linhas**. O teto do D1 free tier é **100
-mil/dia**.
+Replan = apagar e reescrever as ~41h futuras do canal na `epg_virtual`. Cada
+linha custa uma escrita na tabela **mais uma por índice**. Eram 5 índices
+(6 escritas por linha, ~13 mil linhas por canal). A migration 0034 tirou 2, então
+agora são 4 escritas por linha. O teto do D1 free é **100 mil linhas/dia**, e sem
+cota a fábrica morre junto: `/admin/jobs/claim` também passa a devolver 500.
 
-Endpoint que replaneja POR ITEM vira estouro de cota na hora em que alguém
-trabalha:
-
-| operação | pelo endpoint singular | em lote |
+| operação | um replan por item | em lote |
 |---|---|---|
-| desativar 19 mídias do mesmo canal | 19 replans = **397 mil linhas** | 1 replan = 13 mil |
-| ajustar 11 faixas da grade | 11 replans = **144 mil** | 1 replan = 13 mil |
-| grade-alvo inteira (~150 faixas) | **1,95 MILHÃO** = 19,5 dias de cota | 3 replans = 39 mil |
+| desativar 19 mídias do mesmo canal (21/09) | **397 mil linhas** | 1 replan |
+| ajustar 11 faixas (22/09) | **144 mil** | 1 replan |
+| aplicar 352 faixas (23/09) | 9 replans comeram o dia; as outras 343 falharam | 1 por canal |
 
-Os dois primeiros são medições reais de 21 e 22/09/2026 — a cota estourou nos
-dois dias e **a fábrica morreu junto**, porque sem cota o `/admin/jobs/claim`
-também devolve 500 e 33 episódios ficaram parados.
+A cota estourou três dias seguidos por isso. No terceiro, o Disney quase saiu do
+ar. A história completa, com cada medição, está em
+[features/cota-d1-e-replanejamento.md](features/cota-d1-e-replanejamento.md).
 
-**Use sempre as rotas em LOTE**, que replanejam cada canal uma vez:
-`POST /admin/media/status {ids[], status}` e
-`POST /admin/fabrica-comerciais/slots/lote {criar[], apagar[]}`. O painel admin
-já acumula as mudanças de grade numa "leva" e manda num POST só.
+**O que vale desde 23/09/2026:**
 
-📌 O padrão de agrupar já existia na base antes disso (`aplicaCanais` em
-`admin.ts`, `reconciliaComerciaisGrade` em `fabrica-comerciais.ts`): os
-endpoints singulares eram a exceção, não a regra. Ao criar rota nova que mexa em
-grade, **junte os canais afetados num Set e replaneje no fim**.
+- **Endpoint singular não replaneja mais na hora.** `POST`/`DELETE /slots`,
+  `/media/:id/tipo`, `DELETE /media/:id` e os cancelamentos do diretor chamam
+  `pedeReplan`: esperam 4 s e só o último de uma rajada replaneja. A resposta
+  vem com `replan: 'coalescido'`. Se precisar da grade pronta na resposta, use
+  o lote.
+- **Rotas em lote replanejam na hora, uma vez por canal:**
+  `POST /admin/media/status {ids[], status}`,
+  `POST /admin/fabrica-comerciais/slots/lote {criar[], apagar[]}`,
+  `POST /admin/promessas/lote {decisoes[]}`. O painel manda tudo numa "leva".
+- **Rebuild é atômico.** O `DELETE` do futuro vai no mesmo `batch()` dos
+  `INSERT`. Falha no meio mantém a grade antiga; não deixa mais o canal vazio.
+- **Mexer numa faixa só reescreve dali pra frente** (`desde` =
+  `proximaOcorrencia(dias, hora)`), então o guia que o app já mostrou não se
+  embaralha.
+
+📌 Ao criar rota nova que mexa na grade: se é por item, use `pedeReplan`; se é
+em lote, junte os canais num `Set` e chame `scheduleChannel` uma vez por canal
+no fim. O padrão já existia antes (`aplicaCanais`, `reconciliaComerciaisGrade`).
 
 ## Fábrica de comerciais / TTS
 

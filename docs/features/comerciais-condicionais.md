@@ -123,3 +123,54 @@ Camadas (mesmo padrão do resto do projeto — barato primeiro, humano confirma)
   ter promo é prometer o que não passa).
 - **Transcrição errada** (números/horas em PT): por isso o humano confirma.
 - **Normalização de nomes de série**: sem `series_id` canônico o matching quebra.
+
+## Vinhetas de contexto: como a condição é ligada (23/09/2026)
+
+**Motivo:** o Gabriel viu o Feiticeiros ir para o intervalo **sem vinheta de
+saída**, enquanto a vinheta do Feiticeiros tocava no meio de outro desenho.
+Vinheta sem condição cai no rodízio cego (`generico` / sem registro) e toca em
+qualquer lugar. Das peças prontas, só 7 tinham condição.
+
+**Pedido dele, que virou a regra do script:** *"tomar o cuidado para colocar
+nos lugares certos hein principalmente as vinhetas."* Vinheta no lugar errado é
+pior que nenhuma vinheta.
+
+### As três posições
+
+| fala da peça | condição | onde toca |
+|---|---|---|
+| "a seguir, X" / "vem aí, X" | `a_seguir` | fecha o intervalo **antes** de um bloco de X |
+| "voltamos já com X" | `durante` + `momento: 'saida'` | **abre** o intervalo dentro de X |
+| "X está de volta" | `durante` + `momento: 'volta'` | **fecha** o intervalo, colada no retorno de X |
+| "você está vendo X" | `durante` + `momento: 'ambos'` | entra nos dois pools |
+
+`momento` só passou a ser gravado pelo `/decidir` em 23/09. Antes, toda peça
+`durante` virava "saída", e "está de volta" tocava na abertura do intervalo.
+
+### `scripts/vinhetas-condicoes.mjs`
+
+Lê a série alvo e a família **do id da peça**, por regra explícita, e grava tudo
+numa chamada só ao `POST /admin/promessas/lote` (um replan por canal, não um por
+peça). Roda em modo seco por padrão; `--aplicar` grava.
+
+- **Não existe casamento aproximado.** A série tirada do id tem de bater
+  **exatamente** com um `series_id` que tenha episódio pronto. Quando não bate, a
+  peça vai para o relatório, não para o banco.
+- **Apelidos ficam numa tabela, cada um com motivo escrito.** Hoje são três:
+  `jake_long_o_dragao_ocidental → jacke_long_o_dragao_ocidental` (12 peças; o
+  slug do catálogo tem um erro de digitação que já virou chave),
+  `os_padrinhos_magicos → padrinhos_magicos` (a vinheta usa artigo) e
+  `power_rangers_forca → power_rangers_forca_animal` (só existe um).
+
+**Resultado em 23/09:** das 129 vinhetas prontas sem condição, **103** tinham
+alvo seguro, cobrindo 25 séries, todas com faixa na grade. **26 ficaram de
+fora de propósito**: 24 são bumpers e intros realmente genéricos (Era City,
+agora/depois, classificação livre), que continuam no rodízio cego. As outras 2
+são ambíguas. `vin_jetix_brasil_a_seguir_power_` tem o id truncado, e o
+catálogo tem 7 Power Rangers. `vin_cn_vem_ai_cine_cartoon` anuncia um bloco,
+não uma série. Essas duas esperam decisão do Gabriel.
+
+⚠️ **Confirmar muda o comportamento da peça.** Ela sai do rodízio cego
+(`foraDoRodizio` no scheduler) e passa a tocar só no contexto da série. Peça
+de série que aparece pouco na grade também vai tocar pouco. Por isso o script
+avisa quando a série alvo não tem faixa.

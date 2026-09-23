@@ -40,8 +40,8 @@ Três cérebros, um contrato:
 
 | Peça | O quê | Onde |
 |---|---|---|
-| `apps/stream` | Worker Hono: `/live/:canal`, `/epg/:canal` (guia = PROGRAMA, não linha de grade — ver `guia.ts`), `/channels`, `/media/*`, `/votaton/*` (público), `/health`, `/admin/*` (API do painel + Diretor IA + cookies), cron diário (reconcilia + editorial + agenda + re-dispatch da fábrica) | Cloudflare Workers (produção) |
-| `apps/stream/src/scheduler.ts` | Diretor determinístico: grade 48h/canal, rotação `last_played_at`, pods de intervalo (respiro mín. + comercial que caiba), **nunca corta programa na âncora** (encaixe de curta + enchimento de comercial), diretrizes/eventos, **promessas** (a_seguir/durante/evento) e modo fiel/livre por canal, maratona de série, reconciliação R2↔D1 | idem |
+| `apps/stream` | Worker Hono: `/live/:canal`, `/epg/:canal?past=&future=` (guia = PROGRAMA, não linha de grade — ver `guia.ts`; janela em segundos, `past` ≤ 7 dias = a retenção da grade, `future` ≤ 48h; sem parâmetro = agora..+24h), `/channels`, `/media/*`, `/votaton/*` (público), `/health`, `/admin/*` (API do painel + Diretor IA + cookies), cron diário (reconcilia + editorial + agenda + re-dispatch da fábrica) | Cloudflare Workers (produção) |
+| `apps/stream/src/scheduler.ts` | Diretor determinístico: grade 48h/canal, rotação `last_played_at`, pods de intervalo (respiro mín. + comercial que caiba), **nunca corta programa na âncora** (encaixe de curta + enchimento de comercial), diretrizes/eventos, **promessas** (a_seguir/durante/evento) e modo fiel/livre por canal, maratona de série, reconciliação R2↔D1. **Replan**: rebuild atômico (`DELETE` + `INSERT` num `batch()`), parcial a partir de `desde`, e `pedeReplan` coalesce rajadas de endpoint singular — ver [cota-d1-e-replanejamento.md](features/cota-d1-e-replanejamento.md) | idem |
 | `apps/stream/src/diretor.ts` | Chat do Modo God (Gemini→DeepSeek→fallback): `excluir_media`/`excluir_serie`/`maratona`/`cancelar_exclusao`/`replan`. Exporta os helpers de fuso `spToEpoch`/`epochToSp` | idem |
 | `apps/stream/src/editorial.ts` | Diretor editorial noturno (10a): decide maratonas via LLM com validação determinística → `channel_events` de série | idem |
 | `apps/stream/src/promessas.ts` | Extração da promessa do comercial (transcript → LLM → `media_promises`) | idem |
@@ -51,7 +51,7 @@ Três cérebros, um contrato:
 | `apps/stream/src/fabrica.ts` | Dispara a fábrica no GitHub via `repository_dispatch` | idem |
 | `apps/stream/src/llm.ts` | Helper genérico Gemini→DeepSeek com schema (usado por promessas/nomear) | idem |
 | `apps/web` | Vue 3 + hls.js: player multi-canal + **Votaton** na página da TV; `/admin.html`: upload (arquivo/lote/pasta/**link**), fila (%, ↻), catálogo (tipo editável, séries em lote), "A nomear", promessas, cookies 🍪, Modo God | Cloudflare Pages (produção) |
-| `packages/db` | Migrations SQL (0001–0013) + tipos/SQL compartilhados | D1 (SQLite, produção + simulado local) |
+| `packages/db` | Migrations SQL (0001–0035, **aplicadas à mão** no D1 — não há `d1_migrations`; ver GOTCHAS) + tipos/SQL compartilhados | D1 (SQLite, produção + simulado local) |
 | `packages/pipeline` | CLI: probe → normaliza → segmenta → blackdetect → **transcreve** (whisper, comercial/vinheta) → upload → registra (`--target local\|remote`) | roda onde tiver ffmpeg |
 | `scripts/factory-local.mjs` | Fábrica: drena `ingest_jobs` (upload OU link via yt-dlp), roda o pipeline (progresso % pro painel), re-gera a grade | **GitHub Actions** (workflow `fabrica`, dispatch do Worker; `FACTORY_DRAIN=1`); EC2 = fallback |
 | `scripts/transcreve.py` | faster-whisper small pt-BR (transcrição dos comerciais) | fábrica |
