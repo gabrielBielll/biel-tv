@@ -76,10 +76,12 @@ async function main() {
 }
 
 main().catch((err) => {
-  // ffmpeg MORTO por sinal (no celular, o Android mata o processo que mais usa
-  // memória quando falta RAM) sai sem mensagem de erro nenhuma: sem mostrar o
-  // sinal, o log só mostra o começo do ffmpeg e parece bug do filtro.
-  if (err.signal || err.killed) console.error(`[monta-lineup-cli] ❌ ffmpeg morto por sinal ${err.signal ?? '?'}`)
+  // ffmpeg MORTO por sinal sai sem mensagem de erro nenhuma, e o log só mostra
+  // o começo do ffmpeg. Medido em 23/09/2026 no Termux: SIGSEGV do ffmpeg
+  // 8.1.3 em renders do Jetix. A primeira suspeita foi falta de RAM, e estava
+  // errada: havia ~3 GB disponíveis na hora da falha.
   console.error(`[monta-lineup-cli] ❌ Erro:`, err.message)
+  // por ÚLTIMO de propósito: quem chama costuma guardar só o fim do stderr
+  console.error(`[monta-lineup-cli] ❌ saída do ffmpeg: código ${err.code ?? '?'}, sinal ${err.signal ?? 'nenhum'}`)
   process.exit(1)
 })
