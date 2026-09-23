@@ -1404,6 +1404,25 @@ fabricaComerciais.put('/canais/:id/voz', async (c) => {
 
 // Botão de teste do painel: sintetiza um texto e devolve o áudio pra tocar na
 // hora (validar se a voz do canal está correta). Cacheia no R2 como qualquer TTS.
+// Saldo do ElevenLabs: plano, créditos usados/limite do período e quando
+// renova. A chave só existe nos segredos do Worker, então esta é a única forma
+// de conferir de fora. Só lê: não gasta crédito nem escreve no D1.
+fabricaComerciais.get('/voz/saldo', async (c) => {
+  if (!c.env.ELEVENLABS_API_KEY) return c.json({ error: 'ELEVENLABS_API_KEY ausente' }, 503)
+  const r = await fetch('https://api.elevenlabs.io/v1/user/subscription', {
+    headers: { 'xi-api-key': c.env.ELEVENLABS_API_KEY },
+  })
+  if (!r.ok) return c.json({ error: `ElevenLabs ${r.status}: ${(await r.text()).slice(0, 200)}` }, 502)
+  const s = await r.json<Record<string, unknown>>()
+  const usado = Number(s.character_count ?? 0)
+  const limite = Number(s.character_limit ?? 0)
+  const renova = Number(s.next_character_count_reset_unix ?? 0)
+  return c.json({
+    plano: s.tier, status: s.status, usado, limite, restante: limite - usado,
+    renova_em: renova ? new Date(renova * 1000).toISOString() : null,
+  })
+})
+
 fabricaComerciais.post('/voz/preview', async (c) => {
   const b = await c.req.json<Record<string, unknown>>().catch(() => null)
   if (!b) return c.json({ error: 'JSON inválido' }, 400)
