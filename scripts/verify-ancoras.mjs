@@ -435,6 +435,37 @@ function ocorrencias(rows, catalogo) {
     check('sem filme pronto, o especial provisório continua na hora', naHora2 && naHora2.media_id.startsWith('aaa'),
       naHora2 ? naHora2.media_id : 'nada')
   }
+  // sessão de filme ocupa a janela: faixas DENTRO dela cedem; a faixa depois do
+  // fim toca; o filme mantém os intervalos (cue points)
+  {
+    const hm = (min) => new Date((A + min * 60 - 3 * 3600) * 1000).toISOString().slice(11, 16)
+    const slots = [
+      { series_id: 'bloco_filmes', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 },
+      { series_id: 'aaa', dias: '[1,2,3,4,5,6,7]', hora: hm(30), episodios: 1 },
+      { series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: hm(60), episodios: 1 },
+      { series_id: 'ccc', dias: '[1,2,3,4,5,6,7]', hora: hm(120), episodios: 1 },
+    ]
+    const CAT2 = [...CAT, ep('ccc_01', 'ccc'), ep('ccc_02', 'ccc')]
+    const cues = { filme_a: [1200, 2400, 3600, 4800], filme_b: [1200, 2400, 3600, 4800] }
+    const { db, epg } = makeDB({ channel: CANAL, media: CAT2, slots, cues })
+    const rep = await scheduleChannel({ DB: db }, 'ch', 5, true)
+    const rows = grade(epg)
+    const fimFilme = Math.max(...rows.filter((r) => /^filme_/.test(r.media_id)).map((r) => r.end))
+    const dentro = rows.filter((r) => r.start >= A && r.start < fimFilme && !/^filme_/.test(r.media_id))
+    const epDentro = dentro.filter((r) => /^(aaa|bbb)_/.test(r.media_id))
+    check('sessão de filme: faixas de dentro da janela cedem (nenhum episódio no meio do filme)', epDentro.length === 0,
+      `${rep.cedidasAoFilme ?? 0} cedida(s)`)
+    check('sessão de filme: filme mantém os intervalos', dentro.length > 0, `${dentro.length} peça(s) de intervalo`)
+    const ccc = rows.find((r) => r.media_id.startsWith('ccc') && r.start >= fimFilme)
+    check('sessão de filme: a faixa depois do filme toca (no máximo 45 min atrasada)', ccc && ccc.start - (A + 7200) <= 2700,
+      ccc ? `ccc às +${Math.round((ccc.start - A) / 60)} min` : 'sumiu')
+    check('sessão de filme: EPG contígua', contigua(rows))
+    // sem filme pronto, as faixas de dentro tocam normalmente
+    const { db: db3, epg: epg3 } = makeDB({ channel: CANAL, media: [...CATALOGO, ep('ccc_01', 'ccc')], slots })
+    await scheduleChannel({ DB: db3 }, 'ch', 5, true)
+    const r3 = grade(epg3)
+    check('sem filme pronto: a faixa das +30 min toca na hora', r3.some((r) => r.start === A + 1800 && r.media_id.startsWith('aaa')))
+  }
 }
 
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)

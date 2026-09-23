@@ -25,6 +25,8 @@ export interface ScheduleReport {
   until?: number
   // âncoras descartadas por atraso além da tolerância (nunca silencioso)
   ancorasPerdidas?: number
+  // faixas de episódio que caíam dentro de uma sessão de filme e cederam a vez
+  cedidasAoFilme?: number
   // segundos que viraram INTERVALO pra fechar o vão até a âncora (antes disso
   // era programa cortado no meio) — no report pra ninguém descobrir de surpresa
   enchimentoSeg?: number
@@ -473,6 +475,8 @@ export async function scheduleChannel(
   // só entra série com episódio pronto e cuja hora não caia dentro de uma maratona
   // (o evento manda). Vazio ⇒ laço idêntico ao de hoje (rodízio dinâmico puro).
   const seriesComEp = new Set(contents.map((m) => m.series_id).filter(Boolean) as string[])
+  // séries de sessão de FILME (a faixa delas é uma sessão de cinema)
+  const seriesDeFilme = new Set(contents.filter((m) => m.tipo === 'filme' && m.series_id).map((m) => m.series_id!))
   type Ancora = { start: number; series_id: string; episodios: number; reprise: boolean }
   const ancoras: Ancora[] = []
   if (slotsAtivos.length > 0) {
@@ -509,8 +513,8 @@ export async function scheduleChannel(
     // "sem mudar o horário da faixa" (ex.: Dexter às 14h no lugar do Teatro
     // Cartoon). Quando as duas faixas caem no mesmo minuto e a do filme tem
     // filme pronto (`seriesComEp` já filtrou), a do especial sai. Sem isso as
-    // duas tocariam, com o filme atrasado pelo especial.
-    const seriesDeFilme = new Set(contents.filter((m) => m.tipo === 'filme' && m.series_id).map((m) => m.series_id!))
+    // duas tocariam, com o filme atrasado pelo especial. As faixas que caem
+    // DEPOIS, ainda dentro da sessão, cedem no laço (ver FOLGA_FILME).
     const horaDeFilme = new Set(ancoras.filter((a) => seriesDeFilme.has(a.series_id)).map((a) => a.start))
     for (let i = ancoras.length - 1; i >= 0; i--) {
       if (horaDeFilme.has(ancoras[i].start) && !seriesDeFilme.has(ancoras[i].series_id)) ancoras.splice(i, 1)
@@ -922,6 +926,16 @@ export async function scheduleChannel(
   // CONTADO no report (nada de sumiço silencioso).
   const ANCORA_GRACE = 45 * 60
   let ancorasPerdidas = 0
+  // SESSÃO DE FILME OCUPA A JANELA INTEIRA. Um filme de 2 h empurraria as
+  // faixas de episódio que caem dentro dele: as primeiras passariam da grace e
+  // sumiriam, e o resto entraria atrasado em cascata pela tarde. Então, quando
+  // o filme toca, a faixa que começaria antes do fim dele (menos esta folga)
+  // CEDE: é o especial/programação provisória daquele horário. Faixa que cai
+  // até 10 min antes do fim do filme toca normalmente, só um pouco atrasada.
+  // Quando o filme não existe (a série ainda não tem mídia), nada disso vale e
+  // as faixas tocam como sempre.
+  const FOLGA_FILME = 10 * 60
+  let cedidasAoFilme = 0
 
   while (t < target) {
     // âncora atrasada demais (além da grace) ou dentro de maratona → consome
@@ -942,9 +956,19 @@ export async function scheduleChannel(
     // toca o bloco fixo — na hora quando pontual, atrasado quando espremido
     if (!ev && anc && t >= anc.start - 5) {
       ancIdx++
-      // a âncora seguinte é o teto do bloco fixo (intervalos e orçamento)
-      if (scheduleAncora(anc, ancIdx < ancoras.length ? ancoras[ancIdx].start : Infinity)) continue
-      anc = null // série sumiu do pool: ignora esta âncora nesta iteração
+      if (seriesDeFilme.has(anc.series_id)) {
+        // sessão de filme: sem teto (as faixas de dentro da janela cedem, então
+        // não faz sentido espremer os intervalos do filme por causa delas)
+        if (scheduleAncora(anc, Infinity)) {
+          while (ancIdx < ancoras.length && ancoras[ancIdx].start < t - FOLGA_FILME) { ancIdx++; cedidasAoFilme++ }
+          continue
+        }
+        anc = null
+      } else {
+        // a âncora seguinte é o teto do bloco fixo (intervalos e orçamento)
+        if (scheduleAncora(anc, ancIdx < ancoras.length ? ancoras[ancIdx].start : Infinity)) continue
+        anc = null // série sumiu do pool: ignora esta âncora nesta iteração
+      }
     }
 
     const evMedia = ev ? proximoDaMaratona(ev) : undefined
@@ -1102,6 +1126,7 @@ export async function scheduleChannel(
     added: rows.length,
     until: t,
     ...(ancorasPerdidas > 0 ? { ancorasPerdidas } : {}),
+    ...(cedidasAoFilme > 0 ? { cedidasAoFilme } : {}),
     ...(enchimentoSeg > 0 ? { enchimentoSeg } : {}),
     ...(lineups > 0 ? { lineups } : {}),
   }
