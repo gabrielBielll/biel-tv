@@ -114,6 +114,41 @@ node scripts/monta-lineup-cli.mjs --canal disney_channel --out scratch/teste-dis
 node scripts/monta-lineup-cli.mjs --canal cartoon_network --out scratch/teste-cartoon.mp4
 ```
 
+### Renderizar no Termux (celular)
+
+Funciona desde 2026-09-23 e é rápido: **7–9 s por lineup** nos três canais.
+Os renders de teste passaram no contrato (1280×720, H.264, AAC 48 kHz estéreo,
+20,000 s, ou 19,000 s no Disney). A integrada ficou em −15,6 a −16,6 LUFS. O
+master de entrega de 20 s segmenta em 2 blocos de 10 s.
+
+Precisa de duas coisas que o Ubuntu do GitHub Actions já traz:
+
+1. **ImageMagick:** `pkg install imagemagick`. ⚠️ Se o `magick` sair com
+   `cannot locate symbol "x265_api_get_217"`, o pacote `libx265` ficou
+   desatualizado em relação ao `libheif`. Atualizar só o `libx265` quebra o
+   `ffmpeg`, que pede `libbluray.so.4`. Os pacotes do Termux não declaram
+   versão mínima de dependência, então é preciso atualizar o `ffmpeg` junto
+   com todas as dependências dele que tiverem versão nova
+   (`apt-cache depends ffmpeg` cruzado com `apt list --upgradable`). Não
+   use `pkg upgrade` geral: ele também atualiza o `nodejs-lts` que roda o
+   Claude Code.
+2. **Fontes:** os configs apontam para `/usr/share/fonts/...`, caminho que não
+   existe no Termux. Quando o caminho configurado não existe, o
+   `carregarConfigCanal` procura o arquivo de mesmo nome em `$LINEUP_FONTS_DIR`,
+   `~/.fonts` e `$PREFIX/share/fonts/TTF`. No celular estão em `~/.fonts`:
+   `Ubuntu-B.ttf` (Ubuntu Bold do Google Fonts, UFL) e `LiberationSans-Bold.ttf`
+   (liberation-fonts 2.1.5, OFL). ⚠️ Ainda não foi confirmado que são as mesmas
+   versões usadas nas amostras aprovadas.
+
+As amostras baixadas do R2 ficam em cache em `~/.cache/bieltv-lineup/amostras/<series_id>.mp4`.
+
+```bash
+A=~/.cache/bieltv-lineup/amostras
+node scripts/monta-lineup-cli.mjs --canal cartoon_network \
+  --v0 $A/billy_e_mandy.mp4 --v1 $A/scooby_doo.mp4 --v2 $A/martin_mystery.mp4 \
+  --out ~/storage/downloads/lineup-teste/teste-cartoon.mp4
+```
+
 ### Fechamento animado do lineup Jetix
 
 O lineup Jetix usa o molde de três janelas por 18 segundos, com os rótulos

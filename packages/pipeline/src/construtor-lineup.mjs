@@ -5,7 +5,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { FFMPEG, FFPROBE } from './ffmpeg.mjs'
 
@@ -27,6 +27,23 @@ async function runImageMagick(args) {
   }
 }
 
+// Os configs apontam as fontes do sistema do Ubuntu (/usr/share/fonts/...),
+// caminho que não existe no Termux — lá o ImageMagick recusa o overlay
+// ("unable to read font"). Fora do Ubuntu, procura o MESMO arquivo, pelo nome,
+// nas pastas de fonte locais. Sem alternativa, devolve o caminho original e o
+// erro continua sendo o do ImageMagick, como antes.
+const PASTAS_FONTE = [
+  process.env.LINEUP_FONTS_DIR,
+  process.env.HOME && join(process.env.HOME, '.fonts'),
+  process.env.PREFIX && join(process.env.PREFIX, 'share/fonts/TTF'),
+].filter(Boolean)
+
+function resolveFonte(caminho) {
+  if (!caminho || existsSync(caminho)) return caminho
+  const alt = PASTAS_FONTE.map((dir) => join(dir, basename(caminho))).find((p) => existsSync(p))
+  return alt ?? caminho
+}
+
 /**
  * Lê a configuração de lineup de um canal específico.
  * @param {string} canal - 'jetix' | 'disney_channel' | 'cartoon_network'
@@ -36,7 +53,10 @@ export function carregarConfigCanal(canal) {
   if (!existsSync(cfgPath)) {
     throw new Error(`Configuração de lineup não encontrada para o canal: ${canal} (${cfgPath})`)
   }
-  return JSON.parse(readFileSync(cfgPath, 'utf8'))
+  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'))
+  const tipografia = cfg.visual?.tipografia
+  if (tipografia?.font_path) tipografia.font_path = resolveFonte(tipografia.font_path)
+  return cfg
 }
 
 /**
