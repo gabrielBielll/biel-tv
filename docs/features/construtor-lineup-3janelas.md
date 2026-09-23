@@ -141,6 +141,43 @@ acabou. Ali "você está assistindo X" deixaria de ser verdade, então a regra a
 não usa esse intervalo. Só 3 a 5 blocos por canal ficaram de fora por falta de
 anúncios que somassem 20 s.
 
+### 4.2 Lote local: gerar e publicar os lineups da grade
+
+Decisão do Gabriel em 2026-09-23: último intervalo do bloco de X (`ultimo`);
+o intervalo **depois** de X não é usado; não esperar a grade final. Subir já
+com a grade provisória e refazer quando ela mudar.
+
+```bash
+# 1. quais sequências a grade tem (7 dias, só leitura)
+node --import ./scripts/_ts-registra.mjs scripts/lineup-dryrun.mjs --posicao ultimo --horas 168
+# 2. gera voz + vídeo das que se repetem (≥2×/semana) e sobe pro R2, sem tocar no D1
+node scripts/lineup-lote.mjs [--seco] [--min 2] [--canal X]
+# 3. registra (mídia + promessa + liga o encaixe). Usar depois das 21h se a cota do dia estourou
+node scripts/lineup-registra.mjs [--seco]
+```
+
+- **Retomável:** o lote pula a sequência que já tem registro (pendente ou
+  aplicado). Com a grade mudada, é só repetir 1–3, e só as sequências novas
+  são geradas.
+- **Locução em cache pela frase** (`~/.cache/bieltv-lineup/vozes/`): refazer o
+  vídeo de uma sequência que já existia não gasta ElevenLabs.
+- **Texto** no formato das peças aprovadas. O Cartoon não tem comentário. No
+  Jetix e no Disney vai uma frase por série; se a voz passar do teto do canal,
+  desce de nível e tira comentário, em vez de deixar o motor cortar a fala.
+  Cada locução é conferida por transcrição. Nome duvidoso sai marcado como
+  `conferir` no manifesto (`~/.cache/bieltv-lineup/lote/manifesto.jsonl`).
+- Os vídeos ficam para revisão em `~/storage/downloads/lineup-lote/`.
+
+**Estado em 2026-09-23:** 93 sequências (Disney 32, Jetix 31, Cartoon 30),
+cobrindo ~56% dos encaixes da semana; o resto são sequências que aparecem uma
+vez só. O registro fica armado para 21:00:05 (`~/.cache/bieltv-lineup/registra-21h.sh`),
+antes do replan da rotina das 21h, que já encaixa as peças.
+
+⚠️ **Ainda não é automático.** Quando a grade muda, o lineup cuja sequência
+sumiu simplesmente deixa de tocar, e isso é seguro. Mas sequência nova fica
+sem peça até alguém rodar o lote de novo. Automatizar isso (reconciliador de
+lineups no cron) é o próximo passo.
+
 ---
 
 ## 5. Como Sincronizar e Executar em Outro Computador
