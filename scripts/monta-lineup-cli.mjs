@@ -76,6 +76,10 @@ async function main() {
 }
 
 main().catch((err) => {
+  // ffmpeg MORTO por sinal (no celular, o Android mata o processo que mais usa
+  // memória quando falta RAM) sai sem mensagem de erro nenhuma: sem mostrar o
+  // sinal, o log só mostra o começo do ffmpeg e parece bug do filtro.
+  if (err.signal || err.killed) console.error(`[monta-lineup-cli] ❌ ffmpeg morto por sinal ${err.signal ?? '?'}`)
   console.error(`[monta-lineup-cli] ❌ Erro:`, err.message)
   process.exit(1)
 })

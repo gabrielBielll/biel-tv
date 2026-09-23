@@ -187,14 +187,18 @@ for (const [i, x] of faltam.entries()) {
     const voz = await locucao(x.canal, x.seq)
     const mp4 = join(VIDEOS, `${x.canal}__${x.seq.join('__')}.mp4`)
     let renderizou = false
-    for (let tent = 1; tent <= 3 && !renderizou; tent++) {
+    // Tentativas ESPAÇADAS: a falha medida em 23/09 era o Android matando o
+    // ffmpeg por falta de RAM enquanto outra coisa pesada rodava no celular.
+    // Três tentativas seguidas caíam todas dentro da mesma janela de aperto.
+    for (let tent = 1; tent <= 4 && !renderizou; tent++) {
+      if (tent > 1) await new Promise((ok) => setTimeout(ok, [0, 0, 20_000, 60_000, 120_000][tent]))
       // render morto por tempo grava MP4 SEM o fechamento: nunca aproveitar
       const r = spawnSync('timeout', ['120', 'node', 'scripts/monta-lineup-cli.mjs', '--canal', x.canal, '--voz', voz.arq,
         '--v0', vids[0], '--v1', vids[1], '--v2', vids[2], '--out', mp4], { cwd: REPO, stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8' })
       renderizou = r.status === 0 && Math.abs(dur(mp4) - DUR_ALVO[x.canal]) < 0.06
       if (!renderizou) log(`  render falhou (tentativa ${tent}, exit ${r.status}): ${(r.stderr ?? '').split('\n').filter((l) => l.trim() && !/^\s*at /.test(l)).slice(-2).join(' | ').slice(0, 300)}`)
     }
-    if (!renderizou) throw new Error('render falhou 3 vezes')
+    if (!renderizou) throw new Error('render falhou 4 vezes')
     const entrega = master20(mp4, join(CACHE, 'lote', `${x.id}-20s.mp4`))
     const titulo = `Lineup: ${x.seq.map((s) => NOMES[s] ?? s).join(' → ')}`
     const r = spawnSync('node', ['--dns-result-order=ipv4first', 'packages/pipeline/src/cli.mjs', 'ingest', entrega,

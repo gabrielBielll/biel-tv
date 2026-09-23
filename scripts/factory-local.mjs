@@ -605,6 +605,8 @@ async function processaLineupSequencia(job, workdir) {
   const out = join(workdir, `${job.media_id}.mp4`)
   let renderizou = false
   for (let tent = 1; tent <= 3 && !renderizou; tent++) {
+    // espaçado: falta de RAM passageira (celular) mata o ffmpeg sem erro
+    if (tent > 1) await new Promise((ok) => setTimeout(ok, tent * 20_000))
     const r = spawnSync('timeout', ['180', process.execPath, join(ROOT, 'scripts/monta-lineup-cli.mjs'),
       '--canal', job.canal, '--voz', voz.arq, '--v0', videos[0], '--v1', videos[1], '--v2', videos[2], '--out', out],
     { cwd: ROOT, stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8' })
