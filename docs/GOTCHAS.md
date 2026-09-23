@@ -1,7 +1,60 @@
 # Pegadinhas da Biel TV
 
 > Bugs reais encontrados, suas causas exatas e o fix — pra não redescobrir o
-> mesmo problema duas vezes. Atualizado em 2026-07-12.
+> mesmo problema duas vezes. Atualizado em 2026-09-23.
+
+## 🔇 A família que dá mais trabalho: falha que NÃO dá erro
+
+Em 22–23/09/2026, num único dia de trabalho, **seis problemas independentes
+apareceram — e nenhum deles produziu mensagem de erro.** Cada um foi descoberto
+por acaso ou por medição, nunca por alarme. Vale ler esta seção antes de
+debugar qualquer coisa aqui, porque o instinto de "se estivesse quebrado eu
+saberia" é falso neste projeto.
+
+| o que aconteceu | o que apareceu | como foi achado |
+|---|---|---|
+| `git cherry-pick \| tail -6` escondeu a 2ª linha de conflito; `git add -A` engoliu os marcadores | commit verde, teste passando | a fábrica morreu 2 dias depois, e o erro do Actions era `SyntaxError` num JSON |
+| `while IFS= read` pulou a última linha de um `.jsonl` sem newline final | "69 gravadas, 0 erros" — de 70 | contagem no banco não bateu |
+| MULTIOS do zsh duplicou stdout num `cmd >arquivo \| grep` | medição plausível e errada | medir de novo por `spawnSync` deu outro número |
+| `tickPlaylist`/`tickFabricaComerciais`/`tickComercial` lançavam em 5xx | run vermelha em 9s, sem dizer que era cota | `wrangler tail` mostrou `D1_ERROR: exceeded daily row write limit` |
+| montagem de comercial começava no segundo 0 da amostra, onde há cartela parada | peça pronta, job `done` | o Gabriel viu no ar: "só passa uma imagem fixa" |
+| variável de ambiente não chegou no processo, `detectScene` falhou, `catch` devolveu 0 | teste "provando" que o conserto não funcionava | os números eram zero demais pra serem verdade |
+
+### O que essas seis têm em comum
+
+1. **Um `catch` que devolve valor neutro.** `catch { return 0 }` e
+   `catch { return false }` transformam falha em resposta plausível. Quando o
+   fallback for silencioso, ele precisa **logar** — e o log precisa dizer que é
+   fallback, não parecer operação normal.
+2. **Truncar saída de comando cujo retorno importa.** `| tail -n`, `| head -n`,
+   `2>/dev/null` e `| grep` escondem a linha que muda a conclusão. Em `git`,
+   `ffmpeg` e `wrangler`, leia a saída inteira antes de decidir.
+3. **Medir por um caminho e usar por outro.** Medição de shell não descreve o
+   que o código vê (ver MULTIOS). Meça pelo mesmo mecanismo que vai consumir o
+   resultado.
+4. **Sucesso contado, não conferido.** "69 gravadas" é contagem do laço, não do
+   banco. Depois de escrever N coisas, **leia as N de volta**.
+
+### As regras que saíram disso
+
+- Depois de resolver conflito: `git diff --cached | grep -c '^+<<<<<<<'` **antes**
+  de commitar. Custa um segundo e teria evitado dois dias de fábrica parada.
+- Ler `.jsonl` em bash: `done < <(cat arquivo; echo)` — nunca `done < arquivo`.
+- Medir stream (stdout vs stderr): arquivos separados, `cmd 2>err 1>out`, **sem
+  pipe**. Ou `spawnSync`. Ver a seção do zsh MULTIOS.
+- Erro transitório (5xx, cota, rede) num subsistema **não pode** derrubar o
+  processo inteiro: logue e siga. A regra ja estava escrita no comentário do
+  `tickComercial` ("um tick de feature nova nunca pode quebrar os ticks que já
+  funcionam") — só cobria o 404 e não o 500.
+- Toda operação em lote termina com **releitura de verificação**: contou N,
+  agora confirme N no banco.
+- Quando um teste der um número redondo demais (tudo zero, tudo igual),
+  desconfie do teste antes de desconfiar do código.
+
+📌 E a contrapartida: **quando algo aqui grita, agradeça.** O `git commit` que
+falha por falta de identidade, o lote de faixas que recusa aplicar meia grade e
+o `claim` que desiste depois de 5 erros seguidos são desenhos deliberados que
+trocam silêncio por barulho. Não os "conserte" pra ficarem quietos.
 
 ## Fábrica: GitHub Actions desde 2026-07-12 (a EC2 é só fallback)
 
@@ -124,6 +177,34 @@ de um placeholder pro id real (ex.: na hora do deploy) faz o D1 local
 "esquecer" tudo. Sempre `wrangler d1 export --local` antes de trocar o id, e
 restaurar o dump depois.
 
+## zsh desta máquina: `cmd >arquivo | grep` MEDE ERRADO
+
+O shell aqui é zsh com **MULTIOS ligado** (padrão). Com redireção de stdout
+**e** pipe na mesma linha, ele manda pros dois em vez de escolher:
+
+```sh
+zsh:   echo OLA >/dev/null | cat   →  OLA        # duplicou
+bash:  echo OLA >/dev/null | cat   →  (vazio)    # POSIX
+zsh:   unsetopt multios; echo OLA >/dev/null | cat  →  (vazio)
+```
+
+**Consequência:** qualquer medição de *"esse comando escreve em stdout ou
+stderr?"* feita com `cmd >algo | grep` mede errado — o pipe recebe justamente o
+que você achou que tinha desviado. Foi assim que o `metadata=print:file=-` do
+ffmpeg pareceu escrever em stderr nas duas variantes (17/17) e quase derrubou um
+achado correto (22/09/2026).
+
+⚠️ **Não confunda com a armadilha de ORDEM** (`2>&1 >/dev/null` duplica stderr
+pro destino que o stdout tinha *naquele momento*). Ela é real e vale como regra
+geral, mas **não** explica este caso: aqui as duas ordens dão o mesmo número,
+porque o MULTIOS duplica de qualquer jeito.
+
+**Como medir certo:** arquivos separados sem pipe (`cmd 2>err.txt 1>out.txt`), ou
+— melhor — pelo mesmo mecanismo do código que vai usar o resultado (`spawnSync`,
+`execFile`). É primo do sequestro de `grep`/`find` documentado no
+`~/.claude/CLAUDE.md`: lá o binário é trocado, aqui o binário está certo e quem
+mente é o shell.
+
 ## Banco de dados (D1/SQLite)
 
 **SQLite não permite `ALTER` de `CHECK` constraint — reconstrua a tabela.**
@@ -137,6 +218,48 @@ dados → `DROP` a antiga → `RENAME`. Ver `packages/db/migrations/0006_*.sql`.
 alto (erro do d1()), mas ainda assim é um erro bobo de se cometer e perder
 tempo depurando. Confira a migration antes de escrever SQL ad-hoc contra
 essas tabelas.
+
+## Replanejar a grade custa ~13 mil linhas (e por que isso derruba tudo)
+
+`epg_virtual` tem **5 índices**, então cada linha da grade custa **6 escritas
+físicas** (tabela + índices). Com ~1.100 linhas futuras por canal, um replan
+(delete + insert) sai por **~13 mil linhas**. O teto do D1 free tier é **100
+mil/dia**.
+
+Endpoint que replaneja POR ITEM vira estouro de cota na hora em que alguém
+trabalha:
+
+| operação | pelo endpoint singular | em lote |
+|---|---|---|
+| desativar 19 mídias do mesmo canal | 19 replans = **397 mil linhas** | 1 replan = 13 mil |
+| ajustar 11 faixas da grade | 11 replans = **144 mil** | 1 replan = 13 mil |
+| grade-alvo inteira (~150 faixas) | **1,95 MILHÃO** = 19,5 dias de cota | 3 replans = 39 mil |
+
+Os dois primeiros são medições reais de 21 e 22/09/2026 — a cota estourou nos
+dois dias e **a fábrica morreu junto**, porque sem cota o `/admin/jobs/claim`
+também devolve 500 e 33 episódios ficaram parados.
+
+**Use sempre as rotas em LOTE**, que replanejam cada canal uma vez:
+`POST /admin/media/status {ids[], status}` e
+`POST /admin/fabrica-comerciais/slots/lote {criar[], apagar[]}`. O painel admin
+já acumula as mudanças de grade numa "leva" e manda num POST só.
+
+📌 O padrão de agrupar já existia na base antes disso (`aplicaCanais` em
+`admin.ts`, `reconciliaComerciaisGrade` em `fabrica-comerciais.ts`): os
+endpoints singulares eram a exceção, não a regra. Ao criar rota nova que mexa em
+grade, **junte os canais afetados num Set e replaneje no fim**.
+
+## Fábrica de comerciais / TTS
+
+**Voz clonada morre junto com a assinatura do ElevenLabs.** Desde 15/09/2026 a
+API responde `401 ivc_not_permitted` ("Instantly cloned voices are not available
+on your current plan") para as vozes dos três canais, que são clonadas. **A
+chave continua válida e com crédito** — voz do catálogo público sintetiza
+normalmente, foi verificado. Não saia trocando `channels.voz_id`: gere com
+`voz_id` de voz pública por parâmetro (todas as rotas de síntese aceitam) e veja
+`docs/features/fabrica-comerciais.md` → "Voz provisória" pra receita completa,
+inclusive como achar depois (`audio_key` guarda a voz no caminho) e regerar com
+a voz clonada quando a assinatura voltar.
 
 ## Diretor / LLM (Gemini + DeepSeek)
 
