@@ -317,15 +317,15 @@ export async function scheduleChannel(
   const porId = new Map(mediaTodas.map((m) => [m.id, m]))
   if (contents.length === 0) return { canal, added: 0, skipped: 'sem conteúdo' }
 
-  // FILME COM FAIXA SÓ TOCA NA FAIXA. Pedido do Gabriel (23/09/2026): "como
-  // temos poucos filmes, só aos domingos por enquanto". Filme de série que tem
-  // âncora neste canal sai do rodízio e do encaixe. Sem isso, um filme de 90 min
-  // caía como enchimento num vão qualquer da semana. Ele continua valendo para
-  // a âncora (episodiosDaSerie usa `contents`) e para a maratona. Filme SEM
-  // faixa segue no rodízio como sempre (o das Meninas no Cartoon). Episódio de
-  // série ancorada também segue: a grade usa esses episódios pra tapar vão.
-  const seriesAncoradas = new Set(slotsAtivos.map((s) => s.series_id))
-  const soNaFaixa = (m: MediaRow) => m.tipo === 'filme' && m.series_id != null && seriesAncoradas.has(m.series_id)
+  // FILME SÓ TOCA NA FAIXA DE FILME (ou numa maratona). Pedido do Gabriel
+  // (23/09/2026): filmes só nas sessões de domingo, e a grade de fim de semana
+  // (docs/features/grade-fim-de-semana-2005-2008.md) já tem os horários fixos
+  // de filme. Filme sai do rodízio e do encaixe. Sem isso, um filme de 90 min
+  // caía como enchimento num vão qualquer da semana, e filme recém-subido com a
+  // série errada iria ao ar em horário aleatório. Ele continua valendo para a
+  // âncora (episodiosDaSerie usa `contents`) e para a maratona. Filme que ainda
+  // não tem faixa fica esperando, sem tocar.
+  const soNaFaixa = (m: MediaRow) => m.tipo === 'filme'
   const rodizio = contents.some((m) => !soNaFaixa(m)) ? contents.filter((m) => !soNaFaixa(m)) : contents
 
   // Lineups deste canal que podem entrar na grade. Liga por canal no config
@@ -504,6 +504,17 @@ export async function scheduleChannel(
       }
     }
     ancoras.sort((a, b) => a.start - b.start)
+    // O ESPECIAL PROVISÓRIO CEDE AO FILME. A grade de fim de semana diz que um
+    // especial de episódios pode ocupar o horário de filme até o filme chegar,
+    // "sem mudar o horário da faixa" (ex.: Dexter às 14h no lugar do Teatro
+    // Cartoon). Quando as duas faixas caem no mesmo minuto e a do filme tem
+    // filme pronto (`seriesComEp` já filtrou), a do especial sai. Sem isso as
+    // duas tocariam, com o filme atrasado pelo especial.
+    const seriesDeFilme = new Set(contents.filter((m) => m.tipo === 'filme' && m.series_id).map((m) => m.series_id!))
+    const horaDeFilme = new Set(ancoras.filter((a) => seriesDeFilme.has(a.series_id)).map((a) => a.start))
+    for (let i = ancoras.length - 1; i >= 0; i--) {
+      if (horaDeFilme.has(ancoras[i].start) && !seriesDeFilme.has(ancoras[i].series_id)) ancoras.splice(i, 1)
+    }
   }
   let ancIdx = 0
 

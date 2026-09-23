@@ -390,18 +390,18 @@ function ocorrencias(rows, catalogo) {
   check('reprise sem exibição anterior: EPG contígua', contigua(rows))
 }
 
-// ── FILME COM FAIXA SÓ TOCA NA FAIXA (pedido do Gabriel, 23/09/2026) ─────────
-//    Filme de série ancorada sai do rodízio/encaixe; filme SEM faixa continua.
+// ── FILME SÓ TOCA NA FAIXA DE FILME (pedido do Gabriel, 23/09/2026) ──────────
 {
   const filme = (id, sid) => ({ id, tipo: 'filme', duracao_seg: 5400, segment_count: 540, last_played_at: 0, series_id: sid })
   const CAT = [...CATALOGO, filme('filme_a', 'bloco_filmes'), filme('filme_b', 'bloco_filmes'), filme('filme_solto', 'filme_sem_faixa')]
-  // sem faixa pros filmes: o rodízio de 24 h pega filme (é o comportamento de antes)
+  // sem faixa nenhuma: filme não entra no rodízio (espera a faixa)
   {
     const { db, epg } = makeDB({ channel: CANAL, media: CAT, slots: [] })
     await scheduleChannel({ DB: db }, 'ch', 24, true)
-    check('sem faixa de filme: filme entra no rodízio como antes', epg.some((r) => r.media_id.startsWith('filme_')))
+    check('filme sem faixa fica fora do rodízio', !epg.some((r) => r.media_id.startsWith('filme_')))
+    check('filme sem faixa: grade continua contígua', contigua(grade(epg)))
   }
-  // com faixa pra bloco_filmes: filme_a/filme_b só na hora da faixa; filme_solto segue no rodízio
+  // com faixa pra bloco_filmes: filme_a/filme_b só na hora da faixa
   {
     const { db, epg } = makeDB({
       channel: CANAL, media: CAT,
@@ -414,7 +414,26 @@ function ocorrencias(rows, catalogo) {
     check('filme com faixa: só começa na hora da faixa', inicios.length >= 1 && fora.length === 0,
       `${inicios.length} início(s), ${fora.length} fora da faixa`)
     check('filme com faixa: grade contígua', contigua(rows))
-    check('filme SEM faixa continua no rodízio', rows.some((r) => r.media_id === 'filme_solto'))
+    check('filme de outra série (sem faixa) não aparece', !rows.some((r) => r.media_id === 'filme_solto'))
+  }
+  // especial provisório na MESMA hora da faixa de filme: cede ao filme
+  {
+    const slots = [
+      { series_id: 'aaa', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 2 }, // o "especial"
+      { series_id: 'bloco_filmes', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 },
+    ]
+    const { db, epg } = makeDB({ channel: CANAL, media: CAT, slots })
+    await scheduleChannel({ DB: db }, 'ch', 3, true)
+    const rows = grade(epg)
+    const naHora = rows.find((r) => r.start === A)
+    check('especial provisório cede: na hora da faixa começa o FILME', naHora && /^filme_[ab]$/.test(naHora.media_id),
+      naHora ? naHora.media_id : 'nada')
+    // sem filme pronto, o especial fica
+    const { db: db2, epg: epg2 } = makeDB({ channel: CANAL, media: CATALOGO, slots })
+    await scheduleChannel({ DB: db2 }, 'ch', 3, true)
+    const naHora2 = grade(epg2).find((r) => r.start === A)
+    check('sem filme pronto, o especial provisório continua na hora', naHora2 && naHora2.media_id.startsWith('aaa'),
+      naHora2 ? naHora2.media_id : 'nada')
   }
 }
 
