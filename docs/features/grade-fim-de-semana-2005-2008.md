@@ -34,17 +34,28 @@
 O Jetix mantém **Digimon desde o início** às 20h e **Pucca** às 22h no fim de
 semana; esses horários vieram de chamadas originais e não são slots de filme.
 
-### Em produção desde 23/09/2026: só os domingos
+### Em produção desde 23/09/2026: sábado 1 sessão, domingo 2
 
-Decisão do Gabriel: **filme só aos domingos**, porque ainda há poucos filmes.
-O filme de sábado do Disney fica para quando o acervo crescer.
+Decisão do Gabriel em 23/09: as sessões de filme valem para o fim de semana,
+com **uma sessão no sábado e duas no domingo**, nos horários que ele encontrou:
+sessão da tarde às 14h e sessão nobre às 20h.
 
-| Canal | Domingo | `series_id` da sessão | Faixa (`channel_slots`) | Vinhetas |
+| Canal | Sábado | Domingo | `series_id` da sessão | Faixas (`channel_slots`) |
 |---|---|---|---|---|
-| Disney Channel | 20:00 | `o_maravilhoso_mundo_de_disney` | `sl_disney_filmes_dom` | abertura (a_seguir), bumper sem voz (durante saída/volta) |
-| Cartoon Network | 14:00 + reprise exata às 20:00 | `teatro_cartoon` | `sl_cn_teatro_cartoon_dom`, `sl_cn_teatro_cartoon_dom_reprise` (`reprise=1`) | abertura (a_seguir), Voltamos já / Estamos de volta |
-| Jetix | 15:00 | `cinescopio` | `sl_jetix_cinescopio_dom` | abertura do Cineskópio (a_seguir) |
+| Disney Channel | 20:00 | 14:00 e 20:00 | `o_maravilhoso_mundo_de_disney` | `sl_disney_filmes_dom` ([6,7] 20:00), `sl_disney_filmes_dom_tarde` ([7] 14:00) |
+| Cartoon Network | 14:00 | 14:00 e 20:00 | `teatro_cartoon` | `sl_cn_teatro_cartoon_dom` ([6,7] 14:00), `sl_cn_teatro_cartoon_dom_reprise` ([7] 20:00, sem reprise) |
+| Jetix | 14:00 | 14:00 e 20:00 | `cinescopio` | `sl_jetix_cinescopio_dom` ([6,7] 14:00), `sl_jetix_cinescopio_dom_noite` ([7] 20:00) |
 
+Vinhetas: abertura antes de cada sessão (`a_seguir` da série) e bumpers nos
+intervalos (`durante` saída/volta): o do Disney sem voz por enquanto, e
+Voltamos já / Estamos de volta no Teatro Cartoon.
+
+- **Sessão de filme ocupa a janela inteira** (`9744574`). Quando o filme toca,
+  a faixa de episódio que começaria antes do fim dele (menos 10 min) cede. Sem
+  filme pronto, essas faixas tocam normalmente. Hoje isso afeta, só quando
+  houver filme: Disney domingo 14h (Feiticeiros, Jake Long, Phineas, Brandy);
+  Jetix domingo 20h (Witch, Três Espiãs); CN sábado 14h e domingo 14h (Dexter
+  provisório).
 - **Filme só toca na sessão.** Filme fica fora do rodízio e do encaixe
   (`scheduler.ts`, `9ba1d54`). Para cair na sessão, basta subir o filme com
   `--tipo filme` e o `series_id` da tabela. Um filme por domingo, em ordem de
