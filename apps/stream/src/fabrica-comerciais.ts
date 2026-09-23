@@ -2,6 +2,8 @@ import { Hono } from 'hono'
 import { dispatchFabrica } from './fabrica'
 import { pedeReplan, proximaOcorrencia, scheduleChannel } from './scheduler'
 import { sintetizaClip, sintetizaBytes, TtsIndisponivel, type VozConfig } from './tts'
+import { reconciliaLineups } from './lineup-reconcilia'
+import { sequenciaDaCondicao } from './lineup-grade'
 
 type Bindings = {
   DB: D1Database
@@ -448,6 +450,49 @@ async function resolvePayload(env: Bindings, job: BuildJobRow) {
   }
 }
 
+// Job do RECONCILIADOR DE LINEUPS (lineup-reconcilia.ts): só a sequência vem
+// no pedido. Aqui o Worker resolve a amostra de vídeo de cada série pro runner:
+// a do catálogo (program_samples, R2 ou link) ou, sem ela, o 1º episódio pronto,
+// do qual o runner tira 40 s do meio. Texto e voz ficam com o runner, no mesmo
+// módulo do lote local (packages/pipeline/src/lineup-texto.mjs).
+async function resolveLineupSequenciaPayload(env: Bindings, job: BuildJobRow) {
+  let req: { canal?: string; seq?: unknown; versao?: string }
+  try {
+    req = JSON.parse(job.request_payload ?? '{}')
+  } catch {
+    throw new Error('pedido do lineup está corrompido')
+  }
+  const seq = sequenciaDaCondicao({ seq: req.seq })
+  if (!req.canal || !seq) throw new Error('lineup_sequencia sem canal ou sequência X→Y→Z')
+  const amostras = []
+  for (const series_id of seq) {
+    const ps = await env.DB.prepare(
+      `SELECT video_key, source_url FROM program_samples WHERE series_id = ?1
+       ORDER BY CASE WHEN COALESCE(video_key, '') <> '' THEN 0 ELSE 1 END, created_at DESC LIMIT 1`,
+    ).bind(series_id).first<{ video_key: string | null; source_url: string | null }>()
+    if (ps?.video_key || ps?.source_url) {
+      amostras.push({ series_id, video_key: ps.video_key || null, source_url: ps.video_key ? null : ps.source_url })
+      continue
+    }
+    const ep = await env.DB.prepare(
+      `SELECT MIN(id) id FROM media_items
+       WHERE tipo = 'episodio' AND status = 'ready' AND json_extract(metadata, '$.series_id') = ?1`,
+    ).bind(series_id).first<{ id: string | null }>()
+    if (!ep?.id) throw new Error(`série ${series_id} sem amostra nem episódio pronto`)
+    amostras.push({ series_id, episodio: ep.id })
+  }
+  return {
+    kind: 'lineup_sequencia',
+    id: job.id,
+    media_id: job.media_id,
+    canal: req.canal,
+    seq,
+    versao: req.versao ?? null,
+    amostras,
+    constraints: { max_duration: 20, delivery_duration: 20 },
+  }
+}
+
 async function resolveLineupPayload(env: Bindings, job: BuildJobRow) {
   if (!job.request_payload) throw new Error('job de lineup sem snapshot da grade')
   let req: LineupRequest
@@ -664,7 +709,7 @@ fabricaComerciais.post('/slots', async (c) => {
   // o guia que o app já mostrou não se embaralha por causa de uma faixa da noite.
   const desde = proximaOcorrencia(v.dias, v.hora)
   c.executionCtx.waitUntil(
-    pedeReplan(c.env, v.canal, () => reconciliaComerciaisGrade(c.env), desde)
+    pedeReplan(c.env, v.canal, () => reconciliaGrade(c.env), desde)
       .catch(() => { /* marca fica de pé: o cron replaneja */ }),
   )
   return c.json({ ok: true, id, replan: 'coalescido', desde }, 201)
@@ -745,8 +790,21 @@ fabricaComerciais.post('/slots/lote', async (c) => {
     const d = desdeDe.get(canal)
     await scheduleChannel(c.env, canal, 48, true, Number.isFinite(d) ? d : 0)
   }
-  c.executionCtx.waitUntil(reconciliaComerciaisGrade(c.env).catch(() => { /* cron cobre */ }))
+  c.executionCtx.waitUntil(reconciliaGrade(c.env).catch(() => { /* cron cobre */ }))
   return c.json({ ok: true, criados: prontos.map((p) => p.id), apagados: aApagar.length, canais_replanejados: [...afetados] }, 201)
+})
+
+// Depois de mexer na grade, os DOIS reconciliadores: o de comerciais de
+// horário e o de lineups. Em sequência e cada um no seu try: um não derruba o outro.
+async function reconciliaGrade(env: Bindings): Promise<void> {
+  try { await reconciliaComerciaisGrade(env) } catch { /* cron cobre */ }
+  try { await reconciliaLineups(env) } catch { /* cron cobre */ }
+}
+
+// Reconciliador de lineups sob demanda. `seco: true` só diz o que faltaria.
+fabricaComerciais.post('/lineups/reconciliar', async (c) => {
+  const b = await c.req.json<{ seco?: boolean }>().catch(() => ({} as { seco?: boolean }))
+  return c.json(await reconciliaLineups(c.env, { seco: b.seco === true }))
 })
 
 // ── reconciliador grade ↔ comerciais ────────────────────────────────────────
@@ -912,6 +970,9 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
   const canaisMexidos = new Set<string>()
 
   for (const j of jobs) {
+    // job de LINEUP (slot_dias '[]', hora '00:00' de enchimento) não anuncia
+    // horário nenhum: contá-lo "cobriria" uma âncora da série à meia-noite
+    if (j.slot_dias === '[]') continue
     const hora = limpaHora(j.slot_hora)
     if (!hora) continue
     const chave = `${j.canal}|${j.series_id}|${hora}`
@@ -1167,7 +1228,7 @@ fabricaComerciais.post('/blocos', async (c) => {
     throw e
   }
   // bloco novo merece comercial — em background, o cron cobre se falhar
-  c.executionCtx.waitUntil(reconciliaComerciaisGrade(c.env).catch(() => { /* cron cobre */ }))
+  c.executionCtx.waitUntil(reconciliaGrade(c.env).catch(() => { /* cron cobre */ }))
   return c.json({ ok: true, id, slug }, 201)
 })
 
@@ -1176,7 +1237,7 @@ fabricaComerciais.delete('/blocos/:id', async (c) => {
     .bind(c.req.param('id')).run()
   if ((r.meta.changes ?? 0) === 0) return c.json({ error: 'bloco não encontrado' }, 404)
   // o comercial que anunciava o bloco vira mentira — o reconciliador recolhe
-  c.executionCtx.waitUntil(reconciliaComerciaisGrade(c.env).catch(() => { /* cron cobre */ }))
+  c.executionCtx.waitUntil(reconciliaGrade(c.env).catch(() => { /* cron cobre */ }))
   return c.json({ ok: true })
 })
 
@@ -1195,7 +1256,7 @@ fabricaComerciais.delete('/slots/:id', async (c) => {
   try { desde = proximaOcorrencia(JSON.parse(row.dias) as number[], row.hora) } catch { desde = 0 }
   // mesmo motivo do criar: apagar 20 âncoras em sequência custava 20 replans
   c.executionCtx.waitUntil(
-    pedeReplan(c.env, row.canal, () => reconciliaComerciaisGrade(c.env), desde)
+    pedeReplan(c.env, row.canal, () => reconciliaGrade(c.env), desde)
       .catch(() => { /* marca fica de pé: o cron replaneja */ }),
   )
   return c.json({ ok: true, replan: 'coalescido', desde })
@@ -1687,7 +1748,9 @@ fabricaComerciais.post('/claim', async (c) => {
     if (!job) return c.body(null, 204)
     const payload = job.job_type === 'lineup_3_janelas'
       ? await resolveLineupPayload(c.env, job)
-      : await resolvePayload(c.env, job)
+      : job.job_type === 'lineup_sequencia'
+        ? await resolveLineupSequenciaPayload(c.env, job)
+        : await resolvePayload(c.env, job)
     await c.env.DB.prepare('UPDATE commercial_build_jobs SET payload = ?2 WHERE id = ?1')
       .bind(job.id, JSON.stringify(payload)).run()
     return c.json(payload)
@@ -1820,7 +1883,25 @@ fabricaComerciais.post('/:id/done', async (c) => {
   ).bind(id)
 
   let promiseStmt
-  if (job.job_type === 'lineup_3_janelas') {
+  if (job.job_type === 'lineup_sequencia') {
+    // peça do reconciliador: a promessa é a SEQUÊNCIA por série. O scheduler
+    // confere na grade a cada replan se ela ainda acontece (lineup-grade.ts).
+    let req: { canal?: string; seq?: unknown; versao?: string } = {}
+    try { req = JSON.parse(job.request_payload ?? '{}') } catch { /* cai no 409 */ }
+    const seq = sequenciaDaCondicao({ seq: req.seq })
+    if (!req.canal || !seq) return c.json({ error: 'lineup sem sequência de origem' }, 409)
+    const cond = JSON.stringify({
+      tipo: 'lineup_grade', canal: req.canal, seq,
+      template_version: req.versao ?? null, origem: 'reconcilia-lineups',
+    })
+    promiseStmt = c.env.DB.prepare(
+      `INSERT INTO media_promises (media_id, transcript, proposta, condicao, status)
+       VALUES (?1, ?2, ?3, ?3, 'confirmada')
+       ON CONFLICT(media_id) DO UPDATE SET
+         transcript=excluded.transcript, proposta=excluded.proposta,
+         condicao=excluded.condicao, status='confirmada', updated_at=unixepoch()`,
+    ).bind(mediaId, String(b.transcript ?? '').slice(0, 8000), cond)
+  } else if (job.job_type === 'lineup_3_janelas') {
     if (!job.request_payload) return c.json({ error: 'lineup sem snapshot de origem' }, 409)
     const req = JSON.parse(job.request_payload) as LineupRequest
     const cond = JSON.stringify({

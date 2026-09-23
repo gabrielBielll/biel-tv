@@ -16,6 +16,9 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import {
+  DUR_ALVO, NOMES, TETO_VOZ, VERSAO_LINEUP, idLineup, ouviuNome, semTags, textoLineup as texto,
+} from '../packages/pipeline/src/lineup-texto.mjs'
 
 const HOME = process.env.HOME
 for (const l of readFileSync(`${HOME}/bieltv-cred.env`, 'utf8').split('\n')) {
@@ -39,106 +42,17 @@ const MIN = Number(arg('min', 2))
 const LIMITE = Number(arg('limite', Infinity))
 const SECO = process.argv.includes('--seco')
 const CANAIS = arg('canal', null) ? [arg('canal')] : ['disney_channel', 'jetix', 'cartoon_network']
-const VERSAO = 'lote-local-2026-09-23-v1'
+const VERSAO = VERSAO_LINEUP
 
 const log = (s) => console.log(`${new Date().toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo' })} ${s}`)
 
-// ── nomes falados e comentários ─────────────────────────────────────────────
-// Nome como a voz deve DIZER (grafia pensada pro TTS: "Witch", "Kid versus
-// Kat", "Senhor"). Veio dos voice_clips 'nome' de cada canal, com ajustes.
-const NOMES = {
-  a_vida_e_aventuras_de_juniper_lee: 'Juniper Lee', as_meninas_superpoderosas: 'As Meninas Superpoderosas',
-  billy_e_mandy: 'As Terríveis Aventuras de Billy e Mandy', clube_das_winx: 'O Clube das Winx',
-  coragem_o_cao_covarde: 'Coragem, o Cão Covarde', corrida_maluca: 'A Corrida Maluca', flintstones: 'Os Flintstones',
-  jackie_chan: 'As Aventuras de Jackie Chan', jovens_titas: 'Os Jovens Titãs', knd: 'A Turma do Bairro',
-  laboratorio_de_dexter: 'O Laboratório de Dexter', liga_da_justica_sem_limites: 'Liga da Justiça Sem Limites',
-  looney_tunes: 'Looney Tunes', looney_tunes_show: 'O Show dos Looney Tunes', manda_chuva: 'Manda-Chuva',
-  martin_mystery: 'Martin Mystery', megas_xlr: 'Megas XLR', scooby_doo: 'Scooby-Doo', super_choque: 'Super Choque',
-  tom_e_jerry: 'Tom e Jerry', pokemon: 'Pokémon',
-  as_visoes_da_raven: 'As Visões da Raven', brandy_e_sr_bigodes: 'Brandy e Senhor Bigodes',
-  cory_na_casa_branca: 'Cory na Casa Branca', danny_phantom: 'Danny Phantom', familia_dinossauros: 'Família Dinossauros',
-  jacke_long_o_dragao_ocidental: 'Jake Long, o Dragão Ocidental', os_feiticeiros_de_waverly_place: 'Os Feiticeiros de Waverly Place',
-  padrinhos_magicos: 'Os Padrinhos Mágicos', phineas_e_ferb: 'Phineas e Ferb', timao_e_pumba: 'Timão e Pumba',
-  yin_yang_yo: 'Yin Yang Yo',
-  kid_vs_kat: 'Kid versus Kat', power_rangers_forca_animal: 'Power Rangers Força Animal', power_rangers_rpm: 'Power Rangers RPM',
-  power_rangers_furia_da_selva: 'Power Rangers Fúria da Selva', power_rangers_spd: 'Power Rangers S.P.D.',
-  power_rangers_ultravelocidade: 'Power Rangers Operação Ultravelocidade', pucca: 'Pucca',
-  super_esquadrao_dos_macacos: 'Super Esquadrão dos Macacos', tres_espias_demais: 'Três Espiãs Demais', witch: 'Witch',
-  zatch_bell: 'Zatch Bell',
-}
-// Uma frase curta por série (Jetix e Disney; o Cartoon aprovado não tem).
-// As marcadas "aprovada" vieram das peças que o Gabriel aprovou em 22–23/09.
-const COMENTARIOS = {
-  pucca: 'Determinada e divertida, ela não desiste nunca', // aprovada
-  padrinhos_magicos: 'Desejos malucos e muita confusão', // aprovada (exemplo)
-  power_rangers_forca_animal: 'Heróis selvagens em ação', // aprovada
-  tres_espias_demais: 'Ação e estilo em cada missão',
-  witch: 'Cinco guardiãs com o poder dos elementos', // aprovada (exemplo)
-  kid_vs_kat: 'Um garoto contra um gato alienígena',
-  martin_mystery: 'Mistérios sobrenaturais pra resolver',
-  power_rangers_rpm: 'Velocidade máxima contra as máquinas',
-  power_rangers_furia_da_selva: 'O poder das feras despertou',
-  power_rangers_spd: 'A patrulha do futuro em ação',
-  power_rangers_ultravelocidade: 'Uma corrida contra o tempo',
-  super_esquadrao_dos_macacos: 'Macacos robôs salvando o universo',
-  yin_yang_yo: 'Coelhos ninjas e muito kung fu',
-  zatch_bell: 'A batalha dos mamodos começou',
-  os_feiticeiros_de_waverly_place: 'Magia, aventura e muita confusão', // aprovada
-  as_visoes_da_raven: 'O futuro nunca foi tão divertido', // aprovada
-  brandy_e_sr_bigodes: 'Essa dupla vai aprontar de novo', // aprovada
-  danny_phantom: 'Meio garoto, meio fantasma, cem por cento herói', // aprovada (exemplo)
-  cory_na_casa_branca: 'Confusão no endereço mais famoso do país', // aprovada (exemplo)
-  familia_dinossauros: 'A família mais pré-histórica da TV',
-  jacke_long_o_dragao_ocidental: 'Um dragão protegendo a cidade',
-  phineas_e_ferb: 'Cada dia de férias, uma nova invenção',
-  timao_e_pumba: 'Hakuna Matata e muita aventura',
-}
-
-// Texto da locução por canal, em níveis: se a voz passa do teto, desce um
-// nível (menos comentário) em vez de deixar o motor cortar a fala.
-// Formatos = os das peças aprovadas (transcritas em 23/09).
-function texto(canal, [X, Y, Z], nivel) {
-  const n = (s) => NOMES[s] ?? s.replaceAll('_', ' ')
-  // Z = X (a série volta depois de Y): o comentário dela já foi dito no começo
-  const c = (s, pos) => (pos === 'Z' && s === X ? undefined : COMENTARIOS[s])
-  if (canal === 'cartoon_network') {
-    return `Você está assistindo ${n(X)}. Logo depois vem ${n(Y)}. E fica super ligado que mais tarde tem ${n(Z)}. Tudo isso só no Cartoon Network.`
-  }
-  if (canal === 'disney_channel') {
-    const cx = nivel <= 1 && c(X) ? ` ${c(X)}.` : ''
-    const cy = nivel === 0 && c(Y) ? ` ${c(Y)}.` : ''
-    const cz = nivel <= 1 && c(Z, 'Z') ? ` ${c(Z, 'Z')}.` : ''
-    return `Você está assistindo ${n(X)}.${cx} Depois, ${n(Y)}.${cy} Mais tarde, ${n(Z)}.${cz} Tudo isso no Disney Channel.`
-  }
-  // Jetix: sem "Jetix" na fala (a assinatura já está no fechamento). Só 3 tags
-  // v3: o /voz/preview corta em 300 caracteres e as 12 aprovadas ocupam 190.
-  const cx = nivel <= 1 && c(X) ? ` ${c(X)}!` : ''
-  const cz = nivel === 0 && c(Z, 'Z') ? ` ${c(Z, 'Z')}!` : ''
-  return `[excited] [confident announcer] [fast pace] Você está assistindo ${n(X)}!${cx} A seguir, ${n(Y)}! E depois, ${n(Z)}!${cz}`
-}
-// janela útil da voz = do delay do canal até antes do fechamento/assinatura
-const TETO_VOZ = { jetix: 16.2, disney_channel: 17.6, cartoon_network: 17.5 }
-const DUR_ALVO = { jetix: 20, disney_channel: 19, cartoon_network: 20 }
+// Nomes falados, comentários por série e o texto de cada canal ficam em
+// packages/pipeline/src/lineup-texto.mjs: a fábrica (jobs do reconciliador)
+// usa o mesmo, pra mesma sequência sair com a mesma frase nos dois caminhos.
 
 // ── utilidades ───────────────────────────────────────────────────────────────
 const sha = (s) => createHash('sha1').update(s).digest('hex')
 const dur = (f) => Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', f]).toString())
-const semAcento = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
-function lev(a, b) {
-  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)])
-  for (let j = 1; j <= b.length; j++) d[0][j] = j
-  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
-    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
-  }
-  return d[a.length][b.length]
-}
-// a palavra mais característica do nome foi OUVIDA? (tolera grafia do transcritor)
-function ouviu(nome, ouvido) {
-  const ws = semAcento(ouvido).split(/[^a-z0-9]+/).filter(Boolean)
-  const chave = semAcento(nome).split(/[^a-z0-9]+/).filter((w) => w.length >= 4).sort((a, b) => b.length - a.length)[0]
-  if (!chave) return true
-  return ws.some((w) => w === chave || lev(w, chave) <= Math.max(1, Math.floor(chave.length / 4)))
-}
 
 async function d1(sql, params = []) {
   const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/d1/database/${DB_ID}/query`, {
@@ -209,7 +123,7 @@ async function locucao(canal, seq) {
       const d = dur(arq)
       if (d > TETO_VOZ[canal]) { log(`  voz ${d.toFixed(1)}s > teto ${TETO_VOZ[canal]}s no nível ${nivel}: encurta`); break }
       const ouvido = await transcreve(arq)
-      const faltam = seq.filter((s) => !ouviu(NOMES[s] ?? s, ouvido))
+      const faltam = seq.filter((s) => !ouviuNome(s, ouvido))
       melhor = { arq, texto: t, nivel, dur: d, ouvido, faltam }
       if (faltam.length === 0) return melhor
       log(`  nome não ouvido (${faltam.join(', ')}) na tentativa ${tent}: "${ouvido.slice(0, 120)}"`)
@@ -249,7 +163,7 @@ for (const canal of CANAIS) {
   for (const [s, k] of [...n.entries()].sort((a, b) => b[1] - a[1])) {
     if (k < MIN) continue
     const seq = s.split('>')
-    const id = `com_lineup_${sha(`${canal}|${s}|${VERSAO}`).slice(0, 12)}`
+    const id = idLineup(canal, seq)
     fila.push({ canal, seq, id, porSemana: k })
   }
 }
@@ -290,7 +204,7 @@ for (const [i, x] of faltam.entries()) {
     if (r.status !== 0) throw new Error(`ingest: ${(r.stderr || r.stdout).trim().split('\n').at(-1)}`)
     appendFileSync(MANIFESTO, JSON.stringify({
       id: x.id, canal: x.canal, seq: x.seq, por_semana: x.porSemana, versao: VERSAO,
-      texto: voz.texto.replace(/^(\[[^\]]+\]\s*)+/, ''), nivel: voz.nivel, voz_seg: +voz.dur.toFixed(1),
+      texto: semTags(voz.texto), nivel: voz.nivel, voz_seg: +voz.dur.toFixed(1),
       ouvido: voz.ouvido, conferir: voz.faltam, video: mp4,
     }) + '\n')
     ok++

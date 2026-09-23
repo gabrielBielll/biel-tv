@@ -261,6 +261,47 @@ export function recuaCorte(
   return novo
 }
 
+export interface ItemInventario {
+  seq: Sequencia
+  /** ocorrências em que o bloco de X tem intervalo DENTRO (a peça teria onde entrar) */
+  encaixaveis: number
+  /** dessas, quantas ainda vão ao ar (bloco de X termina depois de `agora`) */
+  futuras: number
+}
+
+/**
+ * INVENTÁRIO do reconciliador: que sequências X→Y→Z a grade tem, contando só as
+ * ocorrências em que o lineup teria onde entrar (intervalo dentro do bloco de X
+ * — a regra de posição combinada com o Gabriel não usa o intervalo depois de X).
+ * `linhas` junta a grade já exibida (histórico) com a planejada, em ordem.
+ */
+export function inventarioSequencias(
+  linhas: LinhaGrade[],
+  info: Map<string, InfoMidia>,
+  agora: number,
+): Map<string, ItemInventario> {
+  const ehLineup = (id: string) => id.startsWith(PREFIXO_LINEUP)
+  const blocos = blocosDeConteudo(linhas, info, ehLineup)
+  const inv = new Map<string, ItemInventario>()
+  for (let b = 0; b + 2 < blocos.length; b++) {
+    const X = blocos[b].serie
+    const Y = blocos[b + 1].serie
+    const Z = blocos[b + 2].serie
+    if (!X || !Y || !Z) continue
+    let temIntervalo = false
+    for (let i = blocos[b].primeiro + 1; i < blocos[b].ultimo && !temIntervalo; i++) {
+      if (!ehConteudo(info, linhas[i][1], ehLineup)) temIntervalo = true
+    }
+    if (!temIntervalo) continue
+    const k = `${X}>${Y}>${Z}`
+    const it = inv.get(k) ?? { seq: [X, Y, Z] as Sequencia, encaixaveis: 0, futuras: 0 }
+    it.encaixaveis++
+    if (linhas[blocos[b].ultimo][3] > agora) it.futuras++
+    inv.set(k, it)
+  }
+  return inv
+}
+
 /**
  * Lê a sequência X→Y→Z de uma condição `lineup_grade`. Aceita o formato do
  * /lineup-jobs (current + next[2], com media_id e horário, que aqui são

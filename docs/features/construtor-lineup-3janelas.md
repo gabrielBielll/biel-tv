@@ -173,10 +173,43 @@ cobrindo ~56% dos encaixes da semana; o resto são sequências que aparecem uma
 vez só. O registro fica armado para 21:00:05 (`~/.cache/bieltv-lineup/registra-21h.sh`),
 antes do replan da rotina das 21h, que já encaixa as peças.
 
-⚠️ **Ainda não é automático.** Quando a grade muda, o lineup cuja sequência
-sumiu simplesmente deixa de tocar, e isso é seguro. Mas sequência nova fica
-sem peça até alguém rodar o lote de novo. Automatizar isso (reconciliador de
-lineups no cron) é o próximo passo.
+### 4.3 Reconciliador automático (`apps/stream/src/lineup-reconcilia.ts`)
+
+Faz a fábrica acompanhar a grade sozinha. Quando uma sequência sai da grade, o
+lineup dela para de tocar, porque o scheduler só encaixa onde a sequência é
+verdade. Quando aparece sequência nova, ela vira job.
+
+**Quando roda:** no cron diário, depois de mexer nas faixas (o mesmo gatilho
+do reconciliador de comerciais de horário) e sob demanda:
+
+```bash
+curl -X POST .../admin/fabrica-comerciais/lineups/reconciliar -d '{"seco":true}'   # só diz o que faltaria
+```
+
+**O que faz:**
+1. Conta as sequências X→Y→Z da grade exibida (7 dias) e da planejada (48 h),
+   só as ocorrências em que o bloco de X tem intervalo dentro (`inventarioSequencias`).
+2. Quer peça para quem se **repete** (≥ 2 ocorrências) **e ainda está na
+   grade** (≥ 1 no futuro).
+3. Sequência sem promessa `lineup_grade` e sem job vivo vira job
+   `lineup_sequencia` (no máximo 12 por rodada, os mais exibidos primeiro).
+   Job em erro segura a sequência: refazer sozinho em laço queimaria locução,
+   então o retry é manual. O relatório fica no config `reconcilia_lineups`.
+
+**A fábrica** (`scripts/factory-local.mjs`, no Actions ou no celular) monta
+igual ao lote local. O texto vem do mesmo `packages/pipeline/src/lineup-texto.mjs`.
+Depois ela publica, e o `/done` grava a promessa com a sequência. O media_id é
+o mesmo nos dois caminhos (`idLineup`), então lote e reconciliador não
+duplicam peça.
+
+**Chaves no `config`:**
+- `lineup_grade:<canal>` = `ultimo`: liga o encaixe (e o reconciliador) no canal;
+- `lineup_reconciliador` = `1`: liga a criação de jobs. Sem ela, só inventário.
+  Existe para dar para publicar o Worker antes de a fábrica do Actions (que
+  roda o código da `main`) saber montar `lineup_sequencia`.
+
+Depende da migration 0035 (`job_type`/`request_payload`). Sem ela, o relatório
+diz isso e sai sem erro.
 
 ---
 

@@ -364,5 +364,92 @@ function confereOcorrencias(rows) {
     podReescrito[0]?.start === A + 600 && podReescrito.at(-1)?.end === A + 650 && contiguaR(podReescrito))
 }
 
+// ── 15. inventário do reconciliador ──────────────────────────────────────────
+const { inventarioSequencias } = await import('../apps/stream/src/lineup-grade.ts')
+{
+  // duas vezes aaa→bbb→ccc (uma no passado, uma no futuro) + um aaa SEM
+  // intervalo dentro (não conta: a peça não teria onde entrar)
+  const semPod = [['ep', 'aaa_9', 'aaa', 1200], ['ad', 'ad40', 40], ['ep', 'bbb_1', 'bbb', 1200], ['ad', 'ad30', 30], ['ep', 'ccc_1', 'ccc', 1200], ['ad', 'ad40', 40]]
+  const g = [...GRADE_BASE, ['ad', 'ad40', 40], ...GRADE_BASE, ['ad', 'ad40', 40], ...semPod]
+  const { info, linhas } = monta(g)
+  const meio = linhas.find((l, i) => i > 14 && l[1] === 'aaa_1')[2] // início da 2ª ocorrência
+  const inv = inventarioSequencias(linhas, info, meio)
+  const abc = inv.get('aaa>bbb>ccc')
+  check('inventário: conta só ocorrências com intervalo DENTRO do bloco de X', abc?.encaixaveis === 2, JSON.stringify(abc))
+  check('inventário: "futuras" = blocos de X que ainda não terminaram', abc?.futuras === 1)
+}
+
+// ── 16. reconciliador (lineup-reconcilia.ts) com D1 falso ────────────────────
+const { reconciliaLineups, idLineup: idLineupWorker } = await import('../apps/stream/src/lineup-reconcilia.ts')
+const { idLineup: idLineupNode } = await import('../packages/pipeline/src/lineup-texto.mjs')
+check('media_id da peça: Worker (subtle) = lote local (node:crypto)',
+  (await idLineupWorker('jetix', ['a', 'b', 'c'])) === idLineupNode('jetix', ['a', 'b', 'c']))
+{
+  const T = 2_000_000
+  // grade do canal: aaa→bbb→ccc duas vezes e aaa→bbb→ddd duas vezes, todas
+  // com intervalo dentro do bloco de X; uma de cada no futuro
+  const bloco = (x, y, z) => [['ep', `${x}_1`, x, 600], ['ad', 'ad20', 20], ['ep', `${x}_1`, x, 600], ['ad', 'ad40', 40],
+    ['ep', `${y}_1`, y, 1200], ['ad', 'ad30', 30], ['ep', `${z}_1`, z, 1200], ['ad', 'ad40', 40]]
+  const { info, linhas } = monta([...bloco('aaa', 'bbb', 'ccc'), ...bloco('aaa', 'bbb', 'ddd'),
+    ...bloco('aaa', 'bbb', 'ccc'), ...bloco('aaa', 'bbb', 'ddd'), ['ep', 'zzz_1', 'zzz', 600]], T)
+  const agoraR = linhas[16][2] // metade da grade já exibida
+  const grade = linhas.map((l) => ({ media_id: l[1], s: l[2], f: l[3], tipo: info.get(l[1]).tipo, sid: info.get(l[1]).series_id }))
+  const fazDB = ({ config, promessas = [], jobs = [] }) => {
+    const inserts = []
+    const prepare = (sql) => {
+      let args = []
+      const api = {
+        bind: (...a) => { args = a; return api },
+        all: async () => {
+          if (/FROM config WHERE k LIKE/.test(sql)) return { results: Object.entries(config).map(([k, v]) => ({ k, v })) }
+          if (/FROM media_promises/.test(sql)) return { results: promessas }
+          if (/FROM commercial_build_jobs/.test(sql)) return { results: jobs }
+          if (/FROM moldes/.test(sql)) return { results: [{ id: 'md_x', canal: 'ch', musica_key: null }] }
+          if (/FROM epg_virtual e LEFT JOIN/.test(sql)) return { results: grade }
+          return { results: [] }
+        },
+        first: async () => null,
+        run: async () => { if (/INSERT OR IGNORE INTO commercial_build_jobs/.test(sql)) inserts.push(args); return { meta: {} } },
+      }
+      return api
+    }
+    return { db: { prepare }, inserts }
+  }
+  const nowReal = Date.now
+  Date.now = () => agoraR * 1000
+  const cobreAbc = { media_id: 'com_lineup_x', condicao: JSON.stringify({ tipo: 'lineup_grade', canal: 'ch', seq: ['aaa', 'bbb', 'ccc'] }) }
+  {
+    const { db, inserts } = fazDB({ config: { 'lineup_grade:ch': 'ultimo', lineup_reconciliador: '1' }, promessas: [cobreAbc] })
+    const r = await reconciliaLineups({ DB: db })
+    check('reconciliador: enfileira SÓ a sequência repetida sem peça (aaa→bbb→ddd)',
+      inserts.length === 1 && JSON.parse(inserts[0][5]).seq.join('>') === 'aaa>bbb>ddd',
+      inserts.map((i) => JSON.parse(i[5]).seq.join('>')).join(', '))
+    check('reconciliador: relatório por canal (2 sequências, 1 com peça, 1 faltando)',
+      r.canais.ch?.sequencias === 2 && r.canais.ch.com_peca === 1 && r.canais.ch.faltando === 1, JSON.stringify(r.canais))
+    check('reconciliador: job nasce publicável, com media_id da sequência',
+      inserts[0]?.[1] === await idLineupWorker('ch', ['aaa', 'bbb', 'ddd']))
+  }
+  {
+    const { db, inserts } = fazDB({ config: { 'lineup_grade:ch': 'ultimo' } })
+    const r = await reconciliaLineups({ DB: db })
+    check('reconciliador DESLIGADO (sem lineup_reconciliador=1): só inventário, nada enfileirado',
+      inserts.length === 0 && r.ativo === false && r.seriam.length === 2)
+  }
+  {
+    const pedido = JSON.stringify({ canal: 'ch', seq: ['aaa', 'bbb', 'ddd'] })
+    const { db, inserts } = fazDB({ config: { 'lineup_grade:ch': 'ultimo', lineup_reconciliador: '1' }, promessas: [cobreAbc],
+      jobs: [{ id: 'cb_1', status: 'error', error: 'TTS', request_payload: pedido }] })
+    const r = await reconciliaLineups({ DB: db })
+    check('reconciliador: job em ERRO segura a sequência (sem laço gastando locução) e aparece no relatório',
+      inserts.length === 0 && r.erros.length === 1)
+  }
+  {
+    const { db, inserts } = fazDB({ config: { lineup_reconciliador: '1' } })
+    const r = await reconciliaLineups({ DB: db })
+    check('reconciliador: canal sem lineup_grade ligado não gera nada', inserts.length === 0 && /nenhum canal/.test(r.motivo))
+  }
+  Date.now = nowReal
+}
+
 console.log(`\n${pass} ok, ${fail} falha(s)`)
 process.exit(fail ? 1 : 0)

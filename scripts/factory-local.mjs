@@ -3,7 +3,7 @@
 // mesma: claim → baixa do staging → pipeline ingest → marca done → re-gera
 // a grade. O pipeline emite linhas "progresso: N%" que a gente repassa pro
 // Worker (POST /admin/jobs/:id/progress) — é o % que aparece na fila do painel.
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createWriteStream, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { pipeline as streamPipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
@@ -13,6 +13,7 @@ import { FFMPEG, concatParts, extraiTrecho, detectSilence, detectBlack, detectSc
 import { achaBuracos, ancoraCorte, fundePelaGrade, classificaPeca } from '../packages/pipeline/src/cortador.mjs'
 import { montaComercialPrograma } from '../packages/pipeline/src/comerciais.mjs'
 import { montarLineup3Janelas, carregarConfigCanal } from '../packages/pipeline/src/construtor-lineup.mjs'
+import { DUR_ALVO, TETO_VOZ, nomeFalado, ouviuNome, semTags, textoLineup } from '../packages/pipeline/src/lineup-texto.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8787'
@@ -521,6 +522,113 @@ async function processaLineupRemoto(job, workdir) {
   }
 }
 
+// Transcritor usado pra conferir a locução ouvindo de volta (a síntese não é
+// determinística: "Martin Mystery" já saiu "marketing mystery"). Best-effort:
+// fora do ar, a peça segue sem a conferência.
+const TRANSCRITOR = process.env.LINEUP_TRANSCRITOR ?? 'https://b--transcritor-backend--rjwnmzf6pscr.code.run/transcrever'
+
+async function transcreveLocucao(arquivo) {
+  try {
+    const fd = new FormData()
+    fd.append('file', new Blob([readFileSync(arquivo)]), 'voz.mp3')
+    const r = await fetch(TRANSCRITOR, { method: 'POST', body: fd, signal: AbortSignal.timeout(180_000) })
+    return r.ok ? String((await r.json()).texto ?? '') : null
+  } catch { return null }
+}
+
+/**
+ * Job do RECONCILIADOR DE LINEUPS: gera o lineup de uma sequência X→Y→Z do
+ * zero. Mesmo texto, voz, render e entrega do lote local (scripts/lineup-lote.mjs),
+ * mas aqui a peça é publicada e o /done grava a promessa com a sequência.
+ */
+async function processaLineupSequencia(job, workdir) {
+  log(`montando lineup "${job.media_id}" (${job.canal}: ${job.seq.join(' → ')})`)
+  await postJson(`/admin/fabrica-comerciais/${job.id}/progress`, { pct: 5 }, 1).catch(() => {})
+
+  // amostras: do catálogo (R2 ou link) ou 40 s do meio do 1º episódio (a
+  // abertura costuma ter crédito na tela)
+  const videos = []
+  for (const [i, a] of job.amostras.entries()) {
+    const dest = join(workdir, `amostra_${i + 1}.mp4`)
+    if (a.video_key) {
+      await baixaR2Key(a.video_key, dest)
+    } else if (a.source_url) {
+      const cookies = await cookieFile()
+      await baixarUrl(a.source_url, dest, cookies)
+      await devolveCookies(cookies)
+    } else {
+      const lista = []
+      for (const n of ['00015', '00016', '00017', '00018']) {
+        const seg = join(workdir, `ep_${i + 1}_${n}.ts`)
+        await baixaR2Key(`media/${a.episodio}/seg${n}.ts`, seg)
+        lista.push(`file '${seg}'`)
+      }
+      writeFileSync(join(workdir, `ep_${i + 1}.txt`), lista.join('\n'))
+      const r = spawnSync(FFMPEG(), ['-nostdin', '-v', 'error', '-y', '-f', 'concat', '-safe', '0',
+        '-i', join(workdir, `ep_${i + 1}.txt`), '-c', 'copy', '-bsf:a', 'aac_adtstoasc', dest], { encoding: 'utf8' })
+      if (r.status !== 0) throw new Error(`amostra de ${a.series_id}: ${r.stderr.trim().slice(-200)}`)
+    }
+    videos.push(dest)
+  }
+  await postJson(`/admin/fabrica-comerciais/${job.id}/progress`, { pct: 25 }, 1).catch(() => {})
+
+  // locução: nível 0 é o texto completo; passou do teto do canal, tira
+  // comentário (em vez de o motor cortar a fala no fim)
+  const narr = carregarConfigCanal(job.canal).narrador
+  const vozConfig = { model_id: narr.model_id, ...narr.settings }
+  let voz = null
+  for (let nivel = 0; nivel <= 2 && !voz; nivel++) {
+    const texto = textoLineup(job.canal, job.seq, nivel)
+    if (texto.length > 300) continue // o /voz/preview corta em 300 caracteres
+    for (let tent = 1; tent <= 2; tent++) {
+      const res = await fetch(`${BASE}/admin/fabrica-comerciais/voz/preview`, {
+        method: 'POST', headers: { ...HDR, 'content-type': 'application/json' },
+        body: JSON.stringify({ canal: job.canal, voz_id: narr.voz_id, voz_config: vozConfig, texto }),
+      })
+      if (!res.ok) throw new Error(`locução HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
+      const arq = join(workdir, `voz_${nivel}_${tent}.mp3`)
+      writeFileSync(arq, Buffer.from(await res.arrayBuffer()))
+      const d = (await probe(arq)).duration
+      if (d > TETO_VOZ[job.canal]) { log(`  voz de ${d.toFixed(1)}s passa do teto no nível ${nivel}`); break }
+      const ouvido = await transcreveLocucao(arq)
+      const faltam = ouvido == null ? [] : job.seq.filter((s) => !ouviuNome(s, ouvido))
+      voz = { arq, texto, nivel, dur: d, faltam }
+      if (faltam.length === 0) break
+      log(`  nome não ouvido (${faltam.join(', ')}), tentativa ${tent}`)
+    }
+  }
+  if (!voz) throw new Error('locução não coube no teto do canal nem no texto mais curto')
+  await postJson(`/admin/fabrica-comerciais/${job.id}/progress`, { pct: 50 }, 1).catch(() => {})
+
+  // render em processo separado com timeout: render morto grava MP4 SEM o
+  // fechamento e com a duração certa — a saída de um timeout nunca é usada
+  const out = join(workdir, `${job.media_id}.mp4`)
+  let renderizou = false
+  for (let tent = 1; tent <= 3 && !renderizou; tent++) {
+    const r = spawnSync('timeout', ['180', process.execPath, join(ROOT, 'scripts/monta-lineup-cli.mjs'),
+      '--canal', job.canal, '--voz', voz.arq, '--v0', videos[0], '--v1', videos[1], '--v2', videos[2], '--out', out],
+    { cwd: ROOT, stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8' })
+    renderizou = r.status === 0 && Math.abs((await probe(out)).duration - DUR_ALVO[job.canal]) < 0.06
+    if (!renderizou) log(`  render falhou (tentativa ${tent}, saída ${r.status})`)
+  }
+  if (!renderizou) throw new Error('render do lineup falhou 3 vezes')
+  await postJson(`/admin/fabrica-comerciais/${job.id}/progress`, { pct: 70 }, 1).catch(() => {})
+
+  const entrega = await preparaMasterEntregaLineup(out, join(workdir, `${job.media_id}-entrega-20s.mp4`), 20)
+  await ingerePeca(entrega, {
+    id: job.media_id,
+    title: `Lineup: ${job.seq.map(nomeFalado).join(' → ')}`,
+    canais: job.canal,
+    noTranscript: true,
+  })
+  await postJson(`/admin/fabrica-comerciais/${job.id}/done`, {
+    media_id: job.media_id,
+    transcript: semTags(voz.texto),
+    render: { canal: job.canal, seq: job.seq, versao: job.versao, nivel: voz.nivel, voz_seg: voz.dur, conferir: voz.faltam },
+  })
+  log(`✔ ${job.media_id}: lineup publicado (voz ${voz.dur.toFixed(1)}s, nível ${voz.nivel}${voz.faltam.length ? `, ouvir: ${voz.faltam.join(',')}` : ''})`)
+}
+
 async function tickFabricaComerciais() {
   const res = await fetch(`${BASE}/admin/fabrica-comerciais/claim`, { method: 'POST', headers: HDR })
   if (res.status === 204) return false
@@ -542,6 +650,10 @@ async function tickFabricaComerciais() {
   try {
     if (job.kind === 'lineup_3_janelas') {
       await processaLineupRemoto(job, workdir)
+      return true
+    }
+    if (job.kind === 'lineup_sequencia') {
+      await processaLineupSequencia(job, workdir)
       return true
     }
     log(`montando comercial "${job.media_id}" (${job.series_id} · ${job.slot.texto_tela})`)

@@ -10,6 +10,7 @@ import { reconcileAndRepair, runScheduler } from './scheduler'
 import { dispatchSeTemFila } from './fabrica'
 import { planejaEditorial } from './editorial'
 import { reconciliaComerciaisGrade } from './fabrica-comerciais'
+import { reconciliaLineups } from './lineup-reconcilia'
 
 type Bindings = {
   DB: D1Database
@@ -203,6 +204,14 @@ export default {
       let comerciais: unknown = null
       try { comerciais = await reconciliaComerciaisGrade(env) } catch (e) { comerciais = String(e) }
 
+      // lineups de três janelas: sequência X→Y→Z que se repete na grade e não
+      // tem peça → job na fila (lineup-reconcilia.ts). Best-effort.
+      let lineups: unknown = null
+      try {
+        const r = await reconciliaLineups(env)
+        lineups = { ativo: r.ativo, motivo: r.motivo, canais: r.canais, enfileirados: r.enfileirados.length }
+      } catch (e) { lineups = String(e) }
+
       // Reconcile catálogo↔R2 por ÚLTIMO: se morrer no limite, as grades já
       // foram estendidas e os canais continuam no ar. Desde 18/09/2026 ele é
       // FATIADO (um lote por run, cursor no `last_reconcile`): varrer o acervo
@@ -221,7 +230,7 @@ export default {
       // o relatório abaixo sair. Agora o cron sempre CONTA o que deu errado.
       let dispatch: unknown = 'ok'
       try { await dispatchSeTemFila(env) } catch (e) { dispatch = String(e) }
-      console.log('[diretor]', JSON.stringify({ rec, plano, comerciais, dispatch, reports }))
+      console.log('[diretor]', JSON.stringify({ rec, plano, comerciais, lineups, dispatch, reports }))
     })())
   },
 }
