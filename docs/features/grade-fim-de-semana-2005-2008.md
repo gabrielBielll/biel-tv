@@ -34,6 +34,28 @@
 O Jetix mantém **Digimon desde o início** às 20h e **Pucca** às 22h no fim de
 semana; esses horários vieram de chamadas originais e não são slots de filme.
 
+### Em produção desde 23/09/2026: só os domingos
+
+Decisão do Gabriel: **filme só aos domingos**, porque ainda há poucos filmes.
+O filme de sábado do Disney fica para quando o acervo crescer.
+
+| Canal | Domingo | `series_id` da sessão | Faixa (`channel_slots`) | Vinhetas |
+|---|---|---|---|---|
+| Disney Channel | 20:00 | `o_maravilhoso_mundo_de_disney` | `sl_disney_filmes_dom` | abertura (a_seguir), bumper sem voz (durante saída/volta) |
+| Cartoon Network | 14:00 + reprise exata às 20:00 | `teatro_cartoon` | `sl_cn_teatro_cartoon_dom`, `sl_cn_teatro_cartoon_dom_reprise` (`reprise=1`) | abertura (a_seguir), Voltamos já / Estamos de volta |
+| Jetix | 15:00 | `cinescopio` | `sl_jetix_cinescopio_dom` | abertura do Cineskópio (a_seguir) |
+
+- **Filme só toca na sessão.** Filme fica fora do rodízio e do encaixe
+  (`scheduler.ts`, `9ba1d54`). Para cair na sessão, basta subir o filme com
+  `--tipo filme` e o `series_id` da tabela. Um filme por domingo, em ordem de
+  `media_id`.
+- **O especial provisório cede ao filme** automaticamente quando as duas faixas
+  caem no mesmo minuto e a do filme tem filme pronto (ex.: Dexter às 14h no CN).
+- **Intervalos:** filme sem cue point toca direto; `scripts/cues-filme.mjs`
+  acha cortes a cada ~20 min.
+- **Acervo em 23/09:** Disney com Camp Rock, High School Musical e HSM 2; CN com
+  As Meninas Superpoderosas — O Filme; Jetix ainda sem filme (a faixa espera).
+
 ## Base provisória com o acervo atual
 
 ### Jetix
