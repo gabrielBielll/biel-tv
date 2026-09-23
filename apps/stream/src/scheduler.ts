@@ -343,28 +343,44 @@ export async function scheduleChannel(
   // GRAVADO pela exibição real (commitAired). Mas o que JÁ está agendado no
   // futuro da grade não pode "parecer inédito" na extensão — senão o append
   // repetiria em ~48h o que acabou de entrar. Conta só pra ORDENAÇÃO desta run
-  // (mutação local; nada é gravado). No rebuild o futuro foi deletado acima ⇒
-  // o pool volta a ordenar pela exibição real: continua de onde o AR parou.
-  // SEM filtro de canal de propósito: mídia compartilhada (ex.: padrinhos no
-  // jetix E na disney) continua de onde o OUTRO canal parou, em vez de tocar o
-  // mesmo episódio nos dois no mesmo dia — série sindicada, como TV real.
-  // INDEXED BY: sem a dica, o planner escolhe agrupar por media_id e varre a
-  // tabela INTEIRA (18.506 linhas medidas em 18/09/2026) em vez de percorrer só
-  // o futuro pelo índice de start (7.982). `rows_read` do D1 conta entrada de
-  // índice também, então o que importa é quantas ele PERCORRE, não se usa índice.
-  // O try/catch cobre banco sem a migration 0028: cai na consulta sem dica.
-  const sqlFuturo = `SELECT media_id id, MAX(start_time_virtual) t FROM epg_virtual
-     %IDX% WHERE start_time_virtual > ?1
-       AND NOT (canal = ?2 AND start_time_virtual >= ?3) GROUP BY media_id`
-  let futRows: Array<{ id: string; t: number }>
-  try {
-    futRows = (await env.DB.prepare(sqlFuturo.replace('%IDX%', 'INDEXED BY idx_epg_start'))
-      .bind(now, canal, cut).all<{ id: string; t: number }>()).results
-  } catch {
-    futRows = (await env.DB.prepare(sqlFuturo.replace('%IDX%', ''))
-      .bind(now, canal, cut).all<{ id: string; t: number }>()).results
+  // (mutação local; nada é gravado). No rebuild o futuro do canal é descartado
+  // pelo `cut` ⇒ o pool volta a ordenar pela exibição real: continua de onde o
+  // AR parou. Mídia compartilhada (ex.: padrinhos no jetix E na disney) continua
+  // de onde o OUTRO canal parou, em vez de tocar o mesmo episódio nos dois no
+  // mesmo dia — série sindicada, como TV real.
+  //
+  // INDEXED BY: sem a dica, o planner agrupa por media_id e varre a tabela
+  // INTEIRA em vez de percorrer só a faixa pelo índice. `rows_read` do D1 conta
+  // entrada de índice também, então o que importa é quantas ele PERCORRE, não
+  // se usa índice. O try/catch cobre banco sem o índice: cai na consulta sem dica.
+  //
+  // Uma fatia POR CANAL em vez de uma varredura global. O `idx_epg_lookup`
+  // (canal, start, end), que existe desde a migration 0001, cobre cada fatia —
+  // e com isso o índice solto de (start_time_virtual) deixou de ter dono e foi
+  // derrubado na 0034. Índice a menos é ESCRITA A MENOS POR LINHA da grade, que
+  // é a cota que estoura; leitura é o que sobra. Medido em produção 23/09/2026:
+  // 7.102 linhas lidas na forma global contra 7.104 somando as três fatias.
+  //
+  // O GROUP BY continua CRUZANDO canais de propósito (mídia sindicada: padrinhos
+  // no jetix E na disney continua de onde o outro canal parou) — o que mudou é
+  // que o máximo entre canais é costurado aqui em vez de no SQLite.
+  const { results: canaisTodos } = await env.DB.prepare('SELECT id FROM channels').all<{ id: string }>()
+  const sqlFuturo = `SELECT media_id id, MAX(start_time_virtual) t FROM epg_virtual %IDX%
+     WHERE canal = ?1 AND start_time_virtual > ?2 AND start_time_virtual < ?3 GROUP BY media_id`
+  const futuroDe = new Map<string, number>()
+  for (const cc of canaisTodos.length > 0 ? canaisTodos : [{ id: canal }]) {
+    // só o canal que está sendo replanejado tem futuro a descartar
+    const corte = cc.id === canal ? cut : SEM_CORTE
+    let linhas: Array<{ id: string; t: number }>
+    try {
+      linhas = (await env.DB.prepare(sqlFuturo.replace('%IDX%', 'INDEXED BY idx_epg_lookup'))
+        .bind(cc.id, now, corte).all<{ id: string; t: number }>()).results
+    } catch {
+      linhas = (await env.DB.prepare(sqlFuturo.replace('%IDX%', ''))
+        .bind(cc.id, now, corte).all<{ id: string; t: number }>()).results
+    }
+    for (const r of linhas) futuroDe.set(r.id, Math.max(futuroDe.get(r.id) ?? 0, r.t))
   }
-  const futuroDe = new Map(futRows.map((r) => [r.id, r.t]))
   for (const m of contents) {
     const f = futuroDe.get(m.id)
     if (f && f > (m.last_played_at ?? 0)) m.last_played_at = f
@@ -1103,9 +1119,14 @@ export async function runScheduler(
     }
   }
   const now = Math.floor(Date.now() / 1000)
-  await env.DB.prepare('DELETE FROM epg_virtual WHERE end_time_virtual < ?1')
-    .bind(now - EPG_RETENTION)
-    .run()
+  // Um DELETE por canal, pelo `idx_epg_canal_fim (canal, end)`: sem consulta
+  // filtrando só por end_time_virtual, o índice solto daquela coluna some e a
+  // grade fica mais barata de escrever (migration 0034). Medido em produção
+  // 23/09/2026: 1 linha lida na forma global contra 3 somando as fatias — o
+  // índice composto faz o mesmo seek, só que uma vez por canal.
+  await env.DB.batch(canais.map((c) =>
+    env.DB.prepare('DELETE FROM epg_virtual WHERE canal = ?1 AND end_time_virtual < ?2')
+      .bind(c.id, now - EPG_RETENTION)))
   return reports
 }
 
@@ -1124,13 +1145,27 @@ export async function commitAired(env: Env): Promise<number> {
   // 4.347 de um dia (medido em 18/09/2026). Três dias dão dois de folga sobre o
   // cron diário; se a TV ficar mais que isso sem planejar, o que escapar do
   // carimbo apenas volta ao rodízio mais cedo.
-  const { results } = await env.DB.prepare(
-    `SELECT e.media_id id, MAX(e.start_time_virtual) t, m.last_played_at lp
-     FROM epg_virtual e JOIN media_items m ON m.id = e.media_id
-     WHERE e.start_time_virtual <= ?1 AND e.start_time_virtual > ?2
-       AND m.tipo IN ('episodio','filme')
-     GROUP BY e.media_id`,
-  ).bind(now, now - 3 * DAY).all<{ id: string; t: number; lp: number | null }>()
+  // Uma fatia por canal, pelo mesmo motivo do `futuroDe`: sem consulta filtrando
+  // só por start_time_virtual, o índice solto daquela coluna deixa de existir e
+  // cada linha da grade passa a custar 4 escritas em vez de 6 (migration 0034).
+  // Medido em produção 23/09/2026: 13.579 linhas lidas na forma global contra
+  // 13.581 somando as fatias. O máximo entre canais é costurado aqui.
+  const { results: canaisTodos } = await env.DB.prepare('SELECT id FROM channels').all<{ id: string }>()
+  const porMedia = new Map<string, { t: number; lp: number | null }>()
+  for (const cc of canaisTodos) {
+    const { results } = await env.DB.prepare(
+      `SELECT e.media_id id, MAX(e.start_time_virtual) t, m.last_played_at lp
+       FROM epg_virtual e JOIN media_items m ON m.id = e.media_id
+       WHERE e.canal = ?1 AND e.start_time_virtual <= ?2 AND e.start_time_virtual > ?3
+         AND m.tipo IN ('episodio','filme')
+       GROUP BY e.media_id`,
+    ).bind(cc.id, now, now - 3 * DAY).all<{ id: string; t: number; lp: number | null }>()
+    for (const r of results) {
+      const anterior = porMedia.get(r.id)
+      if (!anterior || r.t > anterior.t) porMedia.set(r.id, { t: r.t, lp: r.lp })
+    }
+  }
+  const results = [...porMedia].map(([id, v]) => ({ id, t: v.t, lp: v.lp }))
   const mudou = results.filter((r) => r.lp == null || r.lp < r.t)
   for (let i = 0; i < mudou.length; i += 50) {
     await env.DB.batch(

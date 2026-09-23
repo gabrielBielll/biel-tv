@@ -66,10 +66,16 @@ function makeDB({ media = CATALOGO, config = new Map(), falharNoBatch = false, c
     return api
   }
   const batch = async (stmts) => {
-    const forma = stmts.map((s) => s._sql.trim().split(/\s+/)[0]).join('+')
-    // guarda o corte pedido pelo DELETE de epg_virtual (2º bind)
+    const rotulo = (st) => {
+      const verbo = st._sql.trim().split(/\s+/)[0]
+      if (verbo !== 'DELETE' || !/epg_virtual/.test(st._sql)) return verbo
+      // o rebuild apaga o FUTURO (por start); a retenção apaga o PASSADO (por end)
+      return /start_time_virtual >=/.test(st._sql) ? 'DELETEfuturo' : 'DELETEretencao'
+    }
+    const forma = stmts.map(rotulo).join('+')
+    // guarda só o corte do rebuild — a retenção tem outro bind e outro sentido
     for (const st of stmts) {
-      if (/DELETE FROM epg_virtual/.test(st._sql)) cortes.push(st._bound[1])
+      if (rotulo(st) === 'DELETEfuturo') cortes.push(st._bound[1])
     }
     if (/epg_virtual/.test(stmts[0]?._sql ?? '')) {
       log.push(`batch:${forma}`)
@@ -88,7 +94,7 @@ function makeDB({ media = CATALOGO, config = new Map(), falharNoBatch = false, c
   const batches = log.filter((l) => l.startsWith('batch:'))
   const deleteSolto = log.some((l) => l === 'run:DELETE FROM epg_virtual')
   check('rebuild: um batch só, começando pelo DELETE',
-    batches.length === 1 && /^batch:DELETE\+INSERT/.test(batches[0]), batches[0])
+    batches.length === 1 && /^batch:DELETEfuturo\+INSERT/.test(batches[0]), batches[0])
   check('rebuild: nenhum DELETE de epg_virtual solto fora do batch', !deleteSolto)
 }
 
@@ -138,7 +144,7 @@ function makeDB({ media = CATALOGO, config = new Map(), falharNoBatch = false, c
   const { env, log } = makeDB({ config })
   await runScheduler(env, { hours: 3 })
   check('cron: canal com marca pendente é REPLANEJADO (rebuild)',
-    log.some((l) => /^batch:DELETE\+INSERT/.test(l)), log.filter((l) => l.startsWith('batch:')).join(' '))
+    log.some((l) => /^batch:DELETEfuturo\+INSERT/.test(l)), log.filter((l) => l.startsWith('batch:')).join(' '))
   check('cron: a marca é consumida depois do replan', !config.has('replan_pedido:ch'))
 }
 
@@ -147,7 +153,9 @@ function makeDB({ media = CATALOGO, config = new Map(), falharNoBatch = false, c
   const { env, log } = makeDB()
   await runScheduler(env, { hours: 3 })
   check('cron sem marca: segue append-only, sem DELETE do futuro',
-    !log.some((l) => /^batch:DELETE/.test(l)), log.filter((l) => l.startsWith('batch:')).join(' '))
+    !log.some((l) => /DELETEfuturo/.test(l)), log.filter((l) => l.startsWith('batch:')).join(' '))
+  check('cron: a limpeza da retenção roda FATIADA por canal (idx_epg_canal_fim)',
+    log.some((l) => /^batch:DELETEretencao/.test(l)), log.filter((l) => l.startsWith('batch:')).join(' '))
 }
 
 // ── C. REBUILD PARCIAL: só reescreve de `desde` em diante ───────────────────
