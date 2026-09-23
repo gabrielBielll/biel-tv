@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Resvg } from '@resvg/resvg-js'
-import { SEG, FFMPEG, FFPROBE, probe } from './ffmpeg.mjs'
+import { SEG, FFMPEG, FFPROBE, probe, detectScene } from './ffmpeg.mjs'
 
 const execFileAsync = promisify(execFile)
 const BUF = { maxBuffer: 64 * 1024 * 1024 }
@@ -346,6 +346,48 @@ async function render({ sampleVideo, moldeAlphaPng, locucaoWav, musicaFile, text
   await runFfmpeg(args)
 }
 
+/**
+ * Acha em que segundo da amostra começar, pra o comercial não sair parado.
+ *
+ * A montagem sempre usava a amostra do SEGUNDO ZERO. Só que rip de abertura
+ * costuma abrir com cartela/logo parado, e aí o comercial inteiro mostra uma
+ * imagem fixa — com a amostra cheia de movimento logo depois, desperdiçada.
+ *
+ * Medido em 23/09/2026, varrendo uma peça por série (33 séries, 51MB):
+ *   pwr_rangers_oresgate        93,5s e 178 cortes — mas 0 nos 20 primeiros
+ *   power_rangers_forca_animal  40,0s e  14 cortes — mas 4 nos 20 primeiros
+ *   martin_mystery              39,5s e  53 cortes — mas 2 nos 10 primeiros
+ * Quatro de 33 séries saíam paradas, e o Gabriel pegou no ar ("kid vs kat só
+ * passa um comercial com uma imagem fixa"). A amostra nunca foi o problema: o
+ * problema era sempre começar do zero.
+ *
+ * Escolhe a janela de `duracao` segundos com MAIS trocas de cena. Empate ou
+ * amostra sem corte nenhum → devolve 0, que é o comportamento de antes.
+ */
+export async function melhorInicio(sampleVideo, duracao) {
+  let cortes = []
+  try {
+    // th=0.15, e não o 0.4 padrão do detectScene: aqui a pergunta não é "onde
+    // há CORTE SECO" e sim "onde há MOVIMENTO", então vale contar transição
+    // suave também. Medido nas três amostras problemáticas — a janela escolhida
+    // melhora em todas, e no power_rangers_forca_animal é a diferença entre
+    // achar 2 cortes e achar 11 (com 0.4 ele não saía do zero).
+    cortes = await detectScene(sampleVideo, { th: 0.15 })
+  } catch {
+    return 0 // detecção falhou: começa do zero, como sempre foi
+  }
+  if (cortes.length === 0) return 0
+  const fim = Math.max(...cortes)
+  if (fim <= duracao) return 0 // amostra curta: não há janela pra escolher
+  let melhor = { inicio: 0, n: -1 }
+  // passo de 1s é fino o bastante: a janela tem dezenas de segundos
+  for (let ini = 0; ini + duracao <= fim; ini++) {
+    const n = cortes.filter((t) => t >= ini && t < ini + duracao).length
+    if (n > melhor.n) melhor = { inicio: ini, n }
+  }
+  return melhor.inicio
+}
+
 export async function montaComercialPrograma({
   sampleVideo,
   moldePng,
@@ -387,13 +429,29 @@ export async function montaComercialPrograma({
   const musicaOrigem = musicaFile ? 'external' : sample.hasAudio ? 'video' : null
   const aGraph = audioGraph({ total, locucaoDuration: loc.total, prelude, musicaOrigem })
   const animated = `${animatedVideoGraph({ total, tFaseB, trans, hole, tituloTela: tituloTela || textoTela, textoTela, textoBox, textInputIndex })};${aGraph}`
+  // Recorta a amostra a partir do trecho com mais movimento. Recorta em arquivo
+  // em vez de usar `-ss` no render porque ali a amostra entra com
+  // `-stream_loop -1`, e a interação de seek com loop não é a mesma em toda
+  // versão do ffmpeg — com arquivo pronto não há ambiguidade.
+  let sampleUsado = sampleVideo
+  const inicio = await melhorInicio(sampleVideo, total)
+  if (inicio > 0) {
+    const recorte = join(workdir, 'amostra-trecho.mp4')
+    try {
+      await runFfmpeg(['-ss', String(inicio), '-i', sampleVideo, '-t', String(total + 2),
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '128k', recorte])
+      sampleUsado = recorte
+    } catch { /* recorte falhou: segue com a amostra inteira */ }
+  }
+
   let fallback = false
   try {
-    await render({ sampleVideo, moldeAlphaPng: moldeAlpha, locucaoWav: locucao, musicaFile, textOverlayFile: textOverlay, filter: animated, total, outFile })
+    await render({ sampleVideo: sampleUsado, moldeAlphaPng: moldeAlpha, locucaoWav: locucao, musicaFile, textOverlayFile: textOverlay, filter: animated, total, outFile })
   } catch (e) {
     fallback = true
     const stat = `${staticVideoGraph({ total, tFaseB, hole, tituloTela: tituloTela || textoTela, textoTela, textoBox, textInputIndex })};${aGraph}`
-    await render({ sampleVideo, moldeAlphaPng: moldeAlpha, locucaoWav: locucao, musicaFile, textOverlayFile: textOverlay, filter: stat, total, outFile })
+    await render({ sampleVideo: sampleUsado, moldeAlphaPng: moldeAlpha, locucaoWav: locucao, musicaFile, textOverlayFile: textOverlay, filter: stat, total, outFile })
   }
 
   return {
