@@ -3,7 +3,9 @@
   "nome": "Cartoon Network",
   "automation": {
     "enabled": false,
-    "status": "local_prototype_pending_approval"
+    "status": "identity_approved_pending_schedule_integration",
+    "approved_at": "2026-09-22",
+    "unlock_requires": "Integracao deterministica com snapshot da grade e dry-run aprovado"
   },
   "narrador": {
     "nome": "Larissa B. (Locutora Jovem e Animada)",
@@ -11,6 +13,7 @@
     "model_id": "eleven_multilingual_v2",
     "role": "provisional",
     "reference_audio_path": "assets/comerciais/cartoon_network/falas/lineup-billy-dexter-meninas-larissa-provisoria.mp3",
+    "approval_status": "approved_2026-09-22",
     "settings": {
       "stability": 0.26,
       "similarity_boost": 0.85,
@@ -20,7 +23,7 @@
   },
   "audio": {
     "trilha_path": "assets/comerciais/cartoon_network/moldes/trilha_cartoon_lineup_3janelas.m4a",
-    "trilha_status": "prototype_from_reference_pending_approval",
+    "trilha_status": "approved_2026-09-22",
     "referencias": [
       {
         "path": "assets/comerciais/cartoon_network/referencias/fonte-cartoon-summer-video-Zx7ogrmxk5w.m4a",
@@ -38,6 +41,7 @@
   },
   "visual": {
     "duracao_seg": 20.0,
+    "approval_status": "approved_2026-09-22",
     "molde_path": "assets/comerciais/cartoon_network/moldes/image-comercial-cartoon-3telas.png",
     "colorkey": "0x000000:0.05:0.02",
     "encerramento": {

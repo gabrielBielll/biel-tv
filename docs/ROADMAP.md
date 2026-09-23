@@ -113,6 +113,12 @@ promos de "horário fixo" destravarem quando a `channel_master_grid` garantir o 
   finalizada; não gerar a partir da grade antiga. Contrato e checklist em
   [features/modulo-comerciais-jetix.md](features/modulo-comerciais-jetix.md).
 
+- **Integrar o lineup Cartoon Network aprovado à grade** — identidade visual,
+  trilha, Larissa provisória e encerramento aprovados em 2026-09-22. O motor
+  local está pronto; faltam snapshot versionado, geração condicionada e dry-run
+  antes de habilitar publicação. Ver
+  [features/modulo-comerciais-cartoon-network.md](features/modulo-comerciais-cartoon-network.md).
+
 - **Diretor encomenda comerciais + vinhetas "a seguir" GERADAS por IA** —
   pedido do Gabriel (2026-07-13). A inversão genial do problema da fase 12:
   em vez de caçar promo de acervo que combine com a grade, GERAR a promo que

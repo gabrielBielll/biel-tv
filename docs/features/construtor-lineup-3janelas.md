@@ -3,7 +3,7 @@
 > **Status:** ✅ renderização local implementada e aprovada; integração automática
 > com a grade e publicação em produção ainda bloqueadas (2026-09-22). Ver
 > [módulo de comerciais Jetix](modulo-comerciais-jetix.md).
-> O protótipo em avaliação do Cartoon Network está registrado em
+> O módulo aprovado do Cartoon Network está registrado em
 > [modulo-comerciais-cartoon-network.md](modulo-comerciais-cartoon-network.md).
 > **Arquitetura:** Multi-Canal (Jetix, Disney Channel, Cartoon Network), Modular, Dinâmico com a Grade de Programação (EPG/Diretor), 100% Determinístico em FFmpeg e Serverless (R2 + D1).
 

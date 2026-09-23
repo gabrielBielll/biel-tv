@@ -14,6 +14,12 @@
   a alteração da grade. Os renders locais já aprovados podem ser preservados e
   inspecionados, mas a grade atual não pode ser usada como fonte de verdade.
 
+- **Cartoon Network (2026-09-22):** a identidade do lineup de três telas foi
+  aprovada e está documentada em
+  [docs/features/modulo-comerciais-cartoon-network.md](docs/features/modulo-comerciais-cartoon-network.md).
+  O módulo pode ser reproduzido localmente, mas `automation.enabled` deve
+  permanecer `false` até a integração com snapshot da grade e dry-run.
+
 - **Quadro de Tarefas Trello (`biel-tv/web-tv-react`):**
   - Quadro ID: `686286afd360e39b2adccd4d` (https://trello.com/b/Rik3Xgyr/biel-tv-web-tv-react)
   - Colunas:
