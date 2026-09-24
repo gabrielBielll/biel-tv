@@ -1,0 +1,116 @@
+{
+  "status": "aprovado_oficial",
+  "versao_oficial": "nova_vinheta_20260923",
+  "derivado_da_grade": false,
+  "publicacao_automatica": false,
+  "publicacao_r2": {
+    "data": "2026-09-23",
+    "bucket": "biel-tv-media",
+    "somente_artefatos_editoriais": true,
+    "d1": "nao_cadastrado",
+    "objetos": [
+      {
+        "key": "editoriais/jetix/cinescopio/cinescopio-abertura-filmes-jetix.mp4",
+        "sha256": "857ce7c086574d56c4075c89bb1e9cf2a811e6e075d74638aad292c9a29dd9d0"
+      },
+      {
+        "key": "editoriais/jetix/cinescopio/cinescopio-saida-intervalo-jetix.mp4",
+        "sha256": "00c2fc8ea49de2d625cc76210f4307b5fa8da4f309e2dbc2a16334167abdf48f"
+      },
+      {
+        "key": "editoriais/jetix/cinescopio/cinescopio-retorno-intervalo-jetix.mp4",
+        "sha256": "e0966688264e4fb43269b3125319ef7e0ddf4eb84a60846f5d3b4dcb47532582"
+      }
+    ]
+  },
+  "fonte_visual": {
+    "path": "assets/comerciais/jetix/cinescopio/_fontes/cineskopio_entrada_chroma_movimento.mp4",
+    "sha256": "ed565c9b538b40a32c4e0a35e751d7b0e5fe2888a17bd69054865b9f43f291ae",
+    "duracao_seg": 7.0
+  },
+  "template_mascote": {
+    "path": "assets/comerciais/jetix/moldes/jetix-next-template-chroma-wI1S3DKojRw.mp4",
+    "sha256": "cf88e91e58677d9e65196a0a81ddf9b6f7747687c8f59aa818122e708bebf2a8",
+    "inicio_seg": 8.0,
+    "fim_seg": 9.7
+  },
+  "referencia_audio": {
+    "url": "https://www.youtube.com/watch?v=WLfK7VN5SFM",
+    "titulo": "Intervalo do Cinescópio - 3 Ninjas contra atacam em Jetix - JAN 2009 (01/03)",
+    "path": "assets/comerciais/jetix/cinescopio/referencias/fonte-audio-cinescopio-WLfK7VN5SFM.m4a",
+    "sha256": "8a89036df6174798e3a65d90656fd42b812160944fe6f28c16bc9996f5bb517a"
+  },
+  "edicao": {
+    "duracao_seg": 5.0,
+    "duracao_cinescopio_seg": 3.0,
+    "duracao_mascote_seg": 2.0,
+    "transicao": "corte_seco",
+    "portal_frame_seg": 5.8,
+    "fundo_chroma": "0b477f"
+  },
+  "pecas": [
+    {
+      "tipo": "saida_intervalo",
+      "audio_inicio_seg": 4.0,
+      "audio_fim_seg": 9.0,
+      "arquivo": "cinescopio-saida-intervalo-jetix.mp4"
+    },
+    {
+      "tipo": "retorno_intervalo",
+      "audio_inicio_seg": 129.5,
+      "audio_fim_seg": 134.5,
+      "arquivo": "cinescopio-retorno-intervalo-jetix.mp4"
+    }
+  ],
+  "teste_nova_vinheta_20260923": {
+    "status": "aprovado_oficial",
+    "fonte_aproximacao": {
+      "path": "assets/comerciais/jetix/cinescopio/_fontes/cinescopio-aproximacao-20260923.mp4",
+      "sha256": "9a969cfba5d126ab7b41ca2d885de5a3382bc6010052f7427761a9384c70cd25",
+      "inicio_seg": 0.0,
+      "fim_seg": 1.0
+    },
+    "vinheta_jetix": {
+      "url": "https://www.youtube.com/watch?v=kaGwAFnXoY4",
+      "fonte_inicio_seg": 1.0,
+      "fonte_fim_seg": 4.82,
+      "path": "assets/comerciais/jetix/cinescopio/referencias/jetix-vinheta-kaGwAFnXoY4-1a4.82.mp4",
+      "sha256": "3f98465855a9ffe604d3ea79a03daca3b99f4a6b565883983fedfd6289f306fc",
+      "duracao_seg": 3.82
+    },
+    "duracao_saida_seg": 5.0,
+    "audio": {
+      "cinescopio_exclusivo": true,
+      "mascote_entra_seg": 1.0
+    },
+    "pecas": [
+      {
+        "tipo": "saida_intervalo",
+        "media_id": "vinheta_cinescopio_saida_intervalo",
+        "audio_inicio_seg": 4.0,
+        "audio_fim_seg": 9.0,
+        "arquivo": "cinescopio-saida-intervalo-jetix.mp4"
+      },
+      {
+        "tipo": "retorno_intervalo",
+        "media_id": "vinheta_cinescopio_retorno_intervalo",
+        "audio_inicio_seg": 129.5,
+        "audio_fim_seg": 134.5,
+        "arquivo": "cinescopio-retorno-intervalo-jetix.mp4"
+      }
+    ]
+  },
+  "abertura_filmes_20260923": {
+    "status": "aprovado_oficial",
+    "media_id": "vinheta_cinescopio_abertura_filmes",
+    "fonte": {
+      "path": "assets/comerciais/jetix/cinescopio/_fontes/cinescopio-abertura-cidade-20260923.mp4",
+      "sha256": "7e843c2439ae6df3f30437454fcfb445a654fbb85bf8bc738ed34350c24594fa",
+      "duracao_seg": 20.0
+    },
+    "velocidade": 2.0,
+    "duracao_saida_seg": 10.0,
+    "arquivo": "cinescopio-abertura-filmes-jetix.mp4",
+    "publicacao_automatica": false
+  }
+}

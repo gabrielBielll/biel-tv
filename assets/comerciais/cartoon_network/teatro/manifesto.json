@@ -1,0 +1,72 @@
+{
+  "status": "aprovado_oficial",
+  "versao_oficial": "versao_estendida",
+  "media_id": "vinheta_teatro_cartoon_abertura",
+  "publicacao_automatica": false,
+  "derivado_da_grade": false,
+  "publicacao_r2": {
+    "data": "2026-09-23",
+    "bucket": "biel-tv-media",
+    "mp4_key": "editoriais/cartoon_network/teatro/abertura-teatro-cartoon-oficial-20s.mp4",
+    "mp4_sha256": "52d4bdb1b6e95c69bf6404cab1925823243228fde48ecd506ff0b2fe4066bc4a",
+    "segment_prefix": "media/vinheta_teatro_cartoon_abertura",
+    "segments": [
+      {
+        "key": "media/vinheta_teatro_cartoon_abertura/seg00000.ts",
+        "sha256": "867b3d26ac8611cb81d2e2991e81b6783d7565546ad0a1457272e5c23aa75d42"
+      },
+      {
+        "key": "media/vinheta_teatro_cartoon_abertura/seg00001.ts",
+        "sha256": "88a794f802d26d5fea7e57fc61bc78a121e058aa97d3e4fcce198b0e36ec4e53"
+      }
+    ],
+    "d1": "registro_adiado_status_disabled"
+  },
+  "duracao_saida_seg": 10.0,
+  "crossfade_seg": 0.14,
+  "font_path": "packages/pipeline/assets/Anton-Regular.ttf",
+  "fontes": {
+    "fachada_holofotes": {
+      "path": "assets/comerciais/cartoon_network/teatro/_fontes/teatrocartoon-fachada-holofotes.mp4",
+      "sha256": "2f19fdc7f6cce019676180a8b7b357c68d885d88132d874f4fc180af8d970884"
+    },
+    "fachada_saguao": {
+      "path": "assets/comerciais/cartoon_network/teatro/_fontes/teatrocartoon-fachada-saguao.mp4",
+      "sha256": "3808b09d905f98119c6cfebd93177b0988b4dfaa497f67c4c61e1a5d88beafc3"
+    },
+    "travessia_auditorio": {
+      "path": "assets/comerciais/cartoon_network/teatro/_fontes/teatrocartoon-travessia-auditorio.mp4",
+      "sha256": "0f8d5f4a796f9e2b35632c7b4a471e97e5d3ed7ad4ca7b688a1d737b492fb2ea"
+    }
+  },
+  "referencia_bilheteria": {
+    "url": "https://www.youtube.com/watch?v=I1bjmHbUjxI",
+    "titulo": "Cartoon Network (Era City & Yes!) - Cartoon Theater Theme/Teatro Cartoon OST",
+    "fonte_inicio_seg": 36.0,
+    "fonte_fim_seg": 46.0,
+    "path": "assets/comerciais/cartoon_network/teatro/referencias/bilheteria-I1bjmHbUjxI-36a46.mp4",
+    "sha256": "0371525745093802aa7898a59dbbde8af626daabbbb5982f289d392bbad0994f"
+  },
+  "montagem": [
+    { "take": "fachada_holofotes", "inicio": 0.0, "fim": 2.2, "duracao": 1.8 },
+    { "take": "fachada_saguao", "inicio": 1.0, "fim": 4.0, "duracao": 2.0 },
+    { "take": "bilheteria", "inicio": 0.2, "fim": 3.0, "duracao": 2.0 },
+    { "take": "fachada_saguao", "inicio": 4.0, "fim": 7.0, "duracao": 1.8 },
+    { "take": "bilheteria", "inicio": 6.8, "fim": 9.7, "duracao": 1.4 },
+    { "take": "travessia_auditorio", "inicio": 8.3, "fim": 10.0, "duracao": 1.7 }
+  ],
+  "arquivo": "abertura-teatro-cartoon-10s.mp4",
+  "versao_estendida": {
+    "duracao_saida_seg": 20.0,
+    "crossfade_seg": 0.2,
+    "montagem": [
+      { "take": "fachada_holofotes", "inicio": 0.0, "fim": 3.4, "duracao": 3.4 },
+      { "take": "fachada_saguao", "inicio": 0.8, "fim": 4.8, "duracao": 3.8 },
+      { "take": "bilheteria", "inicio": 0.0, "fim": 3.7, "duracao": 3.5 },
+      { "take": "fachada_saguao", "inicio": 3.5, "fim": 7.5, "duracao": 3.6 },
+      { "take": "bilheteria", "inicio": 5.8, "fim": 9.8, "duracao": 3.7 },
+      { "take": "travessia_auditorio", "inicio": 7.0, "fim": 10.0, "duracao": 3.0 }
+    ],
+    "arquivo": "abertura-teatro-cartoon-oficial-20s.mp4"
+  }
+}
