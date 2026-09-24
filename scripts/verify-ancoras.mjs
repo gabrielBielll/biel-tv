@@ -649,5 +649,16 @@ function ocorrencias(rows, catalogo) {
   check('comercial da fábrica: EPG contígua', contigua(rows))
 }
 
+// ── ORDEM DOS FILMES/EPISÓDIOS pelo id byte a byte (24/09): com localeCompare
+//    o "_" do ICU vinha antes do dígito e o HSM 2 tocava antes do HSM 1 ──────
+{
+  const filme = (id) => ({ id, tipo: 'filme', duracao_seg: 5400, segment_count: 540, last_played_at: 0, series_id: 'sessao' })
+  const CAT = [...CATALOGO, filme('filme_high_school_musical_2_2007'), filme('filme_high_school_musical_2006')]
+  const { db, epg } = makeDB({ channel: CANAL, media: CAT, slots: [{ series_id: 'sessao', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 }] })
+  await scheduleChannel({ DB: db }, 'ch', 3, true)
+  const primeiro = grade(epg).find((r) => r.media_id.startsWith('filme_') && r.seg === 0)
+  check('sessão de filme começa pelo HSM 1 (2006), não pelo 2', primeiro?.media_id === 'filme_high_school_musical_2006', primeiro?.media_id ?? 'nada')
+}
+
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)
 process.exit(fail === 0 ? 0 : 1)

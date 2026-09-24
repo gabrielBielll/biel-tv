@@ -54,6 +54,13 @@ const spHoraToEpoch = (date: string, hhmm: string): number | null => {
   return Number.isFinite(t) ? Math.floor(t / 1000) : null
 }
 
+// Ordem de EPISÓDIO pelo id, byte a byte. Não `localeCompare`: no ICU o "_"
+// vem antes dos dígitos, e "filme_high_school_musical_2_2007" passava na
+// frente de "filme_high_school_musical_2006" — o Disney tocaria o HSM 2 antes
+// do 1 (achado pela sessão biel-tv-5b, 24/09). Medido no acervo: só essa série
+// mudava de ordem entre os dois critérios.
+const comparaId = (a: { id: string }, b: { id: string }) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+
 // RNG com seed (canal+dia): grade reproduzível dentro do dia, variada entre dias.
 function mulberry32(seed: number) {
   return () => {
@@ -108,7 +115,7 @@ export function montaBlocos(contents: MediaRow[], maxLen: number, rnd: () => num
     // afundam e os inéditos (0) sobem — sem isto, cada rebuild recomeçava a
     // temporada do episódio 1. Série nova (tudo 0) sai em ordem de id, igual antes.
     const ord = [...eps].sort(
-      (a, b) => (a.last_played_at ?? 0) - (b.last_played_at ?? 0) || a.id.localeCompare(b.id),
+      (a, b) => (a.last_played_at ?? 0) - (b.last_played_at ?? 0) || comparaId(a, b),
     )
     const chunks: MediaRow[][] = []
     for (let i = 0; i < ord.length; i += maxLen) chunks.push(ord.slice(i, i + maxLen))
@@ -967,7 +974,7 @@ export async function scheduleChannel(
       vaoMorto(a.duracao_seg, espaco) - vaoMorto(b.duracao_seg, espaco) ||
       b.duracao_seg - a.duracao_seg ||
       (a.last_played_at ?? 0) - (b.last_played_at ?? 0) ||
-      a.id.localeCompare(b.id))[0]
+      comparaId(a, b))[0]
   }
 
   // ENCHIMENTO: nada mais cabe antes da âncora ⇒ o vão vira INTERVALO, que é o
@@ -1058,7 +1065,7 @@ export async function scheduleChannel(
     if (ev.series_id) {
       const eps = mediaTodas
         .filter((x) => (x.tipo === 'episodio' || x.tipo === 'filme') && x.series_id === ev.series_id)
-        .sort((a, b) => a.id.localeCompare(b.id))
+        .sort(comparaId)
       if (eps.length > 0) {
         const i = evCursor.get(ev.start_at) ?? 0
         evCursor.set(ev.start_at, i + 1)
@@ -1071,7 +1078,7 @@ export async function scheduleChannel(
   // Bloco da âncora: N episódios emendados da série (rotaciona entre ocorrências),
   // com breaks entre eles no universo da série. Respeita exclusões (usa `contents`).
   const episodiosDaSerie = (sid: string) =>
-    contents.filter((m) => m.series_id === sid).sort((a, b) => a.id.localeCompare(b.id))
+    contents.filter((m) => m.series_id === sid).sort(comparaId)
   // Cursor PERSISTENTE da âncora (antes zerava a cada run → a série ancorada
   // repetia os primeiros episódios pra sempre): continua do seguinte ao último
   // exibido/agendado (maior last_played_at — inclui o futuro da grade via
