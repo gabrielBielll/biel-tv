@@ -6,6 +6,7 @@ import {
   PREFIXO_LINEUP, encaixaLineups, posicaoDoConfig, recuaCorte, sequenciaDaCondicao,
   type InfoMidia, type LinhaGrade, type PecaLineup, type Sequencia,
 } from './lineup-grade'
+import { anunciaDe, papelDe, type Papel, type PromessaDaPeca } from './papel-comercial'
 
 type Env = { DB: D1Database; MEDIA: R2Bucket }
 
@@ -16,6 +17,8 @@ interface MediaRow {
   segment_count: number
   last_played_at: number | null
   series_id: string | null
+  papel?: string | null // override do papel no intervalo (papel-comercial.ts)
+  anuncia?: string | null // série que a peça divulga, quando o id não diz
 }
 
 export interface ScheduleReport {
@@ -153,7 +156,8 @@ export async function scheduleChannel(
 
   const { results: mediaTodas } = await env.DB.prepare(
     `SELECT m.id, m.tipo, m.duracao_seg, m.segment_count, m.last_played_at,
-            json_extract(m.metadata, '$.series_id') series_id
+            json_extract(m.metadata, '$.series_id') series_id,
+            json_extract(m.metadata, '$.papel') papel, json_extract(m.metadata, '$.anuncia') anuncia
      FROM media_items m JOIN media_channels mc ON mc.media_id = m.id
      WHERE mc.channel_id = ?1 AND m.status = 'ready'`,
   ).bind(canal).all<MediaRow>()
@@ -251,6 +255,7 @@ export async function scheduleChannel(
   const duranteDe = new Map<string, string[]>() // bumper que ABRE o intervalo ("voltamos já com X") — só no universo de X
   const voltaDe = new Map<string, string[]>() // bumper que FECHA o intervalo ("estamos de volta com X"), colado no retorno
   const promosEvento: Array<{ id: string; ate: number }> = [] // janela: agora → start do evento
+  const condicaoDe = new Map<string, PromessaDaPeca>() // promessa confirmada de cada peça (papel/série anunciada)
   for (const p of modoFiel ? promRows : []) {
     try {
       if (p.status === 'ignorar') { foraDoRodizio.add(p.media_id); continue }
@@ -264,6 +269,7 @@ export async function scheduleChannel(
       }
       if (p.status === 'confirmada' && p.condicao) {
         const cond = JSON.parse(p.condicao)
+        condicaoDe.set(p.media_id, cond)
         foraDoRodizio.add(p.media_id) // sai do rodízio cego…
         if (cond.tipo === 'a_seguir' && cond.series_id) {
           const lista = aSeguirDe.get(cond.series_id) ?? []
@@ -571,7 +577,28 @@ export async function scheduleChannel(
   // 135 peças do jetix não iam ao ar NENHUMA vez em 24h enquanto uma vinheta
   // repetia 27×. Pedido do Gabriel: "faça variar os comerciais, cansa e irrita
   // ficar vendo as mesmas coisas toda hora".
-  const filaAds = shuffled(ads, rnd)
+  //
+  // DA CASA × ANÚNCIO (papel-comercial.ts). Visão do Gabriel (24/09/2026): nos
+  // canais de verdade o que mais passava no intervalo era a própria
+  // programação — chamadas, bumpers, interprogramas. Quem assiste descobre pelo
+  // intervalo o que passa no canal; anúncio de produto só enche. Então a fila
+  // de anúncios (filaAds) enche o tempo, e a da casa entra 1 ou 2 por
+  // intervalo (pegaCasa). "Já voltamos"/"voltamos" do canal abrem e fecham.
+  const seriesDoCanal = new Set(contents.map((m) => m.series_id).filter((s): s is string => Boolean(s)))
+  const papelDaPeca = new Map<string, Papel>()
+  const anunciaDaPeca = new Map<string, string | null>()
+  for (const m of [...ads, ...promosEvento.map((p) => porId.get(p.id)).filter((m): m is MediaRow => Boolean(m))]) {
+    const an = anunciaDe(m, condicaoDe.get(m.id), seriesDoCanal)
+    anunciaDaPeca.set(m.id, an)
+    papelDaPeca.set(m.id, papelDe(m, condicaoDe.get(m.id), an))
+  }
+  const anuncios = ads.filter((m) => papelDaPeca.get(m.id) === 'anuncio')
+  const daCasa = ads.filter((m) => papelDaPeca.get(m.id) === 'casa')
+  const entradas = ads.filter((m) => papelDaPeca.get(m.id) === 'entrada').map((m) => m.id)
+  const retornos = ads.filter((m) => papelDaPeca.get(m.id) === 'retorno').map((m) => m.id)
+  // canal sem anúncio de produto nenhum: o tempo é enchido com o que houver
+  const filaAds = shuffled(anuncios.length > 0 ? anuncios : daCasa, rnd)
+  const filaCasa = shuffled(daCasa, rnd)
   const filaVins = shuffled(vins, rnd)
   // Tira da fila a peça MAIS ANTIGA que satisfaz o filtro e a recoloca no fim.
   // Peça que nunca cabe fica na frente e entra assim que houver espaço — é o que
@@ -642,6 +669,75 @@ export async function scheduleChannel(
     if (v) ultimaVezDe.set(v.id, t)
     return v
   }
+
+  // PEÇA DA CASA no intervalo. Variedade ("no passado ficava passando os
+  // mesmos") sem deixar o intervalo vazio: a 1ª peça do intervalo pode repetir
+  // um pouco mais (descanso de 90 min, até 8 vezes por dia) — canal com poucas
+  // chamadas, como o Jetix e o Disney hoje, ainda leva uma por intervalo; a 2ª
+  // só entra com folga (3 h, até 4 por dia). Sem nenhuma disponível, o
+  // intervalo vai sem (melhor que repetir).
+  // Entre as que tocaram o mesmo tanto hoje, a preferência: a chamada de programa que passa MAIS TARDE HOJE
+  // (é assim que se aprende a grade), depois institucional/maratona, depois
+  // chamada de programa de outro dia. Nunca a do programa no ar ou que acabou
+  // de passar (`evitar`).
+  const DESCANSO_CASA = 3 * 3600
+  const CASA_MAX_DIA = 4
+  const DESCANSO_CASA_1A = 90 * 60
+  const CASA_MAX_DIA_1A = 8
+  const vezesNoDia = new Map<string, number>()
+  const podeTocarCasa = (m: MediaRow, primeira: boolean) =>
+    t - (ultimaVezDe.get(m.id) ?? -Infinity) >= (primeira ? DESCANSO_CASA_1A : DESCANSO_CASA)
+    && (vezesNoDia.get(`${m.id}|${spDateStr(t)}`) ?? 0) < (primeira ? CASA_MAX_DIA_1A : CASA_MAX_DIA)
+  const marcaCasa = (m: MediaRow) => {
+    ultimaVezDe.set(m.id, t)
+    const k = `${m.id}|${spDateStr(t)}`
+    vezesNoDia.set(k, (vezesNoDia.get(k) ?? 0) + 1)
+  }
+  const passaMaisTardeHoje = (m: MediaRow): boolean => {
+    const hoje = spDateStr(t)
+    const cond = condicaoDe.get(m.id)
+    if (cond?.tipo === 'bloco_horario' && cond.hora) {
+      const A = spHoraToEpoch(hoje, cond.hora)
+      return A != null && A > t + 900 && (!Array.isArray(cond.dias) || cond.dias.includes(spWeekdayIso(t)))
+    }
+    const sid = anunciaDaPeca.get(m.id)
+    return Boolean(sid) && ancoras.some((a) => a.series_id === sid && a.start > t + 900 && spDateStr(a.start) === hoje)
+  }
+  const pegaCasa = (cabe: (m: MediaRow) => boolean, evitar: Array<string | null | undefined>, primeira: boolean): MediaRow | undefined => {
+    const fora = new Set(evitar.filter((s): s is string => Boolean(s)))
+    const maratona = promosEvento.filter((p) => t < p.ate).map((p) => porId.get(p.id)).filter((m): m is MediaRow => Boolean(m))
+    const cands = [...filaCasa, ...maratona].filter((m) => {
+      const sid = anunciaDaPeca.get(m.id)
+      return cabe(m) && podeTocarCasa(m, primeira) && !(sid && fora.has(sid))
+    })
+    if (cands.length === 0) return undefined
+    const nivel = (m: MediaRow) => passaMaisTardeHoje(m) ? 0
+      : !anunciaDaPeca.get(m.id) || condicaoDe.get(m.id)?.tipo === 'evento' ? 1 : 2
+    const ordem = new Map(filaCasa.map((m, i) => [m.id, i]))
+    const hoje = (m: MediaRow) => vezesNoDia.get(`${m.id}|${spDateStr(t)}`) ?? 0
+    // variedade manda: a que menos tocou hoje; no empate, a preferência acima
+    const pick = cands.reduce((a, b) => {
+      const d = hoje(a) - hoje(b)
+        || nivel(a) - nivel(b)
+        || (ultimaVezDe.get(a.id) ?? -Infinity) - (ultimaVezDe.get(b.id) ?? -Infinity)
+        || (ordem.get(a.id) ?? -1) - (ordem.get(b.id) ?? -1)
+      return d <= 0 ? a : b
+    })
+    const i = filaCasa.indexOf(pick)
+    if (i >= 0) filaCasa.push(...filaCasa.splice(i, 1))
+    marcaCasa(pick)
+    return pick
+  }
+  // Bumper do CANAL que abre ("já voltamos") ou fecha ("voltamos") o intervalo
+  // quando o programa não tem o dele. Mesmo descanso e teto das peças da casa.
+  const pegaEstrutural = (ids: string[], cabe: (m: MediaRow) => boolean): MediaRow | undefined => {
+    const cands = ids.map((id) => porId.get(id))
+      .filter((m): m is MediaRow => Boolean(m) && cabe(m!) && podeTocarCasa(m!, false))
+    if (cands.length === 0) return undefined
+    const pick = cands.reduce((a, b) => (ultimaVezDe.get(a.id) ?? -Infinity) <= (ultimaVezDe.get(b.id) ?? -Infinity) ? a : b)
+    marcaCasa(pick)
+    return pick
+  }
   let bi = 0 // qual bloco
   let ei = 0 // qual episódio dentro do bloco atual
   // Conteúdo que JÁ entrou nesta montagem. O encaixe (ver abaixo) pode adiantar
@@ -684,45 +780,62 @@ export async function scheduleChannel(
       push(bp.id, t, t + bp.duracao_seg, 0)
       t += bp.duracao_seg
     }
+    // sem o "voltamos já com X", o "já voltamos" do canal abre o intervalo
+    const entrada = bp ? undefined : pegaEstrutural(entradas, (m) => t + m.duracao_seg <= teto)
+    // O intervalo é montado antes e vai ao ar de uma vez: `fim` é onde ele
+    // terminaria com o que já foi escolhido (nada cruza a âncora).
+    let fim = t + (entrada?.duracao_seg ?? 0)
     // tolerância de 25%: estourar um pouco o alvo é ritmo normal de TV
     // (2×70s num alvo de 120 ✓); o que não pode é UM comercial de 200s
     // entrar sozinho num intervalo de 120 tendo alternativa que caiba
     const folga = Math.ceil(alvoBase * 0.25)
     let sum = 0
+    // DA CASA primeiro: 1 ou 2 por intervalo (2 no intervalo de tamanho normal)
+    const casa: MediaRow[] = []
+    for (let k = 0; k < (alvoBase >= 90 ? 2 : 1); k++) {
+      const restante = Math.min(alvoBase - sum, teto - fim)
+      const c = pegaCasa((m) => m.duracao_seg <= restante + (k === 0 ? folga : 0) && fim + m.duracao_seg <= teto,
+        [serieCtx, ultimaSerie], k === 0)
+      if (!c) break
+      casa.push(c)
+      sum += c.duracao_seg
+      fim += c.duracao_seg
+    }
+    // o ANÚNCIO enche o resto
+    const anunciosDoPod: MediaRow[] = []
     for (;;) {
-      const restante = Math.min(alvoBase - sum, teto - t) // nunca cruza a âncora
+      const restante = Math.min(alvoBase - sum, teto - fim) // nunca cruza a âncora
       if (restante <= 0 || filaAds.length === 0) break
       // a mais antiga que cabe no alvo (com a tolerância); se NENHUMA cabe e o
       // pod ainda está vazio, entra a mais curta disponível (nunca empilha
       // estourando) — o resto espera o próximo intervalo
-      let pick = daFila(filaAds, (a) => a.duracao_seg <= restante + folga && t + a.duracao_seg <= teto)
+      let pick = daFila(filaAds, (a) => a.duracao_seg <= restante + folga && fim + a.duracao_seg <= teto)
       if (!pick && sum === 0) {
-        const curtos = filaAds.filter((a) => t + a.duracao_seg <= teto)
+        const curtos = filaAds.filter((a) => fim + a.duracao_seg <= teto)
         if (curtos.length === 0) break
         const menor = curtos.reduce((a, b) => (a.duracao_seg <= b.duracao_seg ? a : b))
         pick = daFila(filaAds, (a) => a.id === menor.id)
       }
       if (!pick) break
-      push(pick.id, t, t + pick.duracao_seg, 0)
-      t += pick.duracao_seg
+      anunciosDoPod.push(pick)
       sum += pick.duracao_seg
+      fim += pick.duracao_seg
     }
-    // janela de promoção: enquanto a maratona não começou, o intervalo
-    // fecha com UMA promo do evento (rodízio entre as elegíveis) — é assim
-    // que você fica sabendo durante a semana que sábado tem maratona
-    const eleg = promosEvento.filter((p) => t < p.ate).map((p) => p.id)
-    const pr = daPoolCondicional(eleg, (m) => t + m.duracao_seg <= teto)
-    if (pr) {
-      push(pr.id, t, t + pr.duracao_seg, 0)
-      t += pr.duracao_seg
-      sum += pr.duracao_seg
+    // intercalado como na TV: anúncio, peça da casa, anúncios, peça da casa
+    const miolo = [...anunciosDoPod.slice(0, 1), ...casa.slice(0, 1), ...anunciosDoPod.slice(1), ...casa.slice(1)]
+    for (const m of [...(entrada && miolo.length > 0 ? [entrada] : []), ...miolo]) {
+      push(m.id, t, t + m.duracao_seg, 0)
+      t += m.duracao_seg
     }
     // fecha o pod com a vinheta de VOLTA ("estamos de volta com X"), colada no
     // retorno do programa — só quando houve intervalo DE VERDADE (entrou ad) e
     // estamos no universo da série. Sem isso, dois bumpers grudariam sem break
-    // no meio ("voltamos já" seguido de "estamos de volta").
+    // no meio ("voltamos já" seguido de "estamos de volta"). Sem a da série, o
+    // "voltamos" do canal.
     const voltas = serieCtx ? voltaDe.get(serieCtx) ?? [] : []
-    const vp = sum > 0 ? daPoolCondicional(voltas, (m) => t + m.duracao_seg <= teto) : undefined
+    const vp = sum > 0
+      ? daPoolCondicional(voltas, (m) => t + m.duracao_seg <= teto) ?? pegaEstrutural(retornos, (m) => t + m.duracao_seg <= teto)
+      : undefined
     if (vp) {
       push(vp.id, t, t + vp.duracao_seg, 0)
       t += vp.duracao_seg
@@ -890,7 +1003,31 @@ export async function scheduleChannel(
     const promo = daPoolCondicional(promosASeguir(serieDepois ?? null, teto), (m) => teto - t >= m.duracao_seg)
       ?? pegaVinhetaDaCasa((m) => teto - t >= m.duracao_seg)
     const reserva = promo ? promo.duracao_seg : 0
-    encheAte(teto - reserva, reserva === 0)
+    // o intervalo até a faixa também leva peça da casa (1, ou 2 se for longo),
+    // intercalada com os anúncios; nunca a chamada do programa que acabou nem
+    // a do que vem (esse já tem o "vem aí"). Só entra peça que deixa um resto
+    // que ainda fecha exato.
+    const limite = teto - reserva
+    const casa: MediaRow[] = []
+    for (let k = 0; k < (limite - t >= 90 ? 2 : limite - t >= 40 ? 1 : 0); k++) {
+      const livre = limite - t - casa.reduce((a, m) => a + m.duracao_seg, 0)
+      const c = pegaCasa((m) => m.duracao_seg <= livre && (livre - m.duracao_seg === 0 || livre - m.duracao_seg >= menorPeca),
+        [ultimaSerie, serieDepois], k === 0)
+      if (!c) break
+      casa.push(c)
+    }
+    const sobra = limite - t - casa.reduce((a, m) => a + m.duracao_seg, 0)
+    const primeiro = casa.length > 0 && sobra > 0 ? proxima(sobra) : undefined
+    for (const m of [...(primeiro ? [primeiro] : []), ...casa.slice(0, 1)]) {
+      push(m.id, t, t + m.duracao_seg, 0)
+      t += m.duracao_seg
+    }
+    encheAte(limite - (casa[1]?.duracao_seg ?? 0), reserva === 0 && !casa[1])
+    if (casa[1] && t + casa[1].duracao_seg <= limite) {
+      push(casa[1].id, t, t + casa[1].duracao_seg, 0)
+      t += casa[1].duracao_seg
+    }
+    encheAte(limite, reserva === 0)
     if (promo && t + promo.duracao_seg <= teto) {
       push(promo.id, t, t + promo.duracao_seg, 0)
       t += promo.duracao_seg

@@ -1,10 +1,14 @@
-// DRY-RUN da ABERTURA DE FAIXA com os dados REAIS de produção, sem gravar nada.
+// DRY-RUN da ABERTURA DE FAIXA e dos INTERVALOS com os dados REAIS de
+// produção, sem gravar nada.
 //
 // Pergunta que ele responde: quantas faixas fixas (âncoras) entram com a promo
 // "a seguir"/"vem aí" da própria série colada antes, e quantas começam grudadas
 // no programa anterior, sem chamada nenhuma. Mede também quantas vezes as
 // vinhetas genéricas do canal (bumpers sem promessa) conseguem tocar, se as
-// faixas continuam pontuais e se a EPG fica sem buraco.
+// faixas continuam pontuais e se a EPG fica sem buraco. Nos intervalos, mede
+// quantos levam peça DA CASA (chamada, bumper, interprograma — ver
+// apps/stream/src/papel-comercial.ts), quanto tempo é casa × anúncio e quanto
+// a peça da casa mais tocada repete por dia.
 //
 // Os dados do D1 (só SELECT) ficam guardados num retrato local na primeira
 // execução, pra comparar ANTES e DEPOIS de uma mudança no scheduler com a mesma
@@ -12,6 +16,7 @@
 //
 //   node --import ./scripts/_ts-registra.mjs scripts/aseguir-dryrun.mjs [--canal X] [--horas 48] [--novo]
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { anunciaDe, papelDe } from '../apps/stream/src/papel-comercial.ts'
 import { scheduleChannel } from '../apps/stream/src/scheduler.ts'
 
 for (const l of readFileSync(`${process.env.HOME}/bieltv-cred.env`, 'utf8').split('\n')) {
@@ -155,5 +160,30 @@ for (const canal of CANAIS) {
   console.log(`  programa: ${(100 * progSeg / total).toFixed(1)}% do tempo · enchimento: ${Math.round((rep.enchimentoSeg ?? 0) / 60)} min`)
   console.log(`  ${contigua ? '✅' : '❌'} EPG contígua`)
   for (const e of exemplos.filter((x) => /GRUDADA|intervalo sem/.test(x.caso)).slice(0, 8)) console.log(`    ${e.rotulo}: ${e.caso}`)
+  // ── intervalos: casa × anúncio ──
+  const seriesCanal = new Set(dados.media.filter((m) => ['episodio', 'filme'].includes(m.tipo) && m.series_id).map((m) => m.series_id))
+  const condDe = new Map(confirmadas.map((p) => [p.media_id, p.c]))
+  const papel = (id) => {
+    const m = info.get(id)
+    if (!m || m.tipo !== 'comercial' || id.startsWith('com_lineup_')) return m?.tipo === 'comercial' ? 'casa' : null
+    return papelDe(m, condDe.get(id), anunciaDe(m, condDe.get(id), seriesCanal))
+  }
+  const pods = []
+  let pod = null
+  for (const r of rows) {
+    if (['episodio', 'filme'].includes(info.get(r.id)?.tipo)) { if (pod) pods.push(pod); pod = null } else (pod ??= []).push(r)
+  }
+  const reais = pods.filter((p) => p.some((r) => info.get(r.id)?.tipo === 'comercial'))
+  const nCasa = (p) => p.filter((r) => papel(r.id) === 'casa').length
+  const semCasa = reais.filter((p) => nCasa(p) === 0).length
+  const segPapel = (pp) => rows.filter((r) => papel(r.id) === pp).reduce((a, r) => a + r.f - r.s, 0)
+  const porDia = {}
+  for (const r of rows) if (papel(r.id) === 'casa') { const k = `${r.id}|${hora(r.s).slice(0, 5)}`; porDia[k] = (porDia[k] ?? 0) + 1 }
+  const pior = Object.entries(porDia).sort((a, b) => b[1] - a[1]).slice(0, 3)
+  const distintas = new Set(rows.filter((r) => papel(r.id) === 'casa').map((r) => r.id)).size
+  const estrut = rows.filter((r) => ['entrada', 'retorno'].includes(papel(r.id))).length
+  console.log(`  intervalos: ${reais.length} · sem peça da casa: ${semCasa} (${Math.round(100 * semCasa / Math.max(1, reais.length))}%) · média ${(reais.reduce((a, p) => a + nCasa(p), 0) / Math.max(1, reais.length)).toFixed(1)} da casa por intervalo`)
+  console.log(`  tempo: casa ${Math.round(segPapel('casa') / 60)} min × anúncio ${Math.round(segPapel('anuncio') / 60)} min · ${distintas} peças da casa distintas · ${estrut} bumpers de entrada/retorno`)
+  console.log(`  peça da casa que mais repete num dia: ${pior.map(([k, n]) => `${k.split('|')[0].slice(0, 40)}×${n}`).join(' · ')}`)
   writeFileSync(`${DIR}/resultado-${canal}.json`, JSON.stringify({ res, exemplos, genericas: genericas.map((r) => `${hora(r.s)} ${r.id}`) }, null, 2))
 }

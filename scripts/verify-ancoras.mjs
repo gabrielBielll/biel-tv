@@ -574,5 +574,57 @@ function ocorrencias(rows, catalogo) {
   check('vinheta da casa: EPG contígua', contigua(rows))
 }
 
+// ── INTERVALO COM PEÇA DA CASA (visão do Gabriel, 24/09): 1 ou 2 chamadas/
+//    interprogramas do canal por intervalo, variadas; anúncio enche o resto;
+//    "já voltamos"/"voltamos" do canal abrem e fecham ──────────────────────
+{
+  const com = (id, dur = 20) => ({ id, tipo: 'comercial', duracao_seg: dur, segment_count: dur / 10, last_played_at: 0, series_id: null })
+  const CAT = [
+    ...CATALOGO.filter((m) => m.tipo === 'episodio'),
+    ...[1, 2, 3, 4, 5, 6, 7, 8].map((i) => com(`com_produto_${i}`, i % 2 ? 20 : 30)), // anúncios
+    // casa (institucional): 16 peças dão conta de ~120 intervalos/dia no teto de 8×
+    ...Array.from({ length: 16 }, (_, i) => com(`com_cartoon_network_interprograma_${i + 1}`)),
+    com('com_cn_colecao_referencia_cn_chamada_aaa', 30), // casa que anuncia aaa
+    com('com_cn_invasao_entrada_intervalo_1', 10), com('com_cn_invasao_retorno_intervalo_1', 10),
+    com('com_cn_invasao_entrada_intervalo_2', 10), com('com_cn_invasao_retorno_intervalo_2', 10),
+  ]
+  const cues = Object.fromEntries(CAT.filter((m) => m.tipo === 'episodio').map((m) => [m.id, [600]]))
+  const { db, epg } = makeDB({ channel: CANAL, media: CAT, cues })
+  await scheduleChannel({ DB: db }, 'ch', 24, true)
+  const rows = grade(epg)
+  const tipo = (id) => CAT.find((m) => m.id === id)?.tipo
+  const ehCasa = (id) => /^com_cartoon_network_|_chamada_/.test(id)
+  const pods = []
+  let pod = null
+  rows.forEach((r, i) => {
+    if (tipo(r.media_id) === 'episodio') { if (pod) pods.push(pod); pod = null; return }
+    if (!pod) pod = { antes: rows[i - 1]?.media_id ?? null, pecas: [] }
+    pod.pecas.push(r)
+  })
+  const reais = pods.filter((p) => p.pecas.some((r) => r.media_id.startsWith('com_produto_')))
+  const nCasa = (p) => p.pecas.filter((r) => ehCasa(r.media_id)).length
+  check('intervalo: no máximo 2 peças da casa', reais.every((p) => nCasa(p) <= 2), `${reais.length} intervalos`)
+  const comCasa = reais.filter((p) => nCasa(p) >= 1).length
+  check('intervalo: quase todo intervalo leva peça da casa', comCasa >= 0.9 * reais.length, `${comCasa}/${reais.length}`)
+  const vezes = new Map()
+  let repetiuCedo = 0
+  for (const r of rows.filter((x) => ehCasa(x.media_id))) {
+    if (r.start - (vezes.get(r.media_id) ?? -Infinity) < 90 * 60) repetiuCedo++
+    vezes.set(r.media_id, r.start)
+  }
+  check('peça da casa não repete em menos de 90 min', repetiuCedo === 0, `${repetiuCedo} repetição(ões)`)
+  const porDia = {}
+  for (const r of rows.filter((x) => ehCasa(x.media_id))) { const k = `${r.media_id}|${spDateStr(r.start)}`; porDia[k] = (porDia[k] ?? 0) + 1 }
+  const maxDia = Math.max(0, ...Object.values(porDia))
+  check('peça da casa toca no máximo 8 vezes por dia', maxDia <= 8, `máx ${maxDia}`)
+  const chamadaNoProprio = pods.filter((p) => p.antes?.startsWith('aaa_') && p.pecas.some((r) => r.media_id.endsWith('_chamada_aaa')))
+  check('chamada do programa não toca no intervalo dele (nem logo depois)', chamadaNoProprio.length === 0, `${chamadaNoProprio.length}`)
+  const entradaFora = pods.some((p) => p.pecas.some((r, i) => /entrada_intervalo/.test(r.media_id) && i !== 0))
+  const retornoFora = pods.some((p) => p.pecas.some((r, i) => /retorno_intervalo/.test(r.media_id) && i !== p.pecas.length - 1 && !/^vin_|a_seguir/.test(p.pecas.at(-1).media_id)))
+  check('"já voltamos" do canal só abre o intervalo', !entradaFora)
+  check('"voltamos" do canal só fecha o intervalo', !retornoFora)
+  check('intervalo com peça da casa: EPG contígua', contigua(rows))
+}
+
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)
 process.exit(fail === 0 ? 0 : 1)
