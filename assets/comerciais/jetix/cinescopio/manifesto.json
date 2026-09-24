@@ -7,7 +7,7 @@
     "data": "2026-09-23",
     "bucket": "biel-tv-media",
     "somente_artefatos_editoriais": true,
-    "d1": "nao_cadastrado",
+    "d1": "registrado_ready_com_condicoes_confirmadas",
     "objetos": [
       {
         "key": "editoriais/jetix/cinescopio/cinescopio-abertura-filmes-jetix.mp4",
@@ -15,13 +15,51 @@
       },
       {
         "key": "editoriais/jetix/cinescopio/cinescopio-saida-intervalo-jetix.mp4",
-        "sha256": "00c2fc8ea49de2d625cc76210f4307b5fa8da4f309e2dbc2a16334167abdf48f"
+        "sha256": "820fad22d3cde7b76207615176d4aefecf4cdae285ae915045855a213240e04d"
       },
       {
         "key": "editoriais/jetix/cinescopio/cinescopio-retorno-intervalo-jetix.mp4",
+        "sha256": "c7daccd136cc3ae5a56c0bfc2f7e37e138b2154c67e9a92795ae683249968e7e"
+      },
+      {
+        "key": "editoriais/jetix/cinescopio/arquivo-5s/cinescopio-saida-intervalo-jetix-5s.mp4",
+        "sha256": "00c2fc8ea49de2d625cc76210f4307b5fa8da4f309e2dbc2a16334167abdf48f"
+      },
+      {
+        "key": "editoriais/jetix/cinescopio/arquivo-5s/cinescopio-retorno-intervalo-jetix-5s.mp4",
         "sha256": "e0966688264e4fb43269b3125319ef7e0ddf4eb84a60846f5d3b4dcb47532582"
       }
+    ],
+    "segmentos": [
+      {
+        "key": "media/vin_jetix_cinescopio_saida/seg00000.ts",
+        "sha256": "1854de49d8c361a1cf7e9ba75c8837bafd2cb30bec5aa59a39f7fac7db677d94"
+      },
+      {
+        "key": "media/vin_jetix_cinescopio_retorno/seg00000.ts",
+        "sha256": "26d079286362cb8fd209a9ede065e606aeae65a633c6f84e150577e65a72af4b"
+      }
     ]
+  },
+  "catalogo": {
+    "saida": {
+      "media_id": "vin_jetix_cinescopio_saida",
+      "status": "ready",
+      "condicao": {
+        "tipo": "durante",
+        "series_id": "cinescopio",
+        "momento": "saida"
+      }
+    },
+    "retorno": {
+      "media_id": "vin_jetix_cinescopio_retorno",
+      "status": "ready",
+      "condicao": {
+        "tipo": "durante",
+        "series_id": "cinescopio",
+        "momento": "volta"
+      }
+    }
   },
   "fonte_visual": {
     "path": "assets/comerciais/jetix/cinescopio/_fontes/cineskopio_entrada_chroma_movimento.mp4",
@@ -78,7 +116,12 @@
       "sha256": "3f98465855a9ffe604d3ea79a03daca3b99f4a6b565883983fedfd6289f306fc",
       "duracao_seg": 3.82
     },
-    "duracao_saida_seg": 5.0,
+    "duracao_miolo_seg": 5.0,
+    "respiro_antes_seg": 2.5,
+    "respiro_depois_seg": 2.5,
+    "duracao_saida_seg": 10.0,
+    "respiro_visual": "micro_movimento_a_partir_dos_quadros_inicial_e_final",
+    "respiro_audio": "silencio_preservando_o_audio_aprovado_no_miolo",
     "audio": {
       "cinescopio_exclusivo": true,
       "mascote_entra_seg": 1.0
@@ -86,14 +129,14 @@
     "pecas": [
       {
         "tipo": "saida_intervalo",
-        "media_id": "vinheta_cinescopio_saida_intervalo",
+        "media_id": "vin_jetix_cinescopio_saida",
         "audio_inicio_seg": 4.0,
         "audio_fim_seg": 9.0,
         "arquivo": "cinescopio-saida-intervalo-jetix.mp4"
       },
       {
         "tipo": "retorno_intervalo",
-        "media_id": "vinheta_cinescopio_retorno_intervalo",
+        "media_id": "vin_jetix_cinescopio_retorno",
         "audio_inicio_seg": 129.5,
         "audio_fim_seg": 134.5,
         "arquivo": "cinescopio-retorno-intervalo-jetix.mp4"

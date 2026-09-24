@@ -20,9 +20,16 @@ agendam as peças. A publicação no R2 usa o prefixo editorial
 `editoriais/jetix/cinescopio/`; a integração com a grade permanece separada e
 `publicacao_automatica` continua desligada.
 
-A abertura tem 10 segundos e já cabe no contrato atual do player. A saída e o
-retorno aprovados têm 5 segundos cada. Eles estão preservados no R2 como MP4s
-editoriais, mas não devem passar pelo pipeline atual sem adaptação: ele completa
-toda mídia para segmentos de 10 segundos e acrescentaria 5 segundos de preto.
-A integração deve preservar os 5 segundos originais, sem desacelerar o mascote,
-repetir a peça ou congelar o quadro final.
+A abertura, a saída e o retorno oficiais têm 10 segundos e cabem no contrato do
+player. Na saída e no retorno, os 5 segundos originalmente aprovados permanecem
+intactos no centro, com 2,5 segundos antes e 2,5 segundos depois. Os respiros
+usam micro movimento nos quadros de entrada e saída, evitando preto ou
+congelamento aparente; o mascote mantém a velocidade normal. As versões
+originais de 5 segundos estão arquivadas no R2 sob
+`editoriais/jetix/cinescopio/arquivo-5s/`.
+
+As peças de 10 segundos estão no catálogo como
+`vin_jetix_cinescopio_saida` e `vin_jetix_cinescopio_retorno`, ambas exclusivas
+da Jetix e condicionadas a `series_id: cinescopio`, nos momentos `saida` e
+`volta`. Elas não entram no rodízio genérico. Só aparecem no EPG quando houver
+conteúdo de filme associado à sessão Cinescópio.

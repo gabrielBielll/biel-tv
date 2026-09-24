@@ -24,18 +24,32 @@ async function renderizar(peca, outDir) {
   const out = join(outDir, peca.arquivo)
   const duracaoAproximacao = TESTE.fonte_aproximacao.fim_seg - TESTE.fonte_aproximacao.inicio_seg
   const duracaoVinheta = Number(TESTE.vinheta_jetix.duracao_seg)
+  const duracaoMiolo = Number(TESTE.duracao_miolo_seg)
+  const respiroAntes = Number(TESTE.respiro_antes_seg)
+  const respiroDepois = Number(TESTE.respiro_depois_seg)
   const duracaoTotal = Number(TESTE.duracao_saida_seg)
-  const holdVinheta = duracaoTotal - duracaoAproximacao - duracaoVinheta
+  const holdVinheta = duracaoMiolo - duracaoAproximacao - duracaoVinheta
 
   if (holdVinheta < 0) {
-    throw new Error('a aproximação e a vinheta ultrapassam a duração total')
+    throw new Error('a aproximação e a vinheta ultrapassam a duração do miolo')
   }
+  if (Math.abs(respiroAntes + duracaoMiolo + respiroDepois - duracaoTotal) > 0.001) {
+    throw new Error('respiros e miolo não fecham a duração total')
+  }
+
+  const framesRespiro = Math.round(respiroAntes * 30)
+  const ultimoFrame = framesRespiro - 1
+  const inicioQuadroFinal = Math.max(0, duracaoMiolo - 0.1)
 
   const filtros = [
     `[0:v]trim=start=${TESTE.fonte_aproximacao.inicio_seg}:end=${TESTE.fonte_aproximacao.fim_seg},setpts=PTS-STARTPTS,scale=1280:720:flags=lanczos,setsar=1,fps=30,format=yuv420p[aproximacao]`,
     `[1:v]trim=duration=${duracaoVinheta},setpts=PTS-STARTPTS,scale=1280:850:flags=lanczos,crop=1280:720:0:40,setsar=1,fps=30,format=yuv420p,tpad=stop_mode=clone:stop_duration=${holdVinheta},trim=duration=${duracaoVinheta + holdVinheta}[vinheta]`,
-    `[aproximacao][vinheta]concat=n=2:v=1:a=0,trim=duration=${duracaoTotal}[vout]`,
-    `[2:a]atrim=start=${peca.audio_inicio_seg}:end=${peca.audio_fim_seg},asetpts=PTS-STARTPTS,aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=9,volume=-1dB,alimiter=limit=0.95,apad=whole_dur=${duracaoTotal},atrim=duration=${duracaoTotal}[aout]`,
+    `[aproximacao][vinheta]concat=n=2:v=1:a=0,trim=duration=${duracaoMiolo},split=3[prebase][corebase][postbase]`,
+    `[prebase]trim=start=0:end=0.1,select='eq(n,0)',setpts=PTS-STARTPTS,zoompan=z='1.015-on*0.015/${ultimoFrame}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${framesRespiro}:s=1280x720:fps=30,setsar=1,format=yuv420p[pre]`,
+    `[corebase]trim=duration=${duracaoMiolo},setpts=PTS-STARTPTS,fps=30,setsar=1,format=yuv420p[core]`,
+    `[postbase]trim=start=${inicioQuadroFinal}:end=${duracaoMiolo},reverse,select='eq(n,0)',setpts=PTS-STARTPTS,zoompan=z='1+on*0.015/${ultimoFrame}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${framesRespiro}:s=1280x720:fps=30,setsar=1,format=yuv420p[post]`,
+    `[pre][core][post]concat=n=3:v=1:a=0,trim=duration=${duracaoTotal}[vout]`,
+    `[2:a]atrim=start=${peca.audio_inicio_seg}:end=${peca.audio_fim_seg},asetpts=PTS-STARTPTS,aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=9,volume=-1dB,alimiter=limit=0.95,adelay=delays=${Math.round(respiroAntes * 1000)}:all=1,apad=whole_dur=${duracaoTotal},atrim=duration=${duracaoTotal}[aout]`,
   ].join(';')
 
   await execFileAsync('ffmpeg', [
