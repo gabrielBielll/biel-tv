@@ -703,12 +703,21 @@ export async function scheduleChannel(
     const sid = anunciaDaPeca.get(m.id)
     return Boolean(sid) && ancoras.some((a) => a.series_id === sid && a.start > t + 900 && spDateStr(a.start) === hoje)
   }
+  // Comercial MONTADO PELA FÁBRICA (horário `com_<série>_<HHhMM>_<hex>` e
+  // maratona `com_ev_*`): todos saem do mesmo molde, então o que cansa é o
+  // TIPO, não a peça. Pedido do Gabriel (24/09): "está meio enjoativo passar
+  // com tanta frequência… pode passar com menos frequência mas é bom passar".
+  // No máximo um por intervalo e 45 min entre dois, no canal todo.
+  const MIN_ENTRE_MOLDE = 45 * 60
+  let ultimoDoMolde = -Infinity
+  const doMolde = (m: MediaRow) => /_\d{2}h\d{2}_[0-9a-f]{4}$/.test(m.id) || m.id.startsWith('com_ev_')
   const pegaCasa = (cabe: (m: MediaRow) => boolean, evitar: Array<string | null | undefined>, primeira: boolean): MediaRow | undefined => {
     const fora = new Set(evitar.filter((s): s is string => Boolean(s)))
     const maratona = promosEvento.filter((p) => t < p.ate).map((p) => porId.get(p.id)).filter((m): m is MediaRow => Boolean(m))
+    const moldeLiberado = t - ultimoDoMolde >= MIN_ENTRE_MOLDE
     const cands = [...filaCasa, ...maratona].filter((m) => {
       const sid = anunciaDaPeca.get(m.id)
-      return cabe(m) && podeTocarCasa(m, primeira) && !(sid && fora.has(sid))
+      return cabe(m) && podeTocarCasa(m, primeira) && !(sid && fora.has(sid)) && (moldeLiberado || !doMolde(m))
     })
     if (cands.length === 0) return undefined
     const nivel = (m: MediaRow) => passaMaisTardeHoje(m) ? 0
@@ -726,6 +735,7 @@ export async function scheduleChannel(
     const i = filaCasa.indexOf(pick)
     if (i >= 0) filaCasa.push(...filaCasa.splice(i, 1))
     marcaCasa(pick)
+    if (doMolde(pick)) ultimoDoMolde = t
     return pick
   }
   // Bumper do CANAL que abre ("já voltamos") ou fecha ("voltamos") o intervalo

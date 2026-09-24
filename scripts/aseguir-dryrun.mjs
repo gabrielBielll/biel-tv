@@ -184,6 +184,9 @@ for (const canal of CANAIS) {
   const estrut = rows.filter((r) => ['entrada', 'retorno'].includes(papel(r.id))).length
   console.log(`  intervalos: ${reais.length} · sem peça da casa: ${semCasa} (${Math.round(100 * semCasa / Math.max(1, reais.length))}%) · média ${(reais.reduce((a, p) => a + nCasa(p), 0) / Math.max(1, reais.length)).toFixed(1)} da casa por intervalo`)
   console.log(`  tempo: casa ${Math.round(segPapel('casa') / 60)} min × anúncio ${Math.round(segPapel('anuncio') / 60)} min · ${distintas} peças da casa distintas · ${estrut} bumpers de entrada/retorno`)
+  const doMolde = (id) => /_\d{2}h\d{2}_[0-9a-f]{4}$/.test(id) || id.startsWith('com_ev_')
+  const nMolde = rows.filter((r) => doMolde(r.id)).length
+  console.log(`  comerciais da fábrica (mesmo molde): ${nMolde} em ${HORAS} h (~${Math.round(nMolde * 24 / HORAS)}/dia)`)
   console.log(`  peça da casa que mais repete num dia: ${pior.map(([k, n]) => `${k.split('|')[0].slice(0, 40)}×${n}`).join(' · ')}`)
   writeFileSync(`${DIR}/resultado-${canal}.json`, JSON.stringify({ res, exemplos, genericas: genericas.map((r) => `${hora(r.s)} ${r.id}`) }, null, 2))
 }

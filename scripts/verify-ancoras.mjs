@@ -626,5 +626,28 @@ function ocorrencias(rows, catalogo) {
   check('intervalo com peça da casa: EPG contígua', contigua(rows))
 }
 
+// ── COMERCIAL DA FÁBRICA (mesmo molde) com menos frequência (Gabriel, 24/09):
+//    "está meio enjoativo… pode passar com menos frequência mas é bom passar"
+{
+  const com = (id, dur = 20) => ({ id, tipo: 'comercial', duracao_seg: dur, segment_count: dur / 10, last_played_at: 0, series_id: null })
+  const hex = (i) => (0xa000 + i).toString(16)
+  const CAT = [
+    ...CATALOGO.filter((m) => m.tipo === 'episodio'),
+    ...[1, 2, 3, 4, 5, 6, 7, 8].map((i) => com(`com_produto_${i}`, i % 2 ? 20 : 30)),
+    ...Array.from({ length: 12 }, (_, i) => com(`com_cartoon_network_interprograma_${i + 1}`)),
+    // 20 comerciais de horário da fábrica: sem o teto, iam em quase todo intervalo
+    ...Array.from({ length: 20 }, (_, i) => ({ ...com(`com_bbb_${String(8 + (i % 12)).padStart(2, '0')}h00_${hex(i)}`), series_id: 'bbb' })),
+  ]
+  const cues = Object.fromEntries(CAT.filter((m) => m.tipo === 'episodio').map((m) => [m.id, [600]]))
+  const { db, epg } = makeDB({ channel: CANAL, media: CAT, cues })
+  await scheduleChannel({ DB: db }, 'ch', 24, true)
+  const rows = grade(epg)
+  const molde = rows.filter((r) => /_\d{2}h\d{2}_[0-9a-f]{4}$/.test(r.media_id))
+  const perto = molde.filter((r, i) => i > 0 && r.start - molde[i - 1].start < 45 * 60).length
+  check('comercial da fábrica: 45 min entre dois, no máximo', perto === 0, `${molde.length} em 24 h, ${perto} perto demais`)
+  check('comercial da fábrica: continua passando', molde.length >= 10, `${molde.length} em 24 h`)
+  check('comercial da fábrica: EPG contígua', contigua(rows))
+}
+
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)
 process.exit(fail === 0 ? 0 : 1)
