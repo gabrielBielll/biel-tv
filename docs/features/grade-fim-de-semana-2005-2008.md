@@ -59,14 +59,26 @@ Voltamos já / Estamos de volta no Teatro Cartoon.
   18h30 (Looney Tunes Show, Corrida Maluca e Manda-Chuva).
 - **Filme só toca na sessão.** Filme fica fora do rodízio e do encaixe
   (`scheduler.ts`, `9ba1d54`). Para cair na sessão, basta subir o filme com
-  `--tipo filme` e o `series_id` da tabela. Cada sessão toca o próximo filme, em ordem de
-  `media_id`.
+  `--tipo filme` e o `series_id` da tabela. A sessão de sábado e a da tarde de
+  domingo tocam o próximo filme, em ordem de `media_id` (byte a byte, `81a392d`).
+- **REGRA: domingo à noite é REPRISE do filme da tarde, nos três canais**
+  (Gabriel, 24/09). As faixas da noite têm `reprise = 1`: `sl_disney_filmes_dom`,
+  `sl_cn_teatro_cartoon_dom_noite` e `sl_jetix_cinescopio_dom_noite`. A do Disney
+  vale pra sábado e domingo ([6,7]); no sábado não passou filme antes no mesmo
+  dia, e aí a reprise cai no filme novo. Ao recriar ou mover uma faixa da noite,
+  mantenha o `reprise = 1`: a mudança do CN de 20:00 para 18:30 (23/09) perdeu
+  essa marca.
 - **O especial provisório cede ao filme** automaticamente quando as duas faixas
   caem no mesmo minuto e a do filme tem filme pronto (ex.: Dexter às 14h no CN).
 - **Intervalos:** filme sem cue point toca direto; `scripts/cues-filme.mjs`
   acha cortes a cada ~20 min.
 - **Acervo em 23/09:** Disney com Camp Rock, High School Musical e HSM 2; CN com
   As Meninas Superpoderosas — O Filme; Jetix ainda sem filme (a faixa espera).
+- **Acervo a partir de 24/09 21h** (registro dos filmes que subiram pro R2 na
+  madrugada sem registro no D1): Disney ganha O Rei Leão, Os Incríveis, Tarzan e
+  Vida de Inseto; Jetix fica com Matilda, Os Batutinhas, Os Caça-Fantasmas e Os
+  Goonies; CN ganha FormiguinhaZ, Os Sem-Floresta e Por Água Abaixo. O Pestinha 2
+  subiu truncado (47 de ~90 min) e fica fora até subir de novo.
 
 ## Base provisória com o acervo atual
 
