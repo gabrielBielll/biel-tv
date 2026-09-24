@@ -147,6 +147,23 @@ pior que nenhuma vinheta.
 `momento` só passou a ser gravado pelo `/decidir` em 23/09. Antes, toda peça
 `durante` virava "saída", e "está de volta" tocava na abertura do intervalo.
 
+**A faixa fixa sempre entra com a chamada dela** (`15ffa9a`, 23/09). O programa
+antes da faixa termina a duração da chamada mais cedo, pra ela caber. Se só o
+episódio do vão inteiro cabe, ele vai, e a chamada entra assim mesmo, com a faixa
+começando esse tanto depois (no máximo a duração da chamada). Antes, o encaixe
+escolhia o desenho que fechava o vão exato, e no CN ~30% das faixas entravam
+grudadas no programa anterior, sem "vem aí" (Looney Tunes das 22:30 de 23/09).
+Medição com dados reais: `scripts/aseguir-dryrun.mjs`.
+
+**Abertura de bloco (`a_seguir` com `janelas`).** Uma abertura que só vale em
+horários certos leva `janelas: [{ dias: [1..7], hora: 'HH:MM' }]` na condição.
+Ela só toca antes da faixa da série que começa numa dessas janelas, e ali tem
+preferência sobre a "vem aí" comum. Fora da janela, e antes de episódio do
+rodízio, ela nunca toca. Exemplo no ar:
+`vin_cn_cartoon_cartoons_abertura` (90 s), `series_id: laboratorio_de_dexter`,
+janelas seg–sex 20:00, sáb 12:00, dom 10:00 (os três começos do bloco Cartoon
+Cartoons na grade).
+
 ### `scripts/vinhetas-condicoes.mjs`
 
 Lê a série alvo e a família **do id da peça**, por regra explícita, e grava tudo
