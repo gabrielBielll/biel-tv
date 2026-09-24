@@ -836,6 +836,10 @@ export type ReconGrade = {
   reativados: string[]
   recolhidos: string[]
   lacunas: Array<{ canal: string; series_id: string; hora: string; faltando: string[] }>
+  // versões com kit completo que ficaram pra próxima rodada (teto por rodada),
+  // por canal. Antes o corte era silencioso, e o Disney e o Jetix passaram dias
+  // sem vaga nenhuma sem aparecer no relatório.
+  adiados?: Record<string, number>
 }
 
 export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGrade> {
@@ -872,11 +876,11 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
     }
   }
 
-  type JobRecon = { id: string; media_id: string; series_id: string; slot_dias: string; slot_hora: string; status: string; frase_id: string | null; canal: string }
+  type JobRecon = { id: string; media_id: string; series_id: string; slot_dias: string; slot_hora: string; status: string; frase_id: string | null; canal: string; updated_at: number }
   let jobs: JobRecon[] = []
   try {
     jobs = (await env.DB.prepare(
-      `SELECT j.id, j.media_id, j.series_id, j.slot_dias, j.slot_hora, j.status, j.frase_id, m.canal
+      `SELECT j.id, j.media_id, j.series_id, j.slot_dias, j.slot_hora, j.status, j.frase_id, m.canal, j.updated_at
        FROM commercial_build_jobs j JOIN moldes m ON m.id = j.molde_id
        WHERE j.event_id IS NULL`,
     ).all<JobRecon>()).results
@@ -967,6 +971,9 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
     return achou?.id ?? '?'
   }
   const errosPorChave = new Map<string, string>()
+  // job em erro por canal|série|hora|frase: a mesma versão é REFEITA em vez de
+  // nascer um job novo pra mesma frase (o que duplicava a fila do CN)
+  const erroDaFrase = new Map<string, { id: string; updated_at: number }>()
   const canaisMexidos = new Set<string>()
 
   for (const j of jobs) {
@@ -979,7 +986,11 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
     const p = promDe.get(j.media_id)
     const frase = fraseDoJob(j, p?.transcript)
     if (j.status === 'queued' || j.status === 'processing') { cobre(chave, frase); continue }
-    if (j.status === 'error') { errosPorChave.set(chave, j.id); continue }
+    if (j.status === 'error') {
+      errosPorChave.set(chave, j.id)
+      if (j.frase_id) erroDaFrase.set(`${chave}|${j.frase_id}`, { id: j.id, updated_at: j.updated_at })
+      continue
+    }
     if (j.status !== 'done' || !prontos.has(j.media_id)) continue
 
     let dias: number[] = []
@@ -1040,7 +1051,16 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
   // mesma da ingestão de episódios. O cron diário (e o botão do painel) completam
   // o resto nas rodadas seguintes, em vez de despejar ~80 jobs de uma vez.
   const MAX_NOVAS_POR_RODADA = 15
-  let novas = 0
+  // Versões a criar, juntadas ANTES de gravar: o teto da rodada é dividido em
+  // rodízio entre os canais. A grade é lida em ordem de canal, e o CN (primeiro
+  // no alfabeto) levava as 15 vagas de toda rodada — o Disney e o Jetix ficaram
+  // sem nenhum comercial de horário novo desde a grade de 23/09 (apurado 24/09).
+  type Candidata = { b: Faixa & { nome?: string }; f: { id: string; rotulo: string }; amostraId: string; refaz?: string }
+  const candidatas = new Map<string, Candidata[]>()
+  // job em erro só é refeito uma vez por dia (se o erro for permanente, não
+  // ocupa vaga toda rodada)
+  const REFAZ_DEPOIS = 20 * 3600
+  const agoraSeg = Math.floor(Date.now() / 1000)
 
   // BLOCOS NOMEADOS entram na mesma esteira: pra fábrica, um bloco é uma
   // "série" cujo series_id é o slug (o kit `nome`/`frase` é cadastrado assim) e
@@ -1106,28 +1126,51 @@ export async function reconciliaComerciaisGrade(env: Bindings): Promise<ReconGra
 
     // uma versão por frase ainda não usada neste bloco, até completar o alvo
     const pendentes = frases.filter((f) => !cobertas.has(f.id)).slice(0, alvo - cobertas.size)
-    if (pendentes.length === 0) continue
-    // bloco nomeado já traz o nome de exibição; série busca o clipe 'nome'
-    const titulo = 'nome' in b ? (b as { nome: string }).nome : await serieTitulo(env.DB, b.series_id)
     for (const f of pendentes) {
-      if (novas >= MAX_NOVAS_POR_RODADA) break
-      const mediaId = `com_${b.series_id.slice(0, 20)}_${b.hora.replace(':', 'h')}_${hex(4)}`.slice(0, 40)
-      const dup = await env.DB.prepare(
-        `SELECT id FROM media_items WHERE id = ?1
-         UNION SELECT media_id FROM commercial_build_jobs WHERE media_id = ?1`,
-      ).bind(mediaId).first()
-      if (dup) continue // colisão raríssima de sufixo: o próximo ciclo tenta de novo
-      // título IGUAL entre as versões de propósito: é o mesmo comercial daquele
-      // horário, o que muda é a locução (e o título aparece no guia)
-      await env.DB.prepare(
-        `INSERT INTO commercial_build_jobs
-           (id, media_id, title, molde_id, series_id, slot_dias, slot_hora, frase_id, sample_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
-      ).bind(`cb_${hex()}`, mediaId, `${titulo} — ${textoTela(b.dias, b.hora)}`,
-        moldeDe.get(b.canal)!, b.series_id, JSON.stringify(b.dias), b.hora, f.id, amostraId!).run()
-      novas++
-      relatorio.gerados.push({ canal: b.canal, series_id: b.series_id, hora: b.hora, frase: f.rotulo })
+      const erro = erroDaFrase.get(`${b.canal}|${b.series_id}|${b.hora}|${f.id}`)
+      if (erro && agoraSeg - erro.updated_at < REFAZ_DEPOIS) continue // falhou há pouco: espera
+      const lista = candidatas.get(b.canal) ?? []
+      lista.push({ b, f, amostraId: amostraId!, refaz: erro?.id })
+      candidatas.set(b.canal, lista)
     }
+  }
+
+  // rodízio entre os canais: um de cada por vez, até o teto
+  const ordem: Candidata[] = []
+  const filas = [...candidatas.keys()].sort().map((k) => [...candidatas.get(k)!])
+  while (filas.some((q) => q.length > 0)) for (const q of filas) { const c = q.shift(); if (c) ordem.push(c) }
+  for (const c of ordem.slice(MAX_NOVAS_POR_RODADA)) {
+    relatorio.adiados ??= {}
+    relatorio.adiados[c.b.canal] = (relatorio.adiados[c.b.canal] ?? 0) + 1
+  }
+  const tituloDe = new Map<string, string>()
+  for (const { b, f, amostraId, refaz } of ordem.slice(0, MAX_NOVAS_POR_RODADA)) {
+    if (refaz) {
+      await env.DB.prepare(
+        "UPDATE commercial_build_jobs SET status='queued', error=NULL, progress=0, updated_at=unixepoch() WHERE id=?1 AND status='error'",
+      ).bind(refaz).run()
+      relatorio.gerados.push({ canal: b.canal, series_id: b.series_id, hora: b.hora, frase: f.rotulo })
+      continue
+    }
+    // bloco nomeado já traz o nome de exibição; série busca o clipe 'nome'
+    const kt = `${b.canal}|${b.series_id}`
+    if (!tituloDe.has(kt)) tituloDe.set(kt, b.nome ?? await serieTitulo(env.DB, b.series_id))
+    const titulo = tituloDe.get(kt)!
+    const mediaId = `com_${b.series_id.slice(0, 20)}_${b.hora.replace(':', 'h')}_${hex(4)}`.slice(0, 40)
+    const dup = await env.DB.prepare(
+      `SELECT id FROM media_items WHERE id = ?1
+       UNION SELECT media_id FROM commercial_build_jobs WHERE media_id = ?1`,
+    ).bind(mediaId).first()
+    if (dup) continue // colisão raríssima de sufixo: o próximo ciclo tenta de novo
+    // título IGUAL entre as versões de propósito: é o mesmo comercial daquele
+    // horário, o que muda é a locução (e o título aparece no guia)
+    await env.DB.prepare(
+      `INSERT INTO commercial_build_jobs
+         (id, media_id, title, molde_id, series_id, slot_dias, slot_hora, frase_id, sample_id)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
+    ).bind(`cb_${hex()}`, mediaId, `${titulo} — ${textoTela(b.dias, b.hora)}`,
+      moldeDe.get(b.canal)!, b.series_id, JSON.stringify(b.dias), b.hora, f.id, amostraId).run()
+    relatorio.gerados.push({ canal: b.canal, series_id: b.series_id, hora: b.hora, frase: f.rotulo })
   }
 
   for (const canal of canaisMexidos) await scheduleChannel(env, canal, 48, true)

@@ -196,5 +196,50 @@ const TRES_FRASES = [
     !inseridos.some((i) => i.series_id === 'cinescopio'))
 }
 
+// ── 8. o teto da rodada é DIVIDIDO entre os canais (24/09/2026): antes o CN,
+//    primeiro no alfabeto, levava as 15 vagas de toda rodada e o Disney e o
+//    Jetix ficaram dias sem comercial de horário novo ──────────────────────
+{
+  const canais = ['cartoon_network', 'disney_channel', 'jetix']
+  const slots = []
+  const clipes = []
+  for (const canal of canais) {
+    for (let i = 0; i < 8; i++) {
+      const s = `${canal.slice(0, 3)}_serie_${i}`
+      const hora = `${String(8 + i).padStart(2, '0')}:00`
+      slots.push({ canal, series_id: s, dias: '[1,2,3,4,5,6,7]', hora })
+      clipes.push(
+        { id: `n_${s}`, canal, categoria: 'nome', chave: null, series_id: s, rotulo: s },
+        { id: `${s}_f1`, canal, categoria: 'frase', chave: null, series_id: s, rotulo: 'frase um' },
+        { id: `${s}_f2`, canal, categoria: 'frase', chave: null, series_id: s, rotulo: 'frase dois' },
+        { id: `h_${canal}_${i}`, canal, categoria: 'horario', chave: hora, series_id: null, rotulo: hora },
+      )
+    }
+    clipes.push(
+      { id: `fq_${canal}`, canal, categoria: 'frequencia', chave: 'todos', series_id: null, rotulo: 'todos os dias' },
+      { id: `as_${canal}`, canal, categoria: 'conector', chave: 'encerramento', series_id: null, rotulo: 'no canal' },
+    )
+  }
+  const { env, inseridos } = makeDB({ slots, clipes, samples: slots.map((s) => s.series_id), moldes: canais.map((c) => ({ id: `mo_${c}`, canal: c })) })
+  const rep = await reconciliaComerciaisGrade(env)
+  const porCanal = Object.fromEntries(canais.map((c) => [c, inseridos.filter((i) => i.series_id.startsWith(c.slice(0, 3))).length]))
+  check('teto dividido: os 3 canais ganham vaga na mesma rodada', canais.every((c) => porCanal[c] >= 4), JSON.stringify(porCanal))
+  check('teto dividido: ainda 15 por rodada', inseridos.length === 15)
+  const adiados = Object.values(rep.adiados ?? {}).reduce((a, n) => a + n, 0)
+  check('o que ficou pra depois aparece no relatório', adiados === 48 - 15, JSON.stringify(rep.adiados))
+}
+
+// ── 9. job em ERRO da mesma frase é refeito, não duplicado ──────────────────
+{
+  const velho = Math.floor(Date.now() / 1000) - 2 * 86400
+  const jobs = [{ id: 'cb_erro', media_id: 'com_pucca_x', series_id: 'pucca', slot_dias: '[1,2,3,4,5,6,7]', slot_hora: '16:00', status: 'error', frase_id: 'f2', canal: 'jetix', updated_at: velho },
+    { id: 'cb_ok', media_id: 'com_pucca_ok', series_id: 'pucca', slot_dias: '[1,2,3,4,5,6,7]', slot_hora: '16:00', status: 'done', frase_id: 'f1', canal: 'jetix', updated_at: velho }]
+  const { env, inseridos, updates } = makeDB({ slots: [SLOT], jobs, prontos: ['com_pucca_ok'], promessas: [{ media_id: 'com_pucca_ok', status: 'confirmada', proposta: JSON.stringify({ tipo: 'bloco_horario' }) }], clipes: TRES_FRASES, samples: ['pucca'], moldes: MOLDES })
+  await reconciliaComerciaisGrade(env)
+  check('frase com job em erro: o job é refeito', updates.some((u) => u.startsWith('UPDATE commercial_build_jobs')))
+  check('frase com job em erro: não nasce job novo pra ela', !inseridos.some((i) => i.frase_id === 'f2'), inseridos.map((i) => i.frase_id).join(','))
+  check('a frase que faltava (f3) nasce normalmente', inseridos.some((i) => i.frase_id === 'f3'))
+}
+
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)
 process.exit(fail === 0 ? 0 : 1)

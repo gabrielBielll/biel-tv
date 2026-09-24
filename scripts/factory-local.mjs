@@ -112,6 +112,10 @@ async function baixarUrl(url, dest, cookies) {
   const r = run(YTDLP[0], [
     ...YTDLP.slice(1),
     '--no-playlist', '--force-overwrites',
+    // só IPv4: desde 23/09 00:52 todo download de amostra no Actions morria em
+    // "[Errno 101] Network is unreachable" — o runner não tem rota IPv6 e o
+    // yt-dlp tentava o endereço IPv6 do googlevideo (32 jobs em erro)
+    '--force-ipv4',
     '--js-runtimes', 'node',
     '-f', 'bv*[height<=720]+ba/b[height<=720]/b',
     '--merge-output-format', 'mp4',
