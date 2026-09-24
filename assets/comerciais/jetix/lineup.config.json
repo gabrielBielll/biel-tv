@@ -3,9 +3,10 @@
   "nome": "Jetix",
   "automation": {
     "enabled": false,
-    "status": "blocked_waiting_schedule_confirmation",
+    "status": "waiting_dry_run_approval",
     "blocked_at": "2026-09-22",
-    "unlock_requires": "Confirmacao explicita de Gabriel de que a nova grade Jetix esta finalizada, seguida de dry-run aprovado"
+    "schedule_confirmed_at": "2026-09-23",
+    "unlock_requires": "Dry-run da grade replanejada aprovado explicitamente por Gabriel"
   },
   "narrador": {
     "nome": "Liam - Energetic, Social Media Creator",

@@ -1,10 +1,9 @@
 # Módulo de comerciais Jetix gerados pela grade
 
-> **Estado em 2026-09-22:** identidade e renderizadores aprovados localmente.
-> **Produção: BLOQUEADA aguardando a nova grade.** Gabriel ainda vai alterar a
-> programação. Nenhuma IA, script, cron ou operador deve gerar, cadastrar,
-> publicar ou agendar peças derivadas da grade atual até ele confirmar
-> explicitamente que a alteração terminou.
+> **Estado em 2026-09-23:** identidade e renderizadores aprovados localmente, e
+> Gabriel confirmou que a grade foi replanejada. A primeira trava operacional
+> foi removida. A automação continua desativada até um dry-run mostrar as peças,
+> horários e `series_id` derivados da nova grade e Gabriel aprovar o lote.
 
 Este documento é a fonte de verdade da família de comerciais contextuais da
 Jetix. Ele registra o resultado visual e sonoro aprovado, os quatro formatos
@@ -20,12 +19,14 @@ nunca pode ser reaproveitada depois que sua sequência deixar de ser verdadeira.
 
 A automação somente poderá ser habilitada depois destas duas confirmações:
 
-1. Gabriel declara que a nova grade da Jetix está finalizada.
+1. ~~Gabriel declara que a nova grade da Jetix está finalizada.~~ Confirmado em
+   2026-09-23: a grade foi replanejada.
 2. Um dry-run mostra as peças propostas, os horários e os `series_id`, sem
    upload nem alteração do D1. Gabriel aprova o lote.
 
-Até lá, os comandos deste documento servem apenas para reproduzir ou revisar
-os exemplos locais já existentes. Não usar a grade atual para produzir um lote.
+Até o dry-run ser aprovado, os comandos deste documento servem apenas para
+reproduzir ou revisar os exemplos locais já existentes. Não publicar um lote
+automático derivado da grade replanejada antes dessa aprovação.
 O mesmo bloqueio está registrado de forma legível por máquina em
 `assets/comerciais/jetix/lineup.config.json`, no objeto `automation`. Uma
 implementação futura deve recusar jobs automáticos enquanto `enabled` for
