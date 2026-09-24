@@ -33,6 +33,9 @@ export interface Proposta {
   // peça caía no default 'saida' e o "está de volta" abria o intervalo em vez de
   // fechá-lo. Mesmo furo que hora/dias tinham.
   momento?: 'saida' | 'volta' | 'ambos' | null
+  // Abertura de BLOCO ('a_seguir' que só vale antes da faixa que começa numa
+  // dessas janelas — ex.: Cartoon Cartoons). Ver scheduler.ts, `janelasDe`.
+  janelas?: Array<{ dias: number[]; hora: string }> | null
 }
 
 const SCHEMA_GEMINI = {

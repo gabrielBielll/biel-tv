@@ -552,5 +552,27 @@ function ocorrencias(rows, catalogo) {
   }
 }
 
+// ── VINHETA DA CASA abre a faixa sem "vem aí" (pedido do Gabriel, 24/09) ─────
+{
+  const vin = (id, dur = 10) => ({ id, tipo: 'vinheta', duracao_seg: dur, segment_count: dur / 10, last_played_at: 0, series_id: null })
+  // faixa de hora em hora, nenhuma com promo: cada uma abre com vinheta da casa,
+  // e a mesma vinheta não abre duas faixas em menos de 2 h
+  const hm = (seg) => new Date((A + seg - 3 * 3600) * 1000).toISOString().slice(11, 16)
+  const slots = [0, 3600, 7200, 10800].map((d, i) => ({ series_id: i % 2 ? 'aaa' : 'bbb', dias: '[1,2,3,4,5,6,7]', hora: hm(d), episodios: 1 }))
+  const CAT = [...CATALOGO.filter((m) => m.tipo !== 'vinheta'), vin('vin_casa_1'), vin('vin_casa_2'), vin('vin_ident_longo', 50)]
+  const { db, epg } = makeDB({ channel: CANAL, media: CAT, covEnd: A - 1500, slots })
+  await scheduleChannel({ DB: db }, 'ch', 5, false)
+  const rows = grade(epg)
+  const aberturas = [0, 3600, 7200, 10800].map((d) => {
+    const i = rows.findIndex((r) => r.start >= A + d && /^(aaa|bbb)_/.test(r.media_id))
+    return i > 0 ? { d, id: rows[i - 1].media_id, s: rows[i - 1].start } : { d, id: 'sumiu', s: 0 }
+  })
+  check('faixa sem "vem aí" abre com vinheta da casa', aberturas[0].id.startsWith('vin_casa_'), aberturas.map((a) => a.id).join(' '))
+  const repetiu = aberturas.some((a, i) => aberturas.some((b, j) => j > i && a.id === b.id && a.id.startsWith('vin_') && b.s - a.s < 7200))
+  check('a mesma vinheta da casa não abre duas faixas em menos de 2 h', !repetiu)
+  check('ident longo (50 s) não vira abertura de faixa', !aberturas.some((a) => a.id === 'vin_ident_longo'))
+  check('vinheta da casa: EPG contígua', contigua(rows))
+}
+
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)
 process.exit(fail === 0 ? 0 : 1)

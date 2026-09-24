@@ -625,9 +625,21 @@ async function validaDecisao(
       }
       momento = cd.momento as 'saida' | 'volta' | 'ambos'
     }
+    // `janelas` (abertura de bloco) só em 'a_seguir'. Sem este campo aqui, uma
+    // decisão pelo lote apagava as janelas e a abertura do Cartoon Cartoons
+    // viraria "vem aí" de TODO bloco de Dexter.
+    let janelas: Array<{ dias: number[]; hora: string }> | null = null
+    if (cd.tipo === 'a_seguir' && cd.janelas != null) {
+      const ok = Array.isArray(cd.janelas) && cd.janelas.length > 0 && cd.janelas.every((j) =>
+        j && /^([01]\d|2[0-3]):[0-5]\d$/.test(String(j.hora)) && Array.isArray(j.dias) && j.dias.length > 0
+        && j.dias.every((n) => Number.isInteger(n) && n >= 1 && n <= 7))
+      if (!ok) return { erro: 'janelas deve ser [{ dias: [1..7], hora: "HH:MM" }, ...]' }
+      janelas = cd.janelas.map((j) => ({ dias: [...new Set(j.dias)].sort(), hora: String(j.hora) }))
+    }
   return {
     condicao: JSON.stringify({
       tipo: cd.tipo, series_id: cd.series_id ?? null, descricao: cd.descricao ?? '', hora, dias, momento,
+      ...(janelas ? { janelas } : {}),
     }),
   }
 }

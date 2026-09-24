@@ -619,11 +619,28 @@ export async function scheduleChannel(
   // anterior deixa livre pra faixa não entrar grudada nele, sem "a seguir".
   const reservaASeguir = (sid: string, inicioFaixa: number): number => {
     const cands = promosASeguir(sid, inicioFaixa).map((id) => porId.get(id)).filter((m): m is MediaRow => Boolean(m))
-    if (cands.length === 0) return 0
-    const pick = cands.reduce((a, b) =>
-      (ultimaVezDe.get(a.id) ?? -Infinity) <= (ultimaVezDe.get(b.id) ?? -Infinity) ? a : b)
-    const toca = inicioFaixa - pick.duracao_seg
-    return toca - (ultimaVezDe.get(pick.id) ?? -Infinity) >= DESCANSO_CONDICIONAL ? pick.duracao_seg : 0
+    if (cands.length > 0) {
+      const pick = cands.reduce((a, b) =>
+        (ultimaVezDe.get(a.id) ?? -Infinity) <= (ultimaVezDe.get(b.id) ?? -Infinity) ? a : b)
+      const toca = inicioFaixa - pick.duracao_seg
+      if (toca - (ultimaVezDe.get(pick.id) ?? -Infinity) >= DESCANSO_CONDICIONAL) return pick.duracao_seg
+    }
+    return filaVins.find((v) => vinhetaDaCasaServe(v, inicioFaixa - v.duracao_seg))?.duracao_seg ?? 0
+  }
+  // VINHETA DA CASA na abertura da faixa: faixa sem "vem aí" (ou com ele em
+  // descanso) abre com uma vinheta genérica do canal — bumper, classificação
+  // indicativa, ident. Antes elas quase não tocavam (2–4 vezes em 48 h no CN):
+  // a grade não sobrava espaço entre programas. Pedido do Gabriel (24/09).
+  // Descanso maior que o das condicionais: canal com UMA vinheta genérica não
+  // pode abrir toda faixa com ela. Peça longa (ident de 50 s) fica pra outro uso.
+  const DESCANSO_VINHETA_DA_CASA = 2 * 3600
+  const VINHETA_DA_CASA_MAX = 20
+  const vinhetaDaCasaServe = (v: MediaRow, quando: number) =>
+    v.duracao_seg <= VINHETA_DA_CASA_MAX && quando - (ultimaVezDe.get(v.id) ?? -Infinity) >= DESCANSO_VINHETA_DA_CASA
+  const pegaVinhetaDaCasa = (cabe: (m: MediaRow) => boolean): MediaRow | undefined => {
+    const v = daFila(filaVins, (x) => cabe(x) && vinhetaDaCasaServe(x, t))
+    if (v) ultimaVezDe.set(v.id, t)
+    return v
   }
   let bi = 0 // qual bloco
   let ei = 0 // qual episódio dentro do bloco atual
@@ -871,6 +888,7 @@ export async function scheduleChannel(
     // tamanho EXATO da promo é o caso normal: foi o espaço que o programa
     // anterior deixou pra ela (reservaASeguir). `teto` aqui é a hora da faixa.
     const promo = daPoolCondicional(promosASeguir(serieDepois ?? null, teto), (m) => teto - t >= m.duracao_seg)
+      ?? pegaVinhetaDaCasa((m) => teto - t >= m.duracao_seg)
     const reserva = promo ? promo.duracao_seg : 0
     encheAte(teto - reserva, reserva === 0)
     if (promo && t + promo.duracao_seg <= teto) {
@@ -980,17 +998,18 @@ export async function scheduleChannel(
   // seguir". Aí a chamada entra assim mesmo e a faixa começa esse tanto depois
   // — no máximo a duração dela (10 s de "vem aí", 90 s de abertura de bloco),
   // que os intervalos seguintes absorvem. Não repete a que já tocou desde o
-  // último programa, nem anuncia a série que acabou de passar.
+  // último programa, nem anuncia a série que acabou de passar. Sem "vem aí"
+  // disponível, a chamada é a vinheta da casa.
   const chamadaDaFaixa = (a: Ancora) => {
     if (rows.length === 0 || ultimaSerie === a.series_id) return
     const ids = promosASeguir(a.series_id, a.start)
-    if (ids.length === 0) return
     for (let i = rows.length - 1; i >= 0; i--) {
-      if (ids.includes(rows[i][1])) return
+      // já tem chamada (ou vinheta da casa) depois do último programa
+      if (ids.includes(rows[i][1]) || porId.get(rows[i][1])?.tipo === 'vinheta') return
       const tipo = porId.get(rows[i][1])?.tipo
       if (tipo === 'episodio' || tipo === 'filme') break
     }
-    const promo = daPoolCondicional(ids, () => true)
+    const promo = daPoolCondicional(ids, () => true) ?? pegaVinhetaDaCasa(() => true)
     if (!promo) return
     push(promo.id, t, t + promo.duracao_seg, 0)
     t += promo.duracao_seg
