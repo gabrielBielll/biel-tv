@@ -24,7 +24,7 @@ const spHoraToEpoch = (date, hhmm) => Math.floor(Date.parse(`${date}T${hhmm}:00-
 
 // D1 mockado: responde as queries do scheduleChannel por trecho de SQL e captura
 // os INSERT de epg_virtual (interpolados, sem bind) pra reconstruir a grade.
-function makeDB({ channel, media, slots = [], events = [], cues = {}, covEnd = null, gapEnd = null }) {
+function makeDB({ channel, media, slots = [], events = [], cues = {}, covEnd = null, gapEnd = null, promises = [] }) {
   const epg = []
   const cueRows = Object.entries(cues).flatMap(([media_id, ts]) => ts.map((time_seg) => ({ media_id, time_seg })))
   const prepare = (sql) => {
@@ -35,7 +35,8 @@ function makeDB({ channel, media, slots = [], events = [], cues = {}, covEnd = n
         if (/FROM channel_events/.test(sql)) return { results: events }
         if (/FROM channel_slots/.test(sql)) return { results: slots }
         if (/FROM media_cue_points/.test(sql)) return { results: cueRows }
-        return { results: [] } // directives, media_promises, futuro agendado
+        if (/FROM media_promises/.test(sql)) return { results: promises }
+        return { results: [] } // directives, futuro agendado
       },
       first: async () => {
         if (/FROM channels WHERE id/.test(sql)) return channel
@@ -362,8 +363,16 @@ function ocorrencias(rows, catalogo) {
   const r1 = grade(comReprise.epg)
   const orig = r1.find((r) => r.start === A)?.media_id
   const rep = r1.find((r) => r.start === A2)?.media_id
-  check('reprise: a 2ª âncora exibe o MESMO episódio da 1ª', Boolean(orig) && orig === rep,
-    `${orig ?? 'nada'} → ${rep ?? 'nada'}`)
+  // A é "daqui a 1 h": rodando entre 22h e 23h de SP, a 2ª faixa cai no dia
+  // seguinte, e aí a reprise não tem o que repetir (vira faixa normal). Sem
+  // isto o teste falhava sozinho nesse horário.
+  if (spDateStr(A) === spDateStr(A2)) {
+    check('reprise: a 2ª âncora exibe o MESMO episódio da 1ª', Boolean(orig) && orig === rep,
+      `${orig ?? 'nada'} → ${rep ?? 'nada'}`)
+  } else {
+    check('reprise que cai no dia seguinte: vira faixa normal (episódio seguinte)', Boolean(orig) && Boolean(rep) && orig !== rep,
+      `${orig ?? 'nada'} → ${rep ?? 'nada'}`)
+  }
   check('reprise: EPG contígua', contigua(r1))
 
   const semReprise = makeDB({ channel: CANAL, media: CATALOGO, slots: slots(0) })
@@ -465,6 +474,81 @@ function ocorrencias(rows, catalogo) {
     await scheduleChannel({ DB: db3 }, 'ch', 5, true)
     const r3 = grade(epg3)
     check('sem filme pronto: a faixa das +30 min toca na hora', r3.some((r) => r.start === A + 1800 && r.media_id.startsWith('aaa')))
+  }
+}
+
+// ── A FAIXA ENTRA COM A CHAMADA DELA (Looney Tunes das 22:30, 23/09/2026) ────
+// O encaixe escolhia o desenho curto que fechava o vão EXATO e a faixa entrava
+// grudada nele, sem o "vem aí" — em ~metade das faixas do CN.
+{
+  const vin = (id) => ({ id, tipo: 'vinheta', duracao_seg: 10, segment_count: 1, last_played_at: 0, series_id: null })
+  const aSeguir = (media_id, series_id, extra = {}) => ({
+    media_id, status: 'confirmada', proposta: null, condicao: JSON.stringify({ tipo: 'a_seguir', series_id, ...extra }),
+  })
+  const slots = [{ series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 }]
+  const antesDaHora = (rows) => rows.filter((r) => r.end <= A).pop()
+  const naHora = (rows) => rows.some((r) => r.start === A && r.media_id.startsWith('bbb'))
+
+  // curta que fecha o vão exato (470 s num vão de 480 s): antes grudava
+  {
+    const CAT = [...CATALOGO, { id: 'cur_470', tipo: 'episodio', duracao_seg: 470, segment_count: 47, last_played_at: 0, series_id: 'cur' }, vin('vin_vem_ai_bbb')]
+    const { db, epg } = makeDB({ channel: CANAL, media: CAT, covEnd: A - 480, slots, promises: [aSeguir('vin_vem_ai_bbb', 'bbb')] })
+    await scheduleChannel({ DB: db }, 'ch', 3, false)
+    const rows = grade(epg)
+    check('faixa entra com o "vem aí" colado, mesmo com curta fechando o vão', antesDaHora(rows)?.media_id === 'vin_vem_ai_bbb',
+      rows.filter((r) => r.start >= A - 480 && r.end <= A).map((r) => r.media_id).join(' '))
+    check('chamada reservada: faixa pontual, EPG contígua, nada cortado',
+      naHora(rows) && contigua(rows) && ocorrencias(rows, CAT).every((o) => o.dur === o.total))
+  }
+  // reserva MACIA: o episódio cabe no vão inteiro mas não com a chamada, e não
+  // há nada mais curto — vai o episódio (sem chamada), nunca 20 min de comercial
+  {
+    const CAT = [...CATALOGO, vin('vin_vem_ai_bbb')]
+    const { db, epg } = makeDB({ channel: CANAL, media: CAT, covEnd: A - 1200, slots, promises: [aSeguir('vin_vem_ai_bbb', 'bbb')] })
+    await scheduleChannel({ DB: db }, 'ch', 3, false)
+    const rows = grade(epg)
+    const noVao = rows.filter((r) => r.start >= A - 1200 && r.end <= A)
+    check('reserva macia: episódio que só cabe sem a chamada ainda entra (não vira vão de comercial)',
+      noVao.some((r) => CAT.find((m) => m.id === r.media_id)?.tipo === 'episodio'), noVao.map((r) => r.media_id).join(' '))
+    const faixa = rows.find((r) => r.start >= A && r.media_id.startsWith('bbb'))
+    check('reserva macia: faixa no máximo 10 s atrasada (a chamada) e EPG contígua',
+      faixa && faixa.start - A <= 10 && contigua(rows), faixa ? `+${faixa.start - A}s` : 'sumiu')
+  }
+  // rede de segurança: o bloco anterior estourou a hora (âncora das -10 min com
+  // episódio de 20) — a faixa entra atrasada, mas com a chamada colada
+  {
+    const HM10 = new Date((A - 600 - 3 * 3600) * 1000).toISOString().slice(11, 16)
+    const CAT = [...CATALOGO, vin('vin_vem_ai_bbb')]
+    const { db, epg } = makeDB({
+      channel: CANAL, media: CAT, covEnd: A - 900, promises: [aSeguir('vin_vem_ai_bbb', 'bbb')],
+      slots: [{ series_id: 'aaa', dias: '[1,2,3,4,5,6,7]', hora: HM10, episodios: 1 }, ...slots],
+    })
+    await scheduleChannel({ DB: db }, 'ch', 3, false)
+    const rows = grade(epg)
+    const i = rows.findIndex((r) => r.start >= A && r.media_id.startsWith('bbb'))
+    check('bloco anterior estourou: a faixa atrasada entra com a chamada colada', i > 0 && rows[i - 1].media_id === 'vin_vem_ai_bbb',
+      i > 0 ? `${rows[i - 1].media_id} → ${rows[i].media_id} às +${rows[i].start - A}s` : 'sumiu')
+    check('bloco anterior estourou: EPG contígua', contigua(rows))
+  }
+  // abertura de JANELA: só antes da faixa daquela hora, e com preferência
+  {
+    const outraHora = HORA === '03:17' ? '03:18' : '03:17' // nenhuma faixa nessa hora
+    const CAT = [...CATALOGO, vin('vin_abertura_bloco'), vin('vin_outra_janela'), vin('vin_vem_ai_comum')]
+    const promises = [
+      aSeguir('vin_abertura_bloco', 'bbb', { janelas: [{ dias: [1, 2, 3, 4, 5, 6, 7], hora: HORA }] }),
+      aSeguir('vin_outra_janela', 'bbb', { janelas: [{ dias: [1, 2, 3, 4, 5, 6, 7], hora: outraHora }] }),
+      aSeguir('vin_vem_ai_comum', 'bbb'),
+    ]
+    const { db, epg } = makeDB({ channel: CANAL, media: CAT, covEnd: A - 1500, slots, promises })
+    await scheduleChannel({ DB: db }, 'ch', 24, false)
+    const rows = grade(epg)
+    check('abertura de janela entra antes da faixa daquela hora (no lugar da "vem aí" comum)',
+      antesDaHora(rows)?.media_id === 'vin_abertura_bloco', antesDaHora(rows)?.media_id ?? 'nada')
+    const tocouAbertura = rows.filter((r) => r.media_id === 'vin_abertura_bloco')
+    check('abertura de janela nunca toca fora da janela', tocouAbertura.every((r) => (A - r.end) % 86400 === 0),
+      `${tocouAbertura.length} vez(es)`)
+    check('abertura de outra janela (sem faixa) nunca toca', !rows.some((r) => r.media_id === 'vin_outra_janela'))
+    check('abertura de janela: EPG contígua', contigua(rows))
   }
 }
 
