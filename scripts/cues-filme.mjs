@@ -9,7 +9,7 @@
 //   4. grava o SQL dos cue points num arquivo (aplicar quando a cota do D1
 //      permitir). Não escreve no banco.
 //
-// uso: node scripts/cues-filme.mjs <media_id> [--intervalo 20] [--janela 240] [--sql <arquivo>]
+// uso: node scripts/cues-filme.mjs <media_id> [--intervalo 20] [--janela 240] [--sql <arquivo>] [--segs <n>]
 // Serve também pra episódio: --intervalo 7.5 --janela 120 dá 2 cortes num episódio de 22 min.
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -44,8 +44,14 @@ async function d1(sql, params = []) {
   return r.result[0].results
 }
 
-const [m] = await d1('SELECT segment_count, duracao_seg, path_prefix FROM media_items WHERE id = ?', [id])
-if (!m) throw new Error(`${id} não está no catálogo`)
+// --segs <n>: filme que já está no R2 (media/<id>) mas ainda sem registro no D1
+// (registro adiado pela cota). Dispensa o catálogo, pra ter os cortes prontos
+// antes do registro e não depois do replan.
+const SEGS = Number(arg('segs', 0))
+const [m] = SEGS > 0
+  ? [{ segment_count: SEGS, duracao_seg: SEGS * SEG, path_prefix: `media/${id}` }]
+  : await d1('SELECT segment_count, duracao_seg, path_prefix FROM media_items WHERE id = ?', [id])
+if (!m) throw new Error(`${id} não está no catálogo (se só está no R2, passe --segs <n>)`)
 const dur = m.duracao_seg
 
 // 1. divisas do filme em partes iguais de ~INTERVALO. Só a JANELA em volta de
