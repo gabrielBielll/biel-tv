@@ -660,5 +660,31 @@ function ocorrencias(rows, catalogo) {
   check('sessão de filme começa pelo HSM 1 (2006), não pelo 2', primeiro?.media_id === 'filme_high_school_musical_2006', primeiro?.media_id ?? 'nada')
 }
 
+// ── TAPA-BURACO REPRISA, EPISÓDIO NOVO SÓ NA FAIXA (Gabriel, 24/09): a
+//    programação não pode avançar tão rápido; a manhã volta à tarde ────────
+{
+  const ontem = agora - 86400
+  const CAT = [
+    // série sem faixa com acervo folgado (numa grade real há várias); 12 h de grade
+    ...Array.from({ length: 16 }, (_, i) => ep(`aaa_${String(i + 1).padStart(2, '0')}`, 'aaa')),
+    ep('bbb_01', 'bbb', ontem), ep('bbb_02', 'bbb'), ep('bbb_03', 'bbb'), ep('bbb_04', 'bbb'),
+    ad('ad_1', 20), ad('ad_2', 30), ad('ad_3', 20),
+  ]
+  const { db, epg } = makeDB({ channel: CANAL, media: CAT, slots: [{ series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 }] })
+  await scheduleChannel({ DB: db }, 'ch', 12, true)
+  const rows = grade(epg).filter((r) => r.seg === 0)
+  const bbb = rows.filter((r) => r.media_id.startsWith('bbb_'))
+  const naFaixa = rows.find((r) => r.start === A)
+  check('faixa estreia o episódio novo (o menos tocado: bbb_02)', naFaixa?.media_id === 'bbb_02', naFaixa?.media_id ?? 'nada')
+  check('tapa-buraco não gasta episódio novo da série de faixa (bbb_03/04 não vão ao ar)',
+    !bbb.some((r) => r.media_id === 'bbb_03' || r.media_id === 'bbb_04'), bbb.map((r) => r.media_id).join(' '))
+  const depois = bbb.filter((r) => r.start >= A + 3 * 3600)
+  check('a estreia volta mais tarde no mesmo dia (reprise do tapa-buraco)', depois.some((r) => r.media_id === 'bbb_02') || depois.length === 0,
+    depois.map((r) => r.media_id).join(' ') || 'sem bbb depois')
+  const aaa = new Set(rows.filter((r) => r.media_id.startsWith('aaa_')).map((r) => r.media_id))
+  check('série SEM faixa continua avançando no rodízio', aaa.size >= 2, [...aaa].join(' '))
+  check('reprise do tapa-buraco: EPG contígua', contigua(grade(epg)))
+}
+
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)
 process.exit(fail === 0 ? 0 : 1)

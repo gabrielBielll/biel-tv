@@ -568,7 +568,7 @@ export async function scheduleChannel(
        WHERE e.canal = ?1 AND e.start_time_virtual > ?2 AND e.start_time_virtual < ?3
          AND m.tipo IN ('episodio','filme')
        ORDER BY e.start_time_virtual`,
-    ).bind(canal, t - 2 * DAY, Math.min(target, cut)).all<{ id: string; t: number; sid: string | null }>()
+    ).bind(canal, t - 8 * DAY, Math.min(target, cut)).all<{ id: string; t: number; sid: string | null }>()
     for (const r of hoje) marcaExibido(r.sid, r.id, r.t)
   }
 
@@ -932,6 +932,38 @@ export async function scheduleChannel(
   // Espia o próximo do rodízio SEM consumi-lo, pulando o que já entrou nesta
   // montagem (o encaixe pode ter adiantado um episódio que estava mais à frente
   // na fila). Esgotado o acervo, a marca zera e a volta recomeça.
+  // A PROGRAMAÇÃO NÃO PODE AVANÇAR TÃO RÁPIDO (pedido do Gabriel, 24/09).
+  // Medido na sexta 25/09: só 10–15% das exibições eram repetição; o Tom e
+  // Jerry gastava 13 episódios novos por dia (acervo de 21), o Kid vs Kat 12.
+  // Quem gastava era o TAPA-BURACO (rodízio e encaixe entre as faixas), que
+  // sempre pegava o inédito. Regra de 2005: episódio NOVO estreia na faixa
+  // fixa; entre as faixas, o desenho de uma série que tem faixa REPRISA o que
+  // já foi ao ar — primeiro o que passou hoje mais cedo (manhã → tarde),
+  // depois o da semana. Série sem faixa segue avançando no rodízio, senão
+  // ficaria presa pra sempre nos mesmos episódios. Maratona avança (evento).
+  const seriesDeFaixa = new Set(slotsAtivos.map((s) => s.series_id))
+  const JANELA_REPRISE = 7 * DAY
+  const RESPIRO_REPRISE = 3 * 3600 // o mesmo episódio não volta antes de 3 h
+  const vezesNoDiaEp = (m: MediaRow) =>
+    (exibidoNoDia.get(`${m.series_id}|${spDateStr(t)}`) ?? []).filter((id) => id === m.id).length
+  const reprisavel = (m: MediaRow): boolean => {
+    const lp = m.last_played_at ?? 0
+    return m.tipo === 'episodio' && lp > t - JANELA_REPRISE && lp <= t - RESPIRO_REPRISE && vezesNoDiaEp(m) < 2
+  }
+  const passouHoje = (m: MediaRow) => spDateStr(m.last_played_at ?? 0) === spDateStr(t)
+  // episódio NOVO de série de faixa: é esse que o tapa-buraco não deve gastar
+  const novoDeFaixa = (m: MediaRow) => Boolean(m.series_id && seriesDeFaixa.has(m.series_id)) && !reprisavel(m)
+  // a melhor reprise de uma série agora: a que passou HOJE mais cedo (é ela que
+  // faz a manhã voltar à tarde); `soHoje=false` aceita a da semana, a mais
+  // antiga primeiro, pra variar
+  const repriseDe = (sid: string, soHoje: boolean): MediaRow | undefined =>
+    contents.filter((m) => m.series_id === sid && reprisavel(m) && (!soHoje || passouHoje(m)))
+      .sort((a, b) => Number(passouHoje(b)) - Number(passouHoje(a))
+        || (a.last_played_at ?? 0) - (b.last_played_at ?? 0) || comparaId(a, b))[0]
+  // no encaixe: 0 = reprise de hoje de série de faixa; 1 = o resto; 2 = episódio novo de série de faixa
+  const nivelEncaixe = (m: MediaRow) => novoDeFaixa(m) ? 2
+    : m.series_id && seriesDeFaixa.has(m.series_id) && passouHoje(m) ? 0 : 1
+
   const espiaRodizio = (): { item: MediaRow; continuacao: boolean } => {
     // `usadoNaRun` também guarda o que entrou pela âncora (filme só-na-faixa),
     // então "acervo todo usado" é conferido só contra o rodízio
@@ -965,13 +997,15 @@ export async function scheduleChannel(
   // desenhos curtos em vez de cair sempre no mesmo. Fora da busca: a série da
   // própria âncora (senão o "bloco das 16h" começaria antes das 16h) e o que já
   // entrou nesta run.
-  const encaixe = (espaco: number, serieDaAncora: string | null): MediaRow | null => {
+  const encaixe = (espaco: number, serieDaAncora: string | null, semNovoDeFaixa = false): MediaRow | null => {
     const cands = rodizio.filter((m) =>
-      m.duracao_seg <= espaco && !usadoNaRun.has(m.id) &&
-      !(serieDaAncora && m.series_id === serieDaAncora))
+      m.duracao_seg <= espaco && (!usadoNaRun.has(m.id) || reprisavel(m)) &&
+      !(serieDaAncora && m.series_id === serieDaAncora) && !(semNovoDeFaixa && novoDeFaixa(m)))
     if (cands.length === 0) return null
+    // reprise de hoje primeiro; episódio novo de série de faixa só sem alternativa que encaixe igual
     return cands.sort((a, b) =>
       vaoMorto(a.duracao_seg, espaco) - vaoMorto(b.duracao_seg, espaco) ||
+      nivelEncaixe(a) - nivelEncaixe(b) ||
       b.duracao_seg - a.duracao_seg ||
       (a.last_played_at ?? 0) - (b.last_played_at ?? 0) ||
       comparaId(a, b))[0]
@@ -1079,19 +1113,22 @@ export async function scheduleChannel(
   // com breaks entre eles no universo da série. Respeita exclusões (usa `contents`).
   const episodiosDaSerie = (sid: string) =>
     contents.filter((m) => m.series_id === sid).sort(comparaId)
-  // Cursor PERSISTENTE da âncora (antes zerava a cada run → a série ancorada
-  // repetia os primeiros episódios pra sempre): continua do seguinte ao último
-  // exibido/agendado (maior last_played_at — inclui o futuro da grade via
-  // futuroDe) e soma os episódios "que passaram" no downtime (perdidasNoGap).
-  const ancCursor = new Map<string, number>()
-  const ancCursorInit = (sid: string, eps: MediaRow[]): number => {
-    let best = -1
-    let bestLp = 0
-    for (let i = 0; i < eps.length; i++) {
-      const lp = eps[i].last_played_at ?? 0
-      if (lp > bestLp) { bestLp = lp; best = i }
-    }
-    return best + 1 + (perdidasNoGap.get(sid) ?? 0) // nunca exibida → 0 (+ gap)
+  // PRÓXIMO EPISÓDIO DA FAIXA: o menos tocado recentemente, desempate pela
+  // ordem do id (inéditos primeiro, na ordem; depois o que passou há mais
+  // tempo). Antes era "o seguinte ao de maior last_played_at", mas agora o
+  // tapa-buraco reprisa episódios da semana e o maior last_played_at passou a
+  // apontar pra uma reprise — a faixa andaria pra trás. O downtime continua
+  // contando: as ocorrências perdidas no buraco pulam episódios na 1ª escolha
+  // da série nesta run (perdidasNoGap). last_played_at inclui o futuro da
+  // grade (futuroDe), então o que já está agendado não é escolhido de novo.
+  const pulosDoGap = new Map(perdidasNoGap)
+  const proximoDaFaixa = (sid: string, eps: MediaRow[]): MediaRow => {
+    const livres = eps.filter((m) => !usadoNaRun.has(m.id))
+    const ord = [...(livres.length > 0 ? livres : eps)]
+      .sort((a, b) => (a.last_played_at ?? 0) - (b.last_played_at ?? 0) || comparaId(a, b))
+    const pulo = pulosDoGap.get(sid) ?? 0
+    pulosDoGap.delete(sid)
+    return ord[pulo % ord.length]
   }
   // `teto` = hora da PRÓXIMA âncora. O bloco fixo também respeita quem vem
   // depois dele: os intervalos dele não invadem a hora seguinte e cedem espaço
@@ -1106,8 +1143,18 @@ export async function scheduleChannel(
     // Se ainda não passou nada hoje, cai no comportamento normal: o primeiro
     // slot do dia é sempre o inédito, mesmo marcado como reprise.
     if (a.reprise) {
-      const doDia = exibidoNoDia.get(`${a.series_id}|${spDateStr(a.start)}`) ?? []
-      const repetir = doDia.slice(-a.episodios).map((id) => porId.get(id)).filter((m): m is MediaRow => Boolean(m))
+      // só as ESTREIAS do dia: episódio que já tinha passado nos 7 dias antes
+      // é reprise do tapa-buraco e não é o que a faixa da manhã exibiu
+      const dia = spDateStr(a.start)
+      const antes = new Set<string>()
+      for (let d = 1; d <= 7; d++) {
+        for (const id of exibidoNoDia.get(`${a.series_id}|${spDateStr(a.start - d * DAY)}`) ?? []) antes.add(id)
+      }
+      const doDia = exibidoNoDia.get(`${a.series_id}|${dia}`) ?? []
+      const estreias = [...new Set(doDia.filter((id) => !antes.has(id)))]
+      // série que gira o acervo em menos de uma semana não tem "estreia": repete o do dia
+      const base = estreias.length > 0 ? estreias : [...new Set(doDia)]
+      const repetir = base.slice(-a.episodios).map((id) => porId.get(id)).filter((m): m is MediaRow => Boolean(m))
       if (repetir.length > 0) {
         for (const ep of repetir) {
           if (ep !== repetir[0]) breakPod(ep.series_id, teto)
@@ -1118,9 +1165,7 @@ export async function scheduleChannel(
       }
     }
     for (let k = 0; k < a.episodios; k++) {
-      const i = ancCursor.get(a.series_id) ?? ancCursorInit(a.series_id, eps)
-      ancCursor.set(a.series_id, i + 1)
-      const ep = eps[i % eps.length]
+      const ep = proximoDaFaixa(a.series_id, eps)
       if (k > 0) breakPod(ep.series_id, teto) // intervalo entre episódios do bloco (universo da série)
       agendaConteudo(ep, teto)
       ultimaSerie = ep.series_id
@@ -1235,6 +1280,22 @@ export async function scheduleChannel(
       prox = espiado.item
       continuacao = espiado.continuacao
       doRodizio = true
+      // série de faixa no tapa-buraco: reprisa em vez de gastar o inédito (que
+      // fica pra faixa; o cursor do rodízio anda do mesmo jeito)
+      if (prox.series_id && seriesDeFaixa.has(prox.series_id) && !(reprisavel(prox) && passouHoje(prox))) {
+        const r = repriseDe(prox.series_id, true) ?? (novoDeFaixa(prox) ? repriseDe(prox.series_id, false) : undefined)
+        if (r) prox = r
+      }
+      // sem reprise dessa série: outro desenho (reprise de outra série de faixa
+      // ou série sem faixa) antes de gastar o inédito; só sem alternativa ele vai
+      if (novoDeFaixa(prox)) {
+        const outro = encaixe(teto === Infinity ? Infinity : tetoProg - t, anc?.series_id ?? null, true)
+        if (outro) {
+          prox = outro
+          continuacao = false
+          doRodizio = false // o inédito fica no cursor, pra faixa
+        }
+      }
     }
 
     // NUNCA cortar programa no meio (veto do Gabriel, set/2026). Antes disto o

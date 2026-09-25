@@ -184,6 +184,17 @@ for (const canal of CANAIS) {
   const estrut = rows.filter((r) => ['entrada', 'retorno'].includes(papel(r.id))).length
   console.log(`  intervalos: ${reais.length} · sem peça da casa: ${semCasa} (${Math.round(100 * semCasa / Math.max(1, reais.length))}%) · média ${(reais.reduce((a, p) => a + nCasa(p), 0) / Math.max(1, reais.length)).toFixed(1)} da casa por intervalo`)
   console.log(`  tempo: casa ${Math.round(segPapel('casa') / 60)} min × anúncio ${Math.round(segPapel('anuncio') / 60)} min · ${distintas} peças da casa distintas · ${estrut} bumpers de entrada/retorno`)
+  // ── ritmo da programação: episódios novos por dia × repetição ──
+  const starts = rows.filter((r) => r.g === 0 && info.get(r.id)?.tipo === 'episodio')
+  const porSerieEp = {}
+  for (const r of starts) (porSerieEp[info.get(r.id).series_id ?? '-'] ??= []).push(r.id)
+  const distintos = new Set(starts.map((r) => r.id)).size
+  const topNovos = Object.entries(porSerieEp).map(([s, ids]) => [s, new Set(ids).size, ids.length]).sort((a, b) => b[1] - a[1]).slice(0, 5)
+  // "inédito" = não ia ao ar havia mais de 7 dias (last_played_at do retrato)
+  const lp0 = new Map(dados.media.map((m) => [m.id, m.last_played_at ?? 0]))
+  const ineditos = new Set(starts.filter((r) => lp0.get(r.id) < dados.agora - 7 * 86400).map((r) => r.id))
+  console.log(`  ritmo: ${ineditos.size} episódios inéditos (não passavam havia 7+ dias) em ${HORAS} h ≈ ${Math.round(ineditos.size * 24 / HORAS)}/dia`)
+  console.log(`  episódios: ${starts.length} exibições, ${distintos} diferentes (${Math.round(100 * (starts.length - distintos) / Math.max(1, starts.length))}% repetição) em ${HORAS} h · mais novos: ${topNovos.map(([s, n, e]) => `${s} ${n}/${e}`).join(' · ')}`)
   const doMolde = (id) => /_\d{2}h\d{2}_[0-9a-f]{4}$/.test(id) || id.startsWith('com_ev_')
   const nMolde = rows.filter((r) => doMolde(r.id)).length
   console.log(`  comerciais da fábrica (mesmo molde): ${nMolde} em ${HORAS} h (~${Math.round(nMolde * 24 / HORAS)}/dia)`)
