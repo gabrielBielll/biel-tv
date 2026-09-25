@@ -553,12 +553,18 @@ export async function scheduleChannel(
   // semeado com o dia que já está na grade (o slot da tarde pode reprisar uma
   // exibição da manhã que foi planejada numa run anterior).
   const exibidoNoDia = new Map<string, string[]>()
+  // as mesmas exibições com a HORA: é ela que diz se o episódio estreou numa
+  // faixa (ou foi reprise do tapa-buraco)
+  const exibicoesNoDia = new Map<string, Array<{ id: string; t: number }>>()
   const marcaExibido = (sid: string | null, mid: string, quando: number) => {
     if (!sid) return
     const k = `${sid}|${spDateStr(quando)}`
     const lista = exibidoNoDia.get(k) ?? []
     if (lista.at(-1) !== mid) lista.push(mid)
     exibidoNoDia.set(k, lista)
+    const ex = exibicoesNoDia.get(k) ?? []
+    ex.push({ id: mid, t: quando })
+    exibicoesNoDia.set(k, ex)
   }
   if (slotsAtivos.some((s) => s.reprise)) {
     // só paga a consulta quando o canal tem slot de reprise
@@ -1143,17 +1149,31 @@ export async function scheduleChannel(
     // Se ainda não passou nada hoje, cai no comportamento normal: o primeiro
     // slot do dia é sempre o inédito, mesmo marcado como reprise.
     if (a.reprise) {
-      // só as ESTREIAS do dia: episódio que já tinha passado nos 7 dias antes
-      // é reprise do tapa-buraco e não é o que a faixa da manhã exibiu
+      // Repete as ESTREIAS do dia — o que passou numa faixa NÃO-reprise da
+      // série — e não as reprises do tapa-buraco. A madrugada (antes das 6h),
+      // quando nada da série passou ainda no dia, reprisa as estreias do dia
+      // anterior (a TV de 2005 repetia os destaques de madrugada). Sem estreia
+      // identificável, o critério antigo: o que o dia exibiu.
       const dia = spDateStr(a.start)
-      const antes = new Set<string>()
-      for (let d = 1; d <= 7; d++) {
-        for (const id of exibidoNoDia.get(`${a.series_id}|${spDateStr(a.start - d * DAY)}`) ?? []) antes.add(id)
+      const minutoDoDia = (e: number) => { const d = new Date((e - 3 * 3600) * 1000); return d.getUTCHours() * 60 + d.getUTCMinutes() }
+      // estreia = os N primeiros episódios da série a partir da hora de cada
+      // faixa não-reprise do dia (N = episódios da faixa; o que vem depois é
+      // tapa-buraco, mesmo que colado)
+      const estreiasDe = (diaStr: string) => {
+        const doDia = [...(exibicoesNoDia.get(`${a.series_id}|${diaStr}`) ?? [])].sort((x, y) => x.t - y.t)
+        const ids: string[] = []
+        for (const sl of slotsAtivos) {
+          if (sl.series_id !== a.series_id || sl.reprise) continue
+          const H = spHoraToEpoch(diaStr, sl.hora)
+          if (H == null || !sl.dias.includes(spWeekdayIso(H))) continue
+          for (const x of doDia.filter((y) => y.t >= H - 300 && y.t < H + 2700).slice(0, sl.episodios)) ids.push(x.id)
+        }
+        const ordem = new Map(doDia.map((x, i) => [x.id, i]))
+        return [...new Set(ids)].sort((x, y) => (ordem.get(x) ?? 0) - (ordem.get(y) ?? 0))
       }
-      const doDia = exibidoNoDia.get(`${a.series_id}|${dia}`) ?? []
-      const estreias = [...new Set(doDia.filter((id) => !antes.has(id)))]
-      // série que gira o acervo em menos de uma semana não tem "estreia": repete o do dia
-      const base = estreias.length > 0 ? estreias : [...new Set(doDia)]
+      let base = estreiasDe(dia)
+      if (base.length === 0 && minutoDoDia(a.start) < 6 * 60) base = estreiasDe(spDateStr(a.start - DAY))
+      if (base.length === 0) base = [...new Set(exibidoNoDia.get(`${a.series_id}|${dia}`) ?? [])]
       const repetir = base.slice(-a.episodios).map((id) => porId.get(id)).filter((m): m is MediaRow => Boolean(m))
       if (repetir.length > 0) {
         for (const ep of repetir) {

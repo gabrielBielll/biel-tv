@@ -24,7 +24,7 @@ const spHoraToEpoch = (date, hhmm) => Math.floor(Date.parse(`${date}T${hhmm}:00-
 
 // D1 mockado: responde as queries do scheduleChannel por trecho de SQL e captura
 // os INSERT de epg_virtual (interpolados, sem bind) pra reconstruir a grade.
-function makeDB({ channel, media, slots = [], events = [], cues = {}, covEnd = null, gapEnd = null, promises = [] }) {
+function makeDB({ channel, media, slots = [], events = [], cues = {}, covEnd = null, gapEnd = null, promises = [], passado = [] }) {
   const epg = []
   const cueRows = Object.entries(cues).flatMap(([media_id, ts]) => ts.map((time_seg) => ({ media_id, time_seg })))
   const prepare = (sql) => {
@@ -36,6 +36,8 @@ function makeDB({ channel, media, slots = [], events = [], cues = {}, covEnd = n
         if (/FROM channel_slots/.test(sql)) return { results: slots }
         if (/FROM media_cue_points/.test(sql)) return { results: cueRows }
         if (/FROM media_promises/.test(sql)) return { results: promises }
+        // exibições já gravadas (semente do "exibido no dia" da reprise)
+        if (/FROM epg_virtual e JOIN media_items m/.test(sql)) return { results: passado }
         return { results: [] } // directives, futuro agendado
       },
       first: async () => {
@@ -684,6 +686,29 @@ function ocorrencias(rows, catalogo) {
   const aaa = new Set(rows.filter((r) => r.media_id.startsWith('aaa_')).map((r) => r.media_id))
   check('série SEM faixa continua avançando no rodízio', aaa.size >= 2, [...aaa].join(' '))
   check('reprise do tapa-buraco: EPG contígua', contigua(grade(epg)))
+}
+
+// ── MADRUGADA REPRISA O DIA ANTERIOR (Tom e Jerry, 24/09): faixa de reprise
+//    antes das 6h, sem nada da série no dia, repete as estreias de ontem ─────
+{
+  // a run começa na próxima 01:30 de SP; a faixa de reprise é às 02:00
+  const d0 = spDateStr(agora + 86400)
+  const inicio = spHoraToEpoch(d0, '01:30')
+  const ontem = spDateStr(inicio - 86400)
+  const passado = [
+    { id: 'bbb_02', t: spHoraToEpoch(ontem, '06:00'), sid: 'bbb' }, // estreia de ontem na faixa das 6h
+    { id: 'bbb_01', t: spHoraToEpoch(ontem, '15:00'), sid: 'bbb' }, // tapa-buraco (não é estreia)
+  ]
+  const { db, epg } = makeDB({
+    channel: CANAL, media: CATALOGO, covEnd: inicio, passado,
+    slots: [
+      { series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: '06:00', episodios: 1 },
+      { series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: '02:00', episodios: 1, reprise: 1 },
+    ],
+  })
+  await scheduleChannel({ DB: db }, 'ch', 3, false)
+  const r = grade(epg).find((x) => x.start === spHoraToEpoch(d0, '02:00'))
+  check('madrugada reprisa a ESTREIA de ontem (bbb_02), não o tapa-buraco', r?.media_id === 'bbb_02', r?.media_id ?? 'nada às 02:00')
 }
 
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)
