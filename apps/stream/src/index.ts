@@ -50,7 +50,13 @@ app.get('/channels', async (c) => {
 
 const CORS = { 'access-control-allow-origin': '*' } as const
 const WINDOW_BEHIND = 4 // slots passados na janela…
-const WINDOW_AHEAD = 1 // …+ 1 futuro (já pré-cortado): encurta o delay percebido
+// …+ 2 futuros (já pré-cortados). Era 1; em 25/09/2026 o datacenter de São
+// Paulo do Cloudflare entrou em manutenção, os segmentos passaram a vir do Rio
+// e alguns levavam 13–26 s pra baixar (10 s de vídeo): travava com ~20 s de
+// buffer. Com 2 à frente e o player mirando 4 segmentos atrás da borda
+// (web-tv-react, liveSyncDurationCount), o buffer vai a ~40 s e o atraso em
+// relação ao relógio da grade sobe só de ~10 s pra ~20 s.
+const WINDOW_AHEAD = 2
 
 const DAY = 86400
 // Teto do histórico no /epg: espelha EPG_RETENTION do scheduler (a grade passada
