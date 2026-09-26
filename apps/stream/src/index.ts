@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { SEGMENT_DURATION, SQL_EPG_AGORA, SQL_EPG_OVERLAP, type EpgRowWithMedia } from '@bieltv/db'
-import { buildLivePlaylist, buildVodPlaylist } from './playlist'
+import { buildLivePlaylist, buildVodPlaylist, chavesFuturas } from './playlist'
 import { montaGuia } from './guia'
 import { revisao } from './revisao'
 import { admin } from './admin'
@@ -57,6 +57,8 @@ const WINDOW_BEHIND = 4 // slots passados na janela…
 // (web-tv-react, liveSyncDurationCount), o buffer vai a ~40 s e o atraso em
 // relação ao relógio da grade sobe só de ~10 s pra ~20 s.
 const WINDOW_AHEAD = 2
+// até quantos slots à frente o /live aquece segmentos (os 2 depois da janela)
+const AQUECER_ATE = WINDOW_AHEAD + 2
 
 const DAY = 86400
 // Teto do histórico no /epg: espelha EPG_RETENTION do scheduler (a grade passada
@@ -92,12 +94,16 @@ app.get('/live/:canal', async (c) => {
   const nowSlot = Math.floor(now / SEGMENT_DURATION)
   const windowStart = (nowSlot - WINDOW_BEHIND) * SEGMENT_DURATION
   const windowEnd = (nowSlot + WINDOW_AHEAD + 1) * SEGMENT_DURATION
+  // a consulta vai AQUECER_ATE slots além da janela: são os segmentos que o
+  // /live aquece antes de entrarem na playlist
+  const consultaAte = (nowSlot + AQUECER_ATE + 1) * SEGMENT_DURATION
 
   // `SQL_EPG_AGORA` (duas buscas diretas) em vez do intervalo: o /live é a rota
   // mais repetida do sistema — ~6 linhas lidas por chamada em vez de ~200.
   const { results } = await c.env.DB.prepare(SQL_EPG_AGORA)
-    .bind(canal, windowStart, windowEnd)
+    .bind(canal, windowStart, consultaAte)
     .all<EpgRowWithMedia>()
+  c.executionCtx.waitUntil(aqueceSegmentos(c.env, new URL(c.req.url).origin, chavesFuturas(results, now, WINDOW_AHEAD + 1, AQUECER_ATE)))
 
   const m3u8 = buildLivePlaylist(results, now, WINDOW_BEHIND, WINDOW_AHEAD)
   if (!m3u8) return c.text(`canal "${canal}" fora do ar (EPG vazio neste horário)\n`, 404, CORS)
@@ -166,18 +172,54 @@ app.get('/vod/:mediaId', async (c) => {
 })
 
 // Serve segmentos pelo binding R2 — caminho do dev local e fallback.
-// Em produção o caminho principal é o domínio público do bucket
-// (não consome invocações do Worker e aproveita o cache da CDN).
+// Em produção o caminho principal seria o domínio público do bucket com cache
+// da CDN; sem domínio próprio (25/09/2026) tudo passa por aqui. Tenta o cache
+// do datacenter (Cache API) antes do R2 e guarda o que buscou: em 25/09, com o
+// datacenter de São Paulo em manutenção, a leitura fria do R2 levava 13–26 s
+// por segmento de 10 s e o ao vivo travava. `x-bieltv-cache` diz se veio do
+// cache (hit) ou do R2 (miss) — é como se confere se o cache funciona aqui.
+const SEGMENTO_HEADERS = {
+  ...CORS,
+  'content-type': 'video/mp2t',
+  'cache-control': 'public, max-age=31536000, immutable',
+}
 app.get('/media/*', async (c) => {
-  const key = new URL(c.req.url).pathname.slice(1) // 'media/ep_x/seg00000.ts'
+  const url = new URL(c.req.url)
+  const key = url.pathname.slice(1) // 'media/ep_x/seg00000.ts'
+  const cacheKey = new Request(`${url.origin}/${key}`)
+  const cache = (globalThis as unknown as { caches?: { default?: Cache } }).caches?.default
+  const doCache = cache ? await cache.match(cacheKey).catch(() => undefined) : undefined
+  if (doCache) {
+    const r = new Response(doCache.body, doCache)
+    r.headers.set('x-bieltv-cache', 'hit')
+    return r
+  }
   const obj = await c.env.MEDIA.get(key)
   if (!obj) return c.text('segmento não encontrado\n', 404, CORS)
-  return c.body(obj.body as ReadableStream, 200, {
-    ...CORS,
-    'content-type': 'video/mp2t',
-    'cache-control': 'public, max-age=31536000, immutable',
-  })
+  const res = new Response(obj.body as ReadableStream, { status: 200, headers: SEGMENTO_HEADERS })
+  if (cache) c.executionCtx.waitUntil(cache.put(cacheKey, res.clone()).catch(() => {}))
+  res.headers.set('x-bieltv-cache', 'miss')
+  return res
 })
+
+// AQUECE os segmentos que vão entrar na playlist daqui a 10–30 s: lê do R2 e
+// guarda no cache do datacenter antes de o player pedir. Leitura já feita uma
+// vez sai rápida do R2 (medido em 25/09: 0,3 s contra 13–26 s na fria). Cada
+// chamada do /live aquece até AQUECER_ATE−WINDOW_AHEAD segmentos; os que já
+// estão no cache não são lidos de novo.
+async function aqueceSegmentos(env: Bindings, origem: string, chaves: string[]): Promise<void> {
+  const cache = (globalThis as unknown as { caches?: { default?: Cache } }).caches?.default
+  for (const key of chaves) {
+    try {
+      const cacheKey = new Request(`${origem}/${key}`)
+      if (cache && (await cache.match(cacheKey))) continue
+      const obj = await env.MEDIA.get(key)
+      if (!obj) continue
+      const corpo = await obj.arrayBuffer()
+      if (cache) await cache.put(cacheKey, new Response(corpo, { status: 200, headers: SEGMENTO_HEADERS }))
+    } catch { /* aquecimento é best-effort */ }
+  }
+}
 
 export default {
   fetch: app.fetch,

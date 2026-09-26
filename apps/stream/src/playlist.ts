@@ -87,6 +87,25 @@ export function buildLivePlaylist(
 }
 
 /**
+ * Chaves no R2 dos segmentos que vão ao ar LOGO DEPOIS da janela do live
+ * (slots nowSlot+de … nowSlot+ate). O /live usa isto pra aquecer esses
+ * segmentos antes de o player pedi-los — ver `aqueceSegmentos` no index.ts.
+ */
+export function chavesFuturas(rows: EpgRowWithMedia[], nowSec: number, de: number, ate: number): string[] {
+  const nowSlot = Math.floor(nowSec / SEGMENT_DURATION)
+  const chaves: string[] = []
+  for (let slot = nowSlot + de; slot <= nowSlot + ate; slot++) {
+    const t = slot * SEGMENT_DURATION
+    const row = rows.find((r) => r.start_time_virtual <= t && t < r.end_time_virtual)
+    if (!row || row.base_url) continue // só o que é servido pelo binding R2 (base_url vazia)
+    const offset = Math.floor((t - row.start_time_virtual) / SEGMENT_DURATION)
+    const segIdx = Math.min(row.segment_index_start + offset, row.segment_count - 1)
+    chaves.push(mediaSegmentUri('', row.path_prefix, segIdx).slice(1))
+  }
+  return chaves
+}
+
+/**
  * Playlist VOD (catch-up) de uma mídia inteira — do 1º ao último segmento.
  *
  * Diferente do live: é FINITA (`#EXT-X-ENDLIST`) e marcada como VOD, então o
