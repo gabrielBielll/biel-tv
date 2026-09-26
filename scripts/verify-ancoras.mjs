@@ -740,5 +740,25 @@ function ocorrencias(rows, catalogo) {
   check('sem ping-pong: EPG contígua', contigua(grade(epg)))
 }
 
+// ── SESSÃO DE FILME VENCE MARATONA (26/09: a maratona automática de Padrinhos
+//    às 20h de sábado engoliu o Camp Rock no Disney) ─────────────────────────
+{
+  const filme = { id: 'filme_z', tipo: 'filme', duracao_seg: 5400, segment_count: 540, last_played_at: 0, series_id: 'sessao' }
+  const CAT = [...CATALOGO, filme]
+  const events = [{ media_id: 'aaa_01', series_id: 'aaa', start_at: A, end_at: A + 3 * 3600 }]
+  const { db, epg } = makeDB({ channel: CANAL, media: CAT, events, slots: [{ series_id: 'sessao', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 }] })
+  await scheduleChannel({ DB: db }, 'ch', 4, true)
+  const naHora = grade(epg).find((r) => r.start === A)
+  check('sessão de filme vence a maratona marcada na mesma hora', naHora?.media_id === 'filme_z', naHora?.media_id ?? 'nada')
+  // maratona que começa ANTES termina na hora do filme
+  const ev2 = [{ media_id: 'aaa_01', series_id: 'aaa', start_at: A - 3600, end_at: A + 3600 }]
+  const b = makeDB({ channel: CANAL, media: CAT, events: ev2, covEnd: A - 3600, slots: [{ series_id: 'sessao', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 }] })
+  await scheduleChannel({ DB: b.db }, 'ch', 4, false)
+  const rows2 = grade(b.epg)
+  const f2 = rows2.find((r) => r.media_id === 'filme_z' && r.seg === 0)
+  check('maratona que começa antes cede na hora do filme', f2 && f2.start - A <= 1500, f2 ? `filme às +${Math.round((f2.start - A) / 60)} min` : 'sem filme')
+  check('filme × maratona: EPG contígua', contigua(grade(epg)) && contigua(rows2))
+}
+
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)
 process.exit(fail === 0 ? 0 : 1)

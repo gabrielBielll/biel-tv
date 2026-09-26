@@ -503,6 +503,28 @@ export async function scheduleChannel(
   const seriesComEp = new Set(contents.map((m) => m.series_id).filter(Boolean) as string[])
   // séries de sessão de FILME (a faixa delas é uma sessão de cinema)
   const seriesDeFilme = new Set(contents.filter((m) => m.tipo === 'filme' && m.series_id).map((m) => m.series_id!))
+  // SESSÃO DE FILME VENCE MARATONA. Os horários de filme foram definidos pelo
+  // Gabriel e não mudam; a maratona automática do diretor editorial não sabe
+  // deles. Em 26/09 ele marcou Padrinhos no Disney às 20h de sábado e a
+  // maratona engoliu o Camp Rock. Maratona que COMEÇA na sessão (ou dentro
+  // dela) sai; a que começa antes termina na hora do filme.
+  if (seriesDeFilme.size > 0 && eventos.length > 0) {
+    const sessoes: number[] = []
+    for (let d = t - DAY; d <= target + DAY; d += DAY) {
+      for (const sl of slotsAtivos.filter((x) => seriesDeFilme.has(x.series_id))) {
+        const A = spHoraToEpoch(spDateStr(d), sl.hora)
+        if (A != null && sl.dias.includes(spWeekdayIso(A))) sessoes.push(A)
+      }
+    }
+    for (let i = eventos.length - 1; i >= 0; i--) {
+      const e = eventos[i]
+      const dentro = sessoes.filter((A) => A >= e.start_at - 300 && A < e.end_at)
+      if (dentro.length === 0) continue
+      const primeira = Math.min(...dentro)
+      if (primeira <= e.start_at + 300) eventos.splice(i, 1)
+      else eventos[i] = { ...e, end_at: primeira }
+    }
+  }
   type Ancora = { start: number; series_id: string; episodios: number; reprise: boolean }
   const ancoras: Ancora[] = []
   if (slotsAtivos.length > 0) {
