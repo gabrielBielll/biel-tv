@@ -201,12 +201,15 @@ const A = spHoraToEpoch(spDateStr(base), HORA) // unix exato da âncora
 
 // ── 7. atraso ALÉM da grace (45min) → âncora cai, mas CONTADA no report ──────
 {
-  const CAT = [...CATALOGO, ep('ccc_01', 'ccc'), ep('ccc_02', 'ccc')]
+  // um episódio ÚNICO de 90 min estoura a grace da âncora seguinte (o 2º/3º
+  // episódio de um bloco já não entra se passar da faixa seguinte — 26/09 —,
+  // então só um programa longo sozinho ainda derruba a outra faixa)
+  const longo = { id: 'ddd_longo', tipo: 'episodio', duracao_seg: 5400, segment_count: 540, last_played_at: 0, series_id: 'ddd' }
+  const CAT = [...CATALOGO, longo, ep('ccc_01', 'ccc'), ep('ccc_02', 'ccc')]
   const { db, epg } = makeDB({
     channel: CANAL, media: CAT,
     slots: [
-      // 4 episódios ≈ 80+min de bloco: estoura a grace da âncora seguinte
-      { series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 4 },
+      { series_id: 'ddd', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 },
       { series_id: 'ccc', dias: '[1,2,3,4,5,6,7]', hora: HORA, episodios: 1 },
     ],
   })
@@ -667,8 +670,9 @@ function ocorrencias(rows, catalogo) {
 {
   const ontem = agora - 86400
   const CAT = [
-    // série sem faixa com acervo folgado (numa grade real há várias); 12 h de grade
-    ...Array.from({ length: 16 }, (_, i) => ep(`aaa_${String(i + 1).padStart(2, '0')}`, 'aaa')),
+    // várias séries sem faixa com acervo folgado, como numa grade real (com só
+    // uma, a regra de não fazer ping-pong não teria o que pôr no lugar); 12 h
+    ...['aaa', 'ccc', 'ddd', 'eee', 'fff'].flatMap((sr) => Array.from({ length: 6 }, (_, i) => ep(`${sr}_${String(i + 1).padStart(2, '0')}`, sr))),
     ep('bbb_01', 'bbb', ontem), ep('bbb_02', 'bbb'), ep('bbb_03', 'bbb'), ep('bbb_04', 'bbb'),
     ad('ad_1', 20), ad('ad_2', 30), ad('ad_3', 20),
   ]
@@ -683,16 +687,17 @@ function ocorrencias(rows, catalogo) {
   const depois = bbb.filter((r) => r.start >= A + 3 * 3600)
   check('a estreia volta mais tarde no mesmo dia (reprise do tapa-buraco)', depois.some((r) => r.media_id === 'bbb_02') || depois.length === 0,
     depois.map((r) => r.media_id).join(' ') || 'sem bbb depois')
-  const aaa = new Set(rows.filter((r) => r.media_id.startsWith('aaa_')).map((r) => r.media_id))
-  check('série SEM faixa continua avançando no rodízio', aaa.size >= 2, [...aaa].join(' '))
+  const semFaixa = new Set(rows.filter((r) => /^(aaa|ccc|ddd|eee|fff)_/.test(r.media_id)).map((r) => r.media_id))
+  check('série SEM faixa continua avançando no rodízio', semFaixa.size >= 4, [...semFaixa].join(' '))
   check('reprise do tapa-buraco: EPG contígua', contigua(grade(epg)))
 }
 
 // ── MADRUGADA REPRISA O DIA ANTERIOR (Tom e Jerry, 24/09): faixa de reprise
 //    antes das 6h, sem nada da série no dia, repete as estreias de ontem ─────
 {
-  // a run começa na próxima 01:30 de SP; a faixa de reprise é às 02:00
-  const d0 = spDateStr(agora + 86400)
+  // a run começa na PRÓXIMA 01:30 de SP; a faixa de reprise é às 02:00
+  let d0 = spDateStr(agora)
+  if (spHoraToEpoch(d0, '01:30') <= agora) d0 = spDateStr(agora + 86400)
   const inicio = spHoraToEpoch(d0, '01:30')
   const ontem = spDateStr(inicio - 86400)
   const passado = [
@@ -706,9 +711,33 @@ function ocorrencias(rows, catalogo) {
       { series_id: 'bbb', dias: '[1,2,3,4,5,6,7]', hora: '02:00', episodios: 1, reprise: 1 },
     ],
   })
-  await scheduleChannel({ DB: db }, 'ch', 3, false)
+  // janela da run: de agora até 3 h depois da 01:30 (a cobertura começa nela)
+  await scheduleChannel({ DB: db }, 'ch', Math.ceil((inicio - agora) / 3600) + 3, false)
   const r = grade(epg).find((x) => x.start === spHoraToEpoch(d0, '02:00'))
   check('madrugada reprisa a ESTREIA de ontem (bbb_02), não o tapa-buraco', r?.media_id === 'bbb_02', r?.media_id ?? 'nada às 02:00')
+}
+
+// ── SEM PING-PONG (Gabriel, 26/09): "passa Força Animal, outro desenho, volta
+//    Força Animal — isso não existia". Família que passou só volta depois de
+//    2 h (ou colada, agrupando); Power Rangers de qualquer temporada é UMA ───
+{
+  const fams = ['aaa', 'ccc', 'ddd', 'eee', 'fff', 'power_rangers_x', 'power_rangers_y']
+  const CAT = [
+    ...fams.flatMap((f) => Array.from({ length: 6 }, (_, i) => ep(`${f}_${String(i + 1).padStart(2, '0')}`, f))),
+    ad('ad_1', 20), ad('ad_2', 30), ad('ad_3', 20),
+  ]
+  const { db, epg } = makeDB({ channel: CANAL, media: CAT, slots: [] })
+  await scheduleChannel({ DB: db }, 'ch', 12, true)
+  const progs = grade(epg).filter((r) => r.seg === 0 && !r.media_id.startsWith('ad_'))
+  const fam = (id) => (id.startsWith('power_rangers') ? 'power_rangers' : id.slice(0, 3))
+  let voltas = 0
+  const ex = []
+  progs.forEach((r, i) => {
+    if (i === 0 || fam(progs[i - 1].media_id) === fam(r.media_id)) return
+    if (progs.some((x, j) => j < i - 1 && fam(x.media_id) === fam(r.media_id) && r.start - x.start < 7200)) { voltas++; ex.push(r.media_id) }
+  })
+  check('sem ping-pong: nenhuma família volta em menos de 2 h depois de outro desenho', voltas === 0, ex.slice(0, 4).join(' ') || `${progs.length} programas`)
+  check('sem ping-pong: EPG contígua', contigua(grade(epg)))
 }
 
 console.log(`\n${fail === 0 ? '🎉' : '⚠️'} ${pass}/${pass + fail} checagens passaram`)

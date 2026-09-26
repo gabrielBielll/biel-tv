@@ -880,6 +880,7 @@ export async function scheduleChannel(
     c.last_played_at = t
     usadoNaRun.add(c.id)
     marcaExibido(c.series_id, c.id, t)
+    const familiaDaExibicao = familiaDe(c.series_id)
     const cues = (cuesOf[c.id] ?? []).filter((x) => x > 0 && x < c.duracao_seg)
     // ORÇAMENTO dos intervalos deste episódio quando há âncora à frente: eles
     // podem usar a sobra até a hora MENOS o menor programa do canal. Assim os
@@ -906,6 +907,10 @@ export async function scheduleChannel(
     }
     push(c.id, t, t + (c.duracao_seg - pos), pos / SEGMENT_DURATION)
     t += c.duracao_seg - pos
+    if (familiaDaExibicao) {
+      fimDaFamilia.set(familiaDaExibicao, t)
+      familiaAnterior = familiaDaExibicao
+    }
   }
 
   // O intervalo ENTRE programas é montado já sabendo quem vem a seguir:
@@ -970,6 +975,38 @@ export async function scheduleChannel(
   const nivelEncaixe = (m: MediaRow) => novoDeFaixa(m) ? 2
     : m.series_id && seriesDeFaixa.has(m.series_id) && passouHoje(m) ? 0 : 1
 
+  // SEM PING-PONG (Gabriel, 26/09): "passa Força Animal, outro desenho, e volta
+  // Força Animal… isso não existia na programação original". O tapa-buraco não
+  // traz de volta uma FAMÍLIA de série (Power Rangers de qualquer temporada é
+  // uma só; Looney Tunes e o Show dos Looney Tunes também) que passou nas
+  // últimas 2 h, nem uma que tem faixa nas próximas 2 h. A exceção é a
+  // CONTINUAÇÃO do que acabou de passar: aí agrupa, 2 ou 3 episódios seguidos,
+  // como a TV fazia, mesmo passando do limite de episódios por bloco.
+  // As faixas fixas (a grade do Gabriel) não passam por esta regra.
+  const JANELA_PINGPONG = 2 * 3600
+  const familiaDe = (sid: string | null | undefined): string | null => !sid ? null
+    : sid.startsWith('power_rangers') || sid.startsWith('pwr_rangers') ? 'power_rangers'
+      : sid.startsWith('looney_tunes') ? 'looney_tunes' : sid
+  const fimDaFamilia = new Map<string, number>() // fim da última exibição de cada família
+  let familiaAnterior: string | null = null
+  const faixasDaFamilia = new Map<string, number[]>()
+  for (const a of ancoras) {
+    const f = familiaDe(a.series_id)!
+    const l = faixasDaFamilia.get(f) ?? []
+    l.push(a.start)
+    faixasDaFamilia.set(f, l)
+  }
+  const continua = (m: MediaRow) => familiaDe(m.series_id) != null && familiaDe(m.series_id) === familiaAnterior
+  const pingPong = (m: MediaRow): boolean => {
+    const f = familiaDe(m.series_id)
+    if (!f || f === familiaAnterior) return false
+    if (t - (fimDaFamilia.get(f) ?? -Infinity) < JANELA_PINGPONG) return true
+    return (faixasDaFamilia.get(f) ?? []).some((s) => s > t && s < t + JANELA_PINGPONG)
+  }
+  // no encaixe: 0 = continuação em reprise; 1 = outro desenho (reprise ou série
+  // sem faixa); 2 = continuação com episódio novo; 3 = episódio novo de outra série de faixa
+  const nivelFluxo = (m: MediaRow) => novoDeFaixa(m) ? (continua(m) ? 2 : 3) : (continua(m) ? 0 : 1)
+
   const espiaRodizio = (): { item: MediaRow; continuacao: boolean } => {
     // `usadoNaRun` também guarda o que entrou pela âncora (filme só-na-faixa),
     // então "acervo todo usado" é conferido só contra o rodízio
@@ -1006,11 +1043,14 @@ export async function scheduleChannel(
   const encaixe = (espaco: number, serieDaAncora: string | null, semNovoDeFaixa = false): MediaRow | null => {
     const cands = rodizio.filter((m) =>
       m.duracao_seg <= espaco && (!usadoNaRun.has(m.id) || reprisavel(m)) &&
-      !(serieDaAncora && m.series_id === serieDaAncora) && !(semNovoDeFaixa && novoDeFaixa(m)))
+      !(serieDaAncora && m.series_id === serieDaAncora) && !(semNovoDeFaixa && novoDeFaixa(m)) &&
+      !pingPong(m))
     if (cands.length === 0) return null
-    // reprise de hoje primeiro; episódio novo de série de faixa só sem alternativa que encaixe igual
+    // agrupa com o que acabou de passar; depois outro desenho; episódio novo de
+    // série de faixa só sem alternativa; no empate, a reprise de hoje
     return cands.sort((a, b) =>
       vaoMorto(a.duracao_seg, espaco) - vaoMorto(b.duracao_seg, espaco) ||
+      nivelFluxo(a) - nivelFluxo(b) ||
       nivelEncaixe(a) - nivelEncaixe(b) ||
       b.duracao_seg - a.duracao_seg ||
       (a.last_played_at ?? 0) - (b.last_played_at ?? 0) ||
@@ -1177,6 +1217,7 @@ export async function scheduleChannel(
       const repetir = base.slice(-a.episodios).map((id) => porId.get(id)).filter((m): m is MediaRow => Boolean(m))
       if (repetir.length > 0) {
         for (const ep of repetir) {
+          if (ep !== repetir[0] && t + ep.duracao_seg > teto) break // não empurra a faixa seguinte
           if (ep !== repetir[0]) breakPod(ep.series_id, teto)
           agendaConteudo(ep, teto)
           ultimaSerie = ep.series_id
@@ -1186,6 +1227,11 @@ export async function scheduleChannel(
     }
     for (let k = 0; k < a.episodios; k++) {
       const ep = proximoDaFaixa(a.series_id, eps)
+      // O 2º/3º episódio do bloco só entra se couber antes da faixa seguinte.
+      // O Looney Tunes mistura curtas de 7 min com compilações de 24: dois
+      // longos numa faixa de meia hora atrasavam em cascata a madrugada inteira
+      // (medido 26/09: Flintstones 04:00 +23 min, Liga 00:00 +23 min…).
+      if (k > 0 && t + ep.duracao_seg > teto) break
       if (k > 0) breakPod(ep.series_id, teto) // intervalo entre episódios do bloco (universo da série)
       agendaConteudo(ep, teto)
       ultimaSerie = ep.series_id
@@ -1305,6 +1351,16 @@ export async function scheduleChannel(
       if (prox.series_id && seriesDeFaixa.has(prox.series_id) && !(reprisavel(prox) && passouHoje(prox))) {
         const r = repriseDe(prox.series_id, true) ?? (novoDeFaixa(prox) ? repriseDe(prox.series_id, false) : undefined)
         if (r) prox = r
+      }
+      // sem ping-pong: família que passou há pouco (ou tem faixa já já) só volta
+      // colada no que acabou de passar; senão entra outro desenho
+      if (pingPong(prox)) {
+        const outro = encaixe(teto === Infinity ? Infinity : tetoProg - t, anc?.series_id ?? null)
+        if (outro) {
+          prox = outro
+          continuacao = false
+          doRodizio = false
+        }
       }
       // sem reprise dessa série: outro desenho (reprise de outra série de faixa
       // ou série sem faixa) antes de gastar o inédito; só sem alternativa ele vai

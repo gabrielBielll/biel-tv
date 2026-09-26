@@ -128,7 +128,7 @@ for (const canal of CANAIS) {
       const A = Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate(), H, M) / 1000 + 3 * 3600
       if (!JSON.parse(sl.dias).includes(sp(A).getUTCDay() || 7) || A < inicio + 3600 || A > fim - 3600) continue
       const i = rows.findIndex((r) => conteudo(r) && info.get(r.id).series_id === sl.series_id && r.s >= A - 5 && r.s <= A + 2700)
-      if (i < 1) { res.sumidas++; continue }
+      if (i < 1) { res.sumidas++; atrasos.push(`${DIA[sp(A).getUTCDay() || 7]} ${sl.hora} ${sl.series_id} SUMIU`); continue }
       // faixa de mesma hora que cedeu a outra (especial provisório × filme) não conta duas vezes
       if (exemplos.some((e) => e.A === A)) continue
       res.faixas++
@@ -195,6 +195,22 @@ for (const canal of CANAIS) {
   const ineditos = new Set(starts.filter((r) => lp0.get(r.id) < dados.agora - 7 * 86400).map((r) => r.id))
   console.log(`  ritmo: ${ineditos.size} episódios inéditos (não passavam havia 7+ dias) em ${HORAS} h ≈ ${Math.round(ineditos.size * 24 / HORAS)}/dia`)
   console.log(`  episódios: ${starts.length} exibições, ${distintos} diferentes (${Math.round(100 * (starts.length - distintos) / Math.max(1, starts.length))}% repetição) em ${HORAS} h · mais novos: ${topNovos.map(([s, n, e]) => `${s} ${n}/${e}`).join(' · ')}`)
+  // ── ping-pong: família (Power Rangers conta como uma) que volta em até 2 h
+  //    depois de outro desenho, SEM ser faixa fixa (a grade do Gabriel)
+  const fam = (sid) => !sid ? null : sid.startsWith('power_rangers') || sid.startsWith('pwr_rangers') ? 'power_rangers' : sid.startsWith('looney_tunes') ? 'looney_tunes' : sid
+  const ehFaixa = (r) => dados.slots.some((sl) => {
+    if (sl.series_id !== info.get(r.id)?.series_id || !JSON.parse(sl.dias).includes(sp(r.s).getUTCDay() || 7)) return false
+    const d = sp(r.s); const A = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), +sl.hora.slice(0, 2), +sl.hora.slice(3)) / 1000 + 3 * 3600
+    return r.s >= A - 5 && r.s <= A + 2700
+  })
+  let pingPongs = 0
+  const pp = []
+  for (let i = 1; i < starts.length; i++) {
+    const r = starts[i], f = fam(info.get(r.id).series_id)
+    if (!f || fam(info.get(starts[i - 1].id).series_id) === f || ehFaixa(r)) continue
+    if (starts.some((x, j) => j < i - 1 && fam(info.get(x.id).series_id) === f && r.s - x.s < 7200)) { pingPongs++; if (pp.length < 4) pp.push(`${hora(r.s)} ${f}`) }
+  }
+  console.log(`  ping-pong no tapa-buraco (família volta em <2 h depois de outro desenho): ${pingPongs}${pp.length ? ` (ex.: ${pp.join(', ')})` : ''}`)
   const doMolde = (id) => /_\d{2}h\d{2}_[0-9a-f]{4}$/.test(id) || id.startsWith('com_ev_')
   const nMolde = rows.filter((r) => doMolde(r.id)).length
   console.log(`  comerciais da fábrica (mesmo molde): ${nMolde} em ${HORAS} h (~${Math.round(nMolde * 24 / HORAS)}/dia)`)
