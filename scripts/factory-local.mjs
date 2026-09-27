@@ -314,8 +314,25 @@ async function processJob(job) {
     rmSync(src, { force: true })
     rmSync(partDir, { recursive: true, force: true })
   }
-  log(`"${job.id}" ingerido — replanejando a grade dos canais (bloco no ar preservado)`)
-  await post('/admin/schedule/run', { rebuild: true })
+  // NÃO replaneja aqui. Era um rebuild dos 3 canais POR EPISÓDIO (~22 mil
+  // linhas no D1 cada): em 27/09, 13 episódios do Power Rangers SPD estouraram
+  // a cota diária de escrita (142 mil linhas numa hora) e a fábrica parou em
+  // "claim HTTP 500". Agora marca o canal e replaneja UMA vez por canal quando
+  // a fila seca (replanejaPendentes).
+  log(`"${job.id}" ingerido — o canal replaneja quando a fila secar`)
+  for (const c of String(job.canais ?? '').split(',').map((x) => x.trim()).filter(Boolean)) replanPendente.add(c)
+}
+
+// Canais com mídia nova desde o último replanejamento (ver acima).
+const replanPendente = new Set()
+async function replanejaPendentes() {
+  for (const canal of [...replanPendente]) {
+    try {
+      await post('/admin/schedule/run', { canal, rebuild: true })
+      log(`grade de ${canal} replanejada (bloco no ar preservado)`)
+      replanPendente.delete(canal)
+    } catch (e) { log(`replanejar ${canal} falhou: ${e.message}`) }
+  }
 }
 
 
@@ -842,7 +859,7 @@ async function tickComercial() {
       n_descartadas: pecas.length - feitas.length,
     })
     log(`✔ ${cc.id}: ${feitas.length} peças no catálogo`)
-    await post('/admin/schedule/run', { rebuild: true })
+    if (cc.canal) replanPendente.add(cc.canal) // replaneja quando a fila secar
   } catch (e) {
     await post(`/admin/comerciais/${cc.id}/error`, { error: String(e.message ?? e).slice(0, 500) })
       .catch(() => log('não consegui nem marcar o erro do cortador — worker fora do ar?'))
@@ -897,12 +914,14 @@ if (DRAIN) {
     await new Promise((r) => setTimeout(r, 3000))
   }
   log('fila vazia — encerrando (modo drain)')
+  await replanejaPendentes()
   process.exit(0)
 }
 for (;;) {
   try {
     // drena tudo que estiver na fila antes de dormir
     while (await tick()) { /* próximo job */ }
+    await replanejaPendentes()
   } catch (e) {
     log(`erro no polling: ${e.message}`)
   }
