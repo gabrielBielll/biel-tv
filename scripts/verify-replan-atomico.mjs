@@ -8,7 +8,7 @@
 //      canal com o bloco no ar e mais nada: 404 no /live.
 //   B) REPLAN É COALESCIDO — N pedidos seguidos no mesmo canal viram UM replan,
 //      e pedido órfão (rajada interrompida) é terminado pelo cron.
-import { scheduleChannel, pedeReplan, proximaOcorrencia, runScheduler } from '../apps/stream/src/scheduler.ts'
+import { scheduleChannel, pedeReplan, marcaReplan, replanejaPendentes, proximaOcorrencia, runScheduler } from '../apps/stream/src/scheduler.ts'
 
 let pass = 0
 let fail = 0
@@ -217,6 +217,48 @@ function makeDB({ media = CATALOGO, config = new Map(), falharNoBatch = false, c
     ])
     check('debounce: pedido sem `desde` puxa a rajada pra rebuild total',
       cortes.at(-1) < agora + 60, `cut=+${((cortes.at(-1) - agora) / 60).toFixed(1)}min`)
+  }
+
+  // D) FILA DA FÁBRICA SECA: a leva de comerciais vira UM replan por canal.
+  //    O `/done` só carimba (`marcaReplan`) porque a fábrica entrega uma peça a
+  //    cada ~25 s — longe demais do debounce de 4 s, cada peça pagaria o próprio
+  //    replan. Quem paga é o `/claim` sem job, chamando `replanejaPendentes`.
+  {
+    const config = new Map()
+    const { env, cortes } = makeDB({ config })
+    for (let i = 0; i < 16; i++) await marcaReplan(env, 'ch') // a leva da madrugada
+    check('fila seca: carimbar 16 peças não replaneja nada sozinho', cortes.length === 0,
+      `${cortes.length} replan(s)`)
+    const feitos = await replanejaPendentes(env)
+    check('fila seca: a leva inteira vira UM replan do canal',
+      cortes.length === 1 && feitos.join() === 'ch', `${cortes.length} replan(s)`)
+    check('fila seca: rebuild total (a peça nova tem de entrar já, não só no futuro)',
+      cortes.at(-1) < agora + 60, `cut=+${((cortes.at(-1) - agora) / 60).toFixed(1)}min`)
+    check('fila seca: a marca é consumida', ![...config.keys()].some((k) => k.startsWith('replan_')),
+      `${[...config.keys()].length} marca(s)`)
+    check('fila seca: claim seguinte sem marca não replaneja de novo',
+      (await replanejaPendentes(env)).length === 0 && cortes.length === 1, `${cortes.length} replan(s)`)
+  }
+
+  // D2. um canal quebrado não pode impedir o replan do outro nem perder a marca
+  {
+    const config = new Map()
+    const { env, cortes } = makeDB({ config, canais: [{ id: 'ch' }, { id: 'ruim' }] })
+    await marcaReplan(env, 'ch')
+    await marcaReplan(env, 'ruim')
+    const real = env.DB.prepare
+    env.DB.prepare = (sql) => {
+      const p = real(sql)
+      const bind = p.bind
+      p.bind = (...a) => (a[0] === 'ruim' && /FROM channels WHERE id/.test(sql)
+        ? { ...bind(...a), first: async () => { throw new Error('canal quebrado') } }
+        : bind(...a))
+      return p
+    }
+    const feitos = await replanejaPendentes(env)
+    check('fila seca: canal quebrado não derruba o outro', feitos.includes('ch'), feitos.join() || '(nenhum)')
+    check('fila seca: marca do canal que falhou FICA de pé (o cron termina)',
+      config.has('replan_pedido:ruim'), [...config.keys()].join(' '))
   }
 }
 

@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { dispatchFabrica } from './fabrica'
-import { pedeReplan, proximaOcorrencia, scheduleChannel } from './scheduler'
+import { marcaReplan, pedeReplan, proximaOcorrencia, replanejaPendentes, scheduleChannel } from './scheduler'
 import { sintetizaClip, sintetizaBytes, TtsIndisponivel, type VozConfig } from './tts'
 import { reconciliaLineups } from './lineup-reconcilia'
 import { sequenciaDaCondicao } from './lineup-grade'
@@ -1807,7 +1807,14 @@ fabricaComerciais.post('/claim', async (c) => {
        WHERE id = (SELECT id FROM commercial_build_jobs WHERE status='queued' ORDER BY created_at LIMIT 1)
        RETURNING *`,
     ).first<BuildJobRow>()
-    if (!job) return c.body(null, 204)
+    if (!job) {
+      // Fila seca: é AQUI que a leva recém-montada entra na grade, um replan
+      // por canal (ver o comentário no `/done`). Em `waitUntil` porque o runner
+      // só quer saber que não há trabalho — e sem marca pendente isto é uma
+      // leitura de `config` e mais nada.
+      c.executionCtx.waitUntil(replanejaPendentes(c.env).catch(() => { /* cron cobre */ }))
+      return c.body(null, 204)
+    }
     const payload = job.job_type === 'lineup_3_janelas'
       ? await resolveLineupPayload(c.env, job)
       : job.job_type === 'lineup_sequencia'
@@ -2024,13 +2031,21 @@ fabricaComerciais.post('/:id/done', async (c) => {
     ).bind(mediaId, String(b.transcript ?? '').slice(0, 8000), cond)
   }
   await c.env.DB.batch([jobDone, promiseStmt])
-  // NÃO replaneja a grade aqui. Comercial pronto entra no pool sozinho: a
-  // extensão diária (append) já o usa nos blocos novos, e qualquer rebuild
-  // posterior o distribui pelo resto. Replanejar por comercial custava ~2.600
-  // escritas e ~50 mil leituras por peça — com a fábrica montando uma leva de
-  // 15 por rodada (variação de frase), 32 builds consumiram 44% da cota de
-  // LEITURA e estouraram 2× a de ESCRITA do dia (medido em 17/09/2026), sem
-  // ganho real: o que muda é só quando a peça começa a aparecer.
+  // Não replaneja AQUI — só carimba o canal. Replanejar por comercial custava
+  // ~2.600 escritas e ~50 mil leituras por peça: 32 builds comeram 44% da cota
+  // de LEITURA e estouraram 2× a de ESCRITA do dia (medido em 17/09/2026). O
+  // `pedeReplan` também não serve, porque a fábrica entrega uma peça a cada
+  // ~25 s e o debounce dele é de 4 s — cada peça pagaria o próprio replan.
+  //
+  // Quem paga é o `/claim` quando a fila seca: a leva inteira vira UM replan
+  // por canal. Sem isso a peça só entrava na grade no rebuild do dia seguinte,
+  // e a chamada de MARATONA, que vale só até o evento (no mesmo dia), morria
+  // sem nunca ir ao ar — 7 das 10 primeiras com zero exibições (29/09/2026).
+  const canalDaPeca = await c.env.DB.prepare('SELECT canal FROM moldes WHERE id = ?1')
+    .bind(job.molde_id).first<{ canal: string }>()
+  if (canalDaPeca?.canal) {
+    await marcaReplan(c.env, canalDaPeca.canal).catch(() => { /* cron cobre */ })
+  }
   return c.json({ ok: true })
 })
 

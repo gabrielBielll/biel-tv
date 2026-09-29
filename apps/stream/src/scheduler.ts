@@ -1596,6 +1596,72 @@ const CHAVE_DESDE = 'replan_desde:'
  * (waitUntil morto, cota estourada, Worker reciclado) deixa o pedido de pé e o
  * cron termina o serviço — ver a varredura em `runScheduler`.
  */
+/**
+ * Só carimba "este canal precisa de replan", sem esperar nem replanejar.
+ *
+ * É a primeira metade do `pedeReplan`, separada para quem NÃO pode pagar o
+ * debounce: a fábrica de comerciais entrega uma peça a cada ~25 s, e esperar 4 s
+ * em cada uma só faria cada peça pagar o próprio replan. Quem carimba aqui
+ * conta com `replanejaPendentes` (fila da fábrica seca) ou, na pior das hipóteses,
+ * com a varredura do cron em `runScheduler`.
+ */
+export async function marcaReplan(env: Env, canal: string, desde = 0): Promise<string> {
+  const marca = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  // O `desde` da rajada é o MENOR de todos: se uma chamada mexeu nas 07:00 e
+  // outra nas 21:30, replanejar só das 21:30 deixaria a das 07:00 valendo no
+  // papel e não na grade. O `min` acontece DENTRO do UPSERT porque as chamadas
+  // são concorrentes — ler-decidir-escrever aqui perderia corrida, e o preço de
+  // perder é âncora que não entra no ar.
+  await env.DB.batch([
+    env.DB.prepare('INSERT OR REPLACE INTO config (k, v) VALUES (?1, ?2)').bind(CHAVE_REPLAN + canal, marca),
+    env.DB.prepare(
+      `INSERT INTO config (k, v) VALUES (?1, ?2)
+       ON CONFLICT(k) DO UPDATE SET v = CAST(min(CAST(v AS INTEGER), CAST(?2 AS INTEGER)) AS TEXT)`,
+    ).bind(CHAVE_DESDE + canal, String(Math.max(0, Math.floor(desde)))),
+  ])
+  return marca
+}
+
+/**
+ * Replaneja SÓ os canais com marca pendente, uma vez cada, e limpa a marca.
+ *
+ * Gancho de "a leva terminou": o `/claim` da fábrica chama isto quando não tem
+ * mais job para entregar. Assim uma noite de 16 peças custa um replan por canal
+ * em vez de 16 — que foi o que estourou a cota de escrita em 17/09/2026 e levou
+ * o `/done` a não replanejar mais nada. Sem este gancho, a peça só entrava na
+ * grade no rebuild do dia seguinte, e a chamada de MARATONA (que vale só até o
+ * evento, no mesmo dia) nunca ia ao ar: 7 das 10 primeiras tiveram zero
+ * exibições, medido em 29/09/2026.
+ *
+ * Marca que não replanejou continua de pé — o cron cobre, como no `pedeReplan`.
+ */
+export async function replanejaPendentes(env: Env): Promise<string[]> {
+  let linhas: Array<{ k: string; v: string }> = []
+  try {
+    linhas = (await env.DB.prepare(
+      `SELECT k, v FROM config WHERE k LIKE '${CHAVE_REPLAN}%' OR k LIKE '${CHAVE_DESDE}%'`,
+    ).all<{ k: string; v: string }>()).results
+  } catch { return [] } // sem a tabela/coluna o cron segue normal
+  const pendentes = new Map<string, string>()
+  const desdeDe = new Map<string, number>()
+  for (const r of linhas) {
+    if (r.k.startsWith(CHAVE_REPLAN)) pendentes.set(r.k.slice(CHAVE_REPLAN.length), r.v)
+    else desdeDe.set(r.k.slice(CHAVE_DESDE.length), Number(r.v) || 0)
+  }
+  const feitos: string[] = []
+  for (const [canal, marca] of pendentes) {
+    try {
+      await scheduleChannel(env, canal, 48, true, desdeDe.get(canal) ?? 0)
+      await env.DB.batch([
+        env.DB.prepare('DELETE FROM config WHERE k = ?1 AND v = ?2').bind(CHAVE_REPLAN + canal, marca),
+        env.DB.prepare('DELETE FROM config WHERE k = ?1').bind(CHAVE_DESDE + canal),
+      ])
+      feitos.push(canal)
+    } catch { /* a marca fica de pé: o cron termina o serviço */ }
+  }
+  return feitos
+}
+
 export async function pedeReplan(
   env: Env,
   canal: string,
@@ -1605,19 +1671,7 @@ export async function pedeReplan(
 ): Promise<'replanejou' | 'cedeu'> {
   const k = CHAVE_REPLAN + canal
   const kd = CHAVE_DESDE + canal
-  const marca = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  // O `desde` da rajada é o MENOR de todos: se uma chamada mexeu nas 07:00 e
-  // outra nas 21:30, replanejar só das 21:30 deixaria a das 07:00 valendo no
-  // papel e não na grade. O `min` acontece DENTRO do UPSERT porque as chamadas
-  // são concorrentes — ler-decidir-escrever aqui perderia corrida, e o preço de
-  // perder é âncora que não entra no ar.
-  await env.DB.batch([
-    env.DB.prepare('INSERT OR REPLACE INTO config (k, v) VALUES (?1, ?2)').bind(k, marca),
-    env.DB.prepare(
-      `INSERT INTO config (k, v) VALUES (?1, ?2)
-       ON CONFLICT(k) DO UPDATE SET v = CAST(min(CAST(v AS INTEGER), CAST(?2 AS INTEGER)) AS TEXT)`,
-    ).bind(kd, String(Math.max(0, Math.floor(desde)))),
-  ])
+  const marca = await marcaReplan(env, canal, desde)
 
   await new Promise((r) => setTimeout(r, DEBOUNCE_REPLAN_MS))
 
