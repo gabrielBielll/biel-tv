@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Resvg } from '@resvg/resvg-js'
-import { SEG, FFMPEG, FFPROBE, probe, detectScene } from './ffmpeg.mjs'
+import { SEG, FFMPEG, FFPROBE, probe, detectScene, detectCrop } from './ffmpeg.mjs'
 
 const execFileAsync = promisify(execFile)
 const BUF = { maxBuffer: 64 * 1024 * 1024 }
@@ -284,21 +284,38 @@ function audioGraph({ total, locucaoDuration, prelude, musicaOrigem }) {
   ].join(';')
 }
 
-function videoBase(total) {
+function videoBase(total, tarja = null) {
   const t = total.toFixed(3)
   return [
     `color=c=black:s=${W}x${H}:d=${t}[base]`,
-    `[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,fps=30,trim=duration=${t},setpts=PTS-STARTPTS[src]`,
+    `[0:v]${tarja ? `crop=${tarja},` : ''}scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,fps=30,trim=duration=${t},setpts=PTS-STARTPTS[src]`,
   ]
 }
 
-function animatedVideoGraph({ total, tFaseB, trans, hole, tituloTela, textoTela, textoBox, textInputIndex }) {
+/**
+ * Tarja preta GRAVADA na amostra (rip 4:3 dentro de quadro 16:9). Sem tirar
+ * antes, o `increase,crop` do videoBase enche o quadro mas leva a faixa junto
+ * pra janela do molde — as 33 chamadas de horário do Cartoon (Billy e Mandy,
+ * Manda-Chuva) saíram com uma faixa preta na borda direita da janela. Só vale
+ * tarja de verdade: a imagem que sobra precisa ter pelo menos metade do quadro
+ * (cena escura não vira "tarja").
+ */
+async function tarjaDaAmostra(video, info) {
+  const crop = await detectCrop(video, { sampleStart: 0, frames: 300 })
+  if (!crop || !info.width || !info.height) return null
+  const [w, h] = crop.split(':').map(Number)
+  const corta = info.width - w >= 8 || info.height - h >= 8
+  const sobra = w >= info.width * 0.5 && h >= info.height * 0.5
+  return corta && sobra ? crop : null
+}
+
+function animatedVideoGraph({ total, tFaseB, trans, hole, tarja, tituloTela, textoTela, textoBox, textInputIndex }) {
   const animStart = Math.max(0, tFaseB - trans)
   const p = `clip((t-${animStart.toFixed(3)})/${trans.toFixed(3)},0,1)`
   const w = even(hole.w)
   const h = even(hole.h)
   const parts = [
-    ...videoBase(total),
+    ...videoBase(total, tarja),
     `[src]scale=w='trunc((${W}+(${w}-${W})*${p})/2)*2':h='trunc((${H}+(${h}-${H})*${p})/2)*2':eval=frame[anim]`,
     `[base][anim]overlay=x='${Math.round(hole.x)}*${p}':y='${Math.round(hole.y)}*${p}'[v0]`,
     `[1:v]format=rgba,fade=t=in:st=${animStart.toFixed(3)}:d=${trans.toFixed(3)}:alpha=1,setpts=PTS-STARTPTS[molde]`,
@@ -308,11 +325,11 @@ function animatedVideoGraph({ total, tFaseB, trans, hole, tituloTela, textoTela,
   return parts.join(';')
 }
 
-function staticVideoGraph({ total, tFaseB, hole, tituloTela, textoTela, textoBox, textInputIndex }) {
+function staticVideoGraph({ total, tFaseB, hole, tarja, tituloTela, textoTela, textoBox, textInputIndex }) {
   const w = even(hole.w)
   const h = even(hole.h)
   const parts = [
-    ...videoBase(total),
+    ...videoBase(total, tarja),
     `[src]split[full][mini0]`,
     `[mini0]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1[mini]`,
     `[base][full]overlay=0:0:enable='lt(t,${tFaseB.toFixed(3)})'[v0]`,
@@ -428,7 +445,6 @@ export async function montaComercialPrograma({
   // abertura do próprio programa acompanha o comercial em volume baixo.
   const musicaOrigem = musicaFile ? 'external' : sample.hasAudio ? 'video' : null
   const aGraph = audioGraph({ total, locucaoDuration: loc.total, prelude, musicaOrigem })
-  const animated = `${animatedVideoGraph({ total, tFaseB, trans, hole, tituloTela: tituloTela || textoTela, textoTela, textoBox, textInputIndex })};${aGraph}`
   // Recorta a amostra a partir do trecho com mais movimento. Recorta em arquivo
   // em vez de usar `-ss` no render porque ali a amostra entra com
   // `-stream_loop -1`, e a interação de seek com loop não é a mesma em toda
@@ -444,13 +460,15 @@ export async function montaComercialPrograma({
       sampleUsado = recorte
     } catch { /* recorte falhou: segue com a amostra inteira */ }
   }
+  const tarja = await tarjaDaAmostra(sampleUsado, sample)
+  const animated = `${animatedVideoGraph({ total, tFaseB, trans, hole, tarja, tituloTela: tituloTela || textoTela, textoTela, textoBox, textInputIndex })};${aGraph}`
 
   let fallback = false
   try {
     await render({ sampleVideo: sampleUsado, moldeAlphaPng: moldeAlpha, locucaoWav: locucao, musicaFile, textOverlayFile: textOverlay, filter: animated, total, outFile })
   } catch (e) {
     fallback = true
-    const stat = `${staticVideoGraph({ total, tFaseB, hole, tituloTela: tituloTela || textoTela, textoTela, textoBox, textInputIndex })};${aGraph}`
+    const stat = `${staticVideoGraph({ total, tFaseB, hole, tarja, tituloTela: tituloTela || textoTela, textoTela, textoBox, textInputIndex })};${aGraph}`
     await render({ sampleVideo: sampleUsado, moldeAlphaPng: moldeAlpha, locucaoWav: locucao, musicaFile, textOverlayFile: textOverlay, filter: stat, total, outFile })
   }
 
@@ -464,6 +482,7 @@ export async function montaComercialPrograma({
     text_renderer: 'svg-overlay',
     music_source: musicaOrigem ?? 'none',
     hole,
+    tarja_amostra: tarja,
     offsets: loc.offsets,
   }
 }
