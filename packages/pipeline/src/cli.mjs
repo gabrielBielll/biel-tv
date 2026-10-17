@@ -105,8 +105,18 @@ mkdirSync(join(workdir, 'segments'), { recursive: true })
 
 // 1/5 probe
 const info = await probe(input)
-const paddedDur = Math.ceil(info.duration / SEG) * SEG
-const pad = paddedDur - info.duration
+// Resíduo de até 50ms acima do múltiplo de 10s (pacote final AAC: um MP4 de
+// 30s exatos aparece como 30,03s) é cortado em vez de virar um segmento extra
+// de quase 10s de preto. Ver docs/PROCESSO_COMERCIAIS_16X9.md.
+const TOLERANCIA_SEG = 0.05
+const resto = info.duration % SEG
+const paddedDur = Math.max(SEG, (resto > 0 && resto <= TOLERANCIA_SEG
+  ? Math.floor(info.duration / SEG)
+  : Math.ceil(info.duration / SEG)) * SEG)
+const pad = Math.max(0, paddedDur - info.duration)
+// Comercial: o preto de completar os 10s é dividido entre começo e fim
+// (alinhado ao quadro de 30fps); episódio/filme/vinheta seguem com tudo no fim.
+const padStart = opt.tipo === 'comercial' ? Math.round((pad / 2) * 30) / 30 : 0
 console.log(`1/5 probe: ${info.duration.toFixed(1)}s, ${info.width}x${info.height}, ` +
   `${info.vcodec}/${info.acodec ?? 'sem áudio'} → alvo ${paddedDur}s (${paddedDur / SEG} segmentos)`)
 
@@ -167,10 +177,11 @@ function progresso(pct) {
 }
 
 // 2/5 normalização (a etapa demorada — re-encode completo)
-console.log(`2/5 normalizando p/ 720p H.264 (crf ${opt.crf})${pad > 0.01 ? ` + pad de ${pad.toFixed(1)}s` : ''}…`)
+console.log(`2/5 normalizando p/ 720p H.264 (crf ${opt.crf})${pad > 0.01 ? ` + pad de ${pad.toFixed(1)}s` : ''}` +
+  `${padStart > 0.01 ? ` (${padStart.toFixed(1)}s no início, ${(pad - padStart).toFixed(1)}s no fim)` : ''}…`)
 const normalized = join(workdir, 'normalized.mp4')
 await normalize(input, normalized, {
-  paddedDur, pad, hasAudio: info.hasAudio, crf: Number(opt.crf), fit, crop, audioIndex,
+  paddedDur, pad, padStart, hasAudio: info.hasAudio, crf: Number(opt.crf), fit, crop, audioIndex,
   onProgress: (pct) => progresso(Math.floor(pct * 0.9)),
 })
 

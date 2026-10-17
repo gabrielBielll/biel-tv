@@ -122,7 +122,7 @@ async function streamDurations(file) {
  * IDR a cada 10s (keyint fixo por CONTAGEM DE FRAMES) e final padded com
  * preto/silêncio até fechar múltiplo de 10s.
  */
-export async function normalize(input, outFile, { paddedDur, pad, hasAudio, crf = 23, fps = 30, fit = 'letterbox', crop = null, audioIndex = null, onProgress }) {
+export async function normalize(input, outFile, { paddedDur, pad, padStart = 0, hasAudio, crf = 23, fps = 30, fit = 'letterbox', crop = null, audioIndex = null, onProgress }) {
   // Enquadramento p/ 1280x720:
   //  - 'letterbox' (padrão): preserva o aspecto e completa com preto (fonte 4:3
   //    vira 16:9 com tarjas pretas laterais). Nada de esticar nem cortar.
@@ -141,13 +141,24 @@ export async function normalize(input, outFile, { paddedDur, pad, hasAudio, crf 
   const enquadra = fit === 'fill'
     ? ['scale=1280:800', 'crop=1280:720:0:24', 'setsar=1']
     : ['scale=1280:720:force_original_aspect_ratio=decrease', 'pad=1280:720:(ow-iw)/2:(oh-ih)/2']
+  const pontas = [
+    ...(padStart > 0.01 ? [`start_mode=add:start_duration=${padStart.toFixed(3)}`] : []),
+    ...(pad - padStart > 0.01 ? [`stop_mode=add:stop_duration=${(pad - padStart).toFixed(3)}`] : []),
+  ]
   const vf = [
     ...(crop ? [`crop=${crop}`] : []),
     ...enquadra,
     `fps=${fps}`,
     'format=yuv420p',
-    ...(pad > 0.01 ? [`tpad=stop_mode=add:stop_duration=${pad.toFixed(3)}`] : []),
+    // `padStart` (comerciais): parte do preto vai pro COMEÇO, o resto fica no
+    // fim — a peça fica centrada no múltiplo de 10s em vez de terminar com um
+    // bloco de preto inteiro. O áudio atrasa o mesmo tanto (adelay) pra não
+    // descolar da imagem. Um tpad SÓ com as duas pontas: dois tpad encadeados
+    // (start, depois stop) fazem o ffmpeg 7 ignorar o stop e o vídeo termina
+    // curto — o último .ts sai com menos de 10s.
+    ...(pontas.length ? [`tpad=${pontas.join(':')}`] : []),
   ].join(',')
+  const atraso = padStart > 0.01 ? [`adelay=delays=${Math.round(padStart * 1000)}:all=1`] : []
 
   const args = ['-y', '-hide_banner', '-loglevel', 'error', '-i', input]
   if (!hasAudio) args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000')
@@ -163,7 +174,7 @@ export async function normalize(input, outFile, { paddedDur, pad, hasAudio, crf 
     ...mapArgs,
     '-t', paddedDur.toFixed(3),
     '-vf', vf,
-    '-af', 'aresample=48000,apad',
+    '-af', ['aresample=48000', ...atraso, 'apad'].join(','),
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(crf),
     '-profile:v', 'high',
     // IDR a cada SEG segundos travando o GOP por CONTAGEM DE FRAMES (keyint fixo

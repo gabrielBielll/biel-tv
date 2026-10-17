@@ -104,6 +104,12 @@ ganharia quase 10 s de tela preta. O CLI trata esse resíduo de até 50 ms em
 [`packages/pipeline/src/cli.mjs`](../packages/pipeline/src/cli.mjs), preservando
 o conteúdo editorial e evitando o segmento extra.
 
+Quando a peça não fecha múltiplo de 10 s, o CLI completa com preto/silêncio.
+Para `--tipo comercial` esse preto é **dividido entre começo e fim** (metade
+antes, metade depois, alinhado ao quadro): um comercial de 31,4 s vira 40 s com
+4,3 s de preto de cada lado, em vez de 8,6 s de preto só no fim. Episódios,
+filmes e vinhetas continuam com todo o preto no fim.
+
 Antes de encerrar um lote, rode a verificação local com o Node do projeto:
 
 ```bash
