@@ -1,0 +1,39 @@
+# Reenquadra filmes já no ar para 16:9 cheio (sem tarja), um job por filme.
+#
+# Só grava os segmentos novos em media/<id>_169/ e as miniaturas antes/depois
+# no backup do R2 — não toca no D1. A troca no ar (path_prefix) é feita depois
+# da revisão. Ver scripts/reenquadra-filme.sh.
+#
+# `filmes`: JSON [{"id","prefix","n","dur","crop"}], gerado pelo levantamento.
+name: reenquadra-filmes
+
+on:
+  workflow_dispatch:
+    inputs:
+      filmes:
+        description: 'JSON [{"id","prefix","n","dur","crop"}]'
+        required: true
+
+jobs:
+  filme:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        filme: ${{ fromJSON(inputs.filmes) }}
+    name: ${{ matrix.filme.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: garante ffmpeg
+        run: ffmpeg -version >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y ffmpeg)
+      - name: reenquadra
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: >
+          bash scripts/reenquadra-filme.sh
+          '${{ matrix.filme.id }}' '${{ matrix.filme.prefix }}'
+          '${{ matrix.filme.n }}' '${{ matrix.filme.dur }}' '${{ matrix.filme.crop }}'
